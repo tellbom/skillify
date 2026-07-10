@@ -1,3 +1,4 @@
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -6,6 +7,13 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     plugins: [vue()],
+    resolve: {
+      alias: {
+        // Lets the ported flow/web auth module (T4) keep its original '/@/...' import
+        // paths verbatim — see frontend-i18n-and-auth-module-plan.md §1.2.
+        '/@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
+    },
     server: {
       proxy: {
         // Dev convenience: `skillctl` community backend (T3.1, skillify-web) defaults to
