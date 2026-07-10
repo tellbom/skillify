@@ -38,5 +38,5 @@ export const useAuthStore = defineStore('skillify-auth', {
       this.menus = []
     },
   },
-  persist: { key: 'skillify-auth', paths: ['username', 'rbacInfo', 'menus'] },
+  persist: { key: 'skillify-auth', pick: ['username', 'rbacInfo', 'menus'] },
 })
