@@ -185,6 +185,21 @@ if (!component) { console.error(`unresolved component: ${node.component}`); retu
 
 **裁剪语义**：后端按用户角色裁剪菜单——例如无上传权限者，`/api/admin/index` 直接不返回 #3/#5，则前端既不建 `/upload` 路由、也不显示导航项（决策 5：菜单树同时控路由存在与导航可见）。`super` 用户返回全量。
 
+### 6a. 授权模块菜单行（N4/N5，2026-07-10 追加，仅 super 可见）
+
+> 移植自 `docs/frontend-i18n-and-auth-module-plan.md` §5.5，随 N4.4-N4.8 视图落位后 `component` 路径已按实际文件位置核实。同样阻塞在 .NET `Rbac.Api` 侧登记——本节是该阻塞的具体交付清单，`project=skillify`。
+
+| # | title | name | path | type | menu_type | extend | component | 说明 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 权限管理 | `auth` | `/auth` | menu_dir | — | — | — | 分组目录节点，不对应组件 |
+| 7 | 管理员 | `auth-admin` | `/auth/admin` | menu | tab | `''` | `/src/views/backend/auth/admin/index.vue` | 仅 super |
+| 8 | 权限组 | `auth-group` | `/auth/group` | menu | tab | `''` | `/src/views/backend/auth/group/index.vue` | 仅 super |
+| 9 | 菜单规则 | `auth-rule` | `/auth/rule` | menu | tab | `''` | `/src/views/backend/auth/rule/index.vue` | 仅 super |
+| 10 | API映射 | `auth-apimap` | `/auth/api-map` | menu | tab | `''` | `/src/views/backend/auth/apiMap/index.vue` | 仅 super |
+| 11 | 超管授权 | `auth-grant` | `/auth/project-grant` | menu | tab | `''` | `/src/views/backend/auth/projectGrant/index.vue` | 仅 super |
+
+**裁剪语义**：与 §6 相同——非 super 用户的 `/api/admin/index` 响应不应包含 #6-#11 任一节点，前端既不会注册这些路由也不会显示"权限管理"导航分组；直接访问 `/auth/*` URL 的非 super 用户会落到 catch-all → `/404`（路由从未注册，不是权限拒绝页）。这些页面本身还会对 §5.3（`docs/frontend-i18n-and-auth-module-plan.md`）列出的 RBAC 端点发起读写请求，端点级授权由 Rbac.Api 自己二次把关，菜单裁剪只是 UI 层的第一道门。
+
 ---
 
 ## 7. 动态参数路由处理（`/skills/:namespace/:name`）
