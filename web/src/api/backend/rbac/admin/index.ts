@@ -5,7 +5,7 @@
  */
 
 import { rbacClient } from '../client'
-import type { PagedData } from '../client'
+import type { PagedData, PagedQuery } from '../client'
 import type {
     AdminCreateForm,
     AdminItem,
@@ -14,7 +14,6 @@ import type {
     AdminUsernameForm,
     BackendIndexResult,
     LoginResult,
-    PagedQuery,
 } from '../types'
 
 // ── 认证 / 初始化 ─────────────────────────────────────────────────────────────

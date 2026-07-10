@@ -5,9 +5,8 @@
  */
 
 import { rbacClient } from '../client'
-import type { PagedData } from '../client'
+import type { PagedData, PagedQuery } from '../client'
 import type {
-    PagedQuery,
     RuleCreateForm,
     RuleItem,
     RuleMenuType,

@@ -5,7 +5,7 @@
  */
 
 import { rbacClient } from '../client'
-import type { PagedData } from '../client'
+import type { PagedData, PagedQuery } from '../client'
 import type {
     GroupCreateForm,
     GroupIndexResult,
@@ -15,7 +15,6 @@ import type {
     GroupSelectResult,
     GroupStatusForm,
     GroupUpdateForm,
-    PagedQuery,
 } from '../types'
 
 // ── 权限组查询 ─────────────────────────────────────────────────────────────────
