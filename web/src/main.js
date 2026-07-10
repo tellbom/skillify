@@ -7,8 +7,21 @@ import 'element-plus/theme-chalk/display.css'
 import './style.css'
 import App from './App.vue'
 import router from './router/index.js'
+import { loadLang } from './lang/index.js'
 
-const pinia = createPinia()
-pinia.use(piniaPluginPersistedstate)
+// Load order matters (docs/frontend-i18n-and-auth-module-plan.md §3.3): pinia first (loadLang
+// reads the locale store), then i18n before router/ElementPlus so every component sees a
+// ready i18n instance on first render.
+async function bootstrap() {
+  const app = createApp(App)
 
-createApp(App).use(pinia).use(router).use(ElementPlus).mount('#app')
+  const pinia = createPinia()
+  pinia.use(piniaPluginPersistedstate)
+  app.use(pinia)
+
+  await loadLang(app)
+
+  app.use(router).use(ElementPlus).mount('#app')
+}
+
+bootstrap()
