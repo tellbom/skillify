@@ -11,6 +11,7 @@ import { getRbacMenus, isRbacConfigured, rbacLogin } from './rbacClient.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useMenuStore } from '../stores/menu.js'
 import { removeDynamicRoutes } from '../router/dynamicRoutes.js'
+import { i18n } from '../lang/index.js'
 
 function currentUsername(kc) {
   return kc.tokenParsed?.preferred_username || kc.tokenParsed?.sub || 'unknown'
@@ -44,7 +45,7 @@ export async function bootstrapSession() {
 // authenticated.
 export async function login() {
   if (!isKeycloakConfigured()) {
-    throw new Error('Keycloak is not configured on this deployment (VITE_KEYCLOAK_REALM_URL)')
+    throw new Error(i18n.global.t('errors.keycloakNotConfigured'))
   }
   const kc = await loginWithKeycloak()
   if (!kc) return

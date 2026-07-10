@@ -1,16 +1,19 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getLeaderboard } from '../lib/api.js'
+import { formatDate } from '../lib/datetime.js'
 
+const { t } = useI18n()
 const dimension = ref('installs')
 const rows = ref([])
 const loading = ref(true)
 const error = ref(null)
 
 const DIMENSIONS = [
-  { key: 'installs', label: 'Most installed' },
-  { key: 'rating', label: 'Top rated' },
-  { key: 'recent', label: 'Recently published' },
+  { key: 'installs', labelKey: 'leaderboard.dimensions.installs' },
+  { key: 'rating', labelKey: 'leaderboard.dimensions.rating' },
+  { key: 'recent', labelKey: 'leaderboard.dimensions.recent' },
 ]
 
 async function load() {
@@ -31,18 +34,18 @@ onMounted(load)
 
 <template>
   <div>
-    <router-link to="/" class="back-link">&larr; back to all skills</router-link>
-    <h2>Leaderboard</h2>
+    <router-link to="/" class="back-link">{{ t('common.backToSkills') }}</router-link>
+    <h2>{{ t('leaderboard.title') }}</h2>
 
     <nav class="tabs">
       <button v-for="d in DIMENSIONS" :key="d.key" :class="{ active: dimension === d.key }" @click="dimension = d.key">
-        {{ d.label }}
+        {{ t(d.labelKey) }}
       </button>
     </nav>
 
-    <p v-if="loading" class="hint">Loading…</p>
-    <p v-else-if="error" class="error">Failed to load leaderboard: {{ error }}</p>
-    <p v-else-if="rows.length === 0" class="hint">Nothing published yet.</p>
+    <p v-if="loading" class="hint">{{ t('common.loading') }}</p>
+    <p v-else-if="error" class="error">{{ t('errors.loadFailed', { error }) }}</p>
+    <p v-else-if="rows.length === 0" class="hint">{{ t('leaderboard.nothingPublished') }}</p>
 
     <ol v-else class="board">
       <li v-for="row in rows" :key="`${row.namespace}/${row.name}`">
@@ -51,11 +54,11 @@ onMounted(load)
         </router-link>
         <span class="description">{{ row.description }}</span>
         <span class="metric">
-          <template v-if="dimension === 'installs'">{{ row.installCount }} installs</template>
+          <template v-if="dimension === 'installs'">{{ t('leaderboard.installsCount', { n: row.installCount }) }}</template>
           <template v-else-if="dimension === 'rating'">
             {{ row.ratingAverage !== null ? row.ratingAverage.toFixed(1) : '—' }} ★ ({{ row.ratingCount }})
           </template>
-          <template v-else>{{ new Date(row.publishedAt).toLocaleDateString() }}</template>
+          <template v-else>{{ formatDate(row.publishedAt) }}</template>
         </span>
       </li>
     </ol>

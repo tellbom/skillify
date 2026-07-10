@@ -1,7 +1,10 @@
 <script setup>
 // 403 — session/token expired. Reached when Keycloak token refresh fails.
+import { useI18n } from 'vue-i18n'
 import { login } from '../../lib/authBootstrap.js'
 import { isKeycloakConfigured } from '../../lib/keycloak.js'
+
+const { t } = useI18n()
 
 async function signIn() {
   await login().catch(() => {})
@@ -10,10 +13,10 @@ async function signIn() {
 
 <template>
   <div class="error-page">
-    <h1>Session expired</h1>
-    <p>Your session is no longer valid. Please sign in again.</p>
+    <h1>{{ t('auth-pages.sessionExpiredTitle') }}</h1>
+    <p>{{ t('auth-pages.sessionExpiredBody') }}</p>
     <button v-if="isKeycloakConfigured()" type="button" class="retry-btn" @click="signIn">
-      Sign in
+      {{ t('auth-pages.signIn') }}
     </button>
   </div>
 </template>

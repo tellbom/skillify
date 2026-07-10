@@ -2,10 +2,12 @@
 // Framework-level login landing (static route /login). Reached when the RBAC client hits a
 // 401, or as an explicit login entry point. The auth guard normally redirects unauthenticated
 // users straight to Keycloak, so this page is mostly a fallback surface + error display.
+import { useI18n } from 'vue-i18n'
 import { login } from '../lib/authBootstrap.js'
 import { isKeycloakConfigured } from '../lib/keycloak.js'
 import { useMenuStore } from '../stores/menu.js'
 
+const { t } = useI18n()
 const menu = useMenuStore()
 
 async function handleLogin() {
@@ -20,7 +22,7 @@ async function handleLogin() {
 <template>
   <div class="login-page">
     <h1>Skillify</h1>
-    <p class="tagline">internal skills catalog</p>
+    <p class="tagline">{{ t('common.tagline') }}</p>
     <p v-if="menu.bootstrapError" class="error">{{ menu.bootstrapError }}</p>
     <button
       v-if="isKeycloakConfigured()"
@@ -28,10 +30,10 @@ async function handleLogin() {
       class="login-btn"
       @click="handleLogin"
     >
-      Log in with Keycloak
+      {{ t('auth-pages.loginWithKeycloak') }}
     </button>
     <p v-else class="error">
-      Keycloak is not configured on this deployment (VITE_KEYCLOAK_REALM_URL).
+      {{ t('errors.keycloakNotConfigured') }}
     </p>
   </div>
 </template>

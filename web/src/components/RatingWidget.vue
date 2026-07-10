@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { postRating } from '../lib/api.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -11,6 +12,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['rated'])
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const submitting = ref(false)
 const error = ref(null)
@@ -32,7 +34,7 @@ async function rate(score) {
 <template>
   <div class="rating">
     <span class="summary">
-      {{ ratingAverage !== null ? ratingAverage.toFixed(1) : 'unrated' }} ★
+      {{ ratingAverage !== null ? ratingAverage.toFixed(1) : t('comment-rating.unrated') }} ★
       <span class="count">({{ ratingCount }})</span>
     </span>
     <span v-if="auth.isAuthenticated" class="stars">
@@ -41,13 +43,13 @@ async function rate(score) {
         :key="n"
         type="button"
         :disabled="submitting"
-        title="Rate this skill"
+        :title="t('comment-rating.rateThisSkill')"
         @click="rate(n)"
       >
         ★
       </button>
     </span>
-    <span v-else class="hint">log in to rate</span>
+    <span v-else class="hint">{{ t('comment-rating.loginToRate') }}</span>
     <span v-if="error" class="error">{{ error }}</span>
   </div>
 </template>

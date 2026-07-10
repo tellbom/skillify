@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { i18n } from '../lang/index.js'
 
 // Frontend connects directly to the external .NET Rbac.Api (not proxied through Skillify's
 // own Python backend) — this is an explicit design choice, mirroring how
@@ -25,7 +26,7 @@ export async function rbacLogin(keycloakToken) {
     { headers: { Authorization: `Bearer ${keycloakToken}`, 'X-Project': PROJECT } },
   )
   if (resp.data?.code !== 0) {
-    throw new Error(resp.data?.message || 'RBAC login rejected')
+    throw new Error(resp.data?.message || i18n.global.t('errors.rbacLoginRejected'))
   }
   return resp.data.data // { token, routePath, adminInfo }
 }
@@ -36,7 +37,7 @@ export async function getRbacMenus(keycloakToken) {
     headers: { Authorization: `Bearer ${keycloakToken}`, 'X-Project': PROJECT },
   })
   if (resp.data?.code !== 0) {
-    throw new Error(resp.data?.message || 'failed to load RBAC menus')
+    throw new Error(resp.data?.message || i18n.global.t('errors.rbacMenusFailed'))
   }
   return resp.data.data // { adminInfo, menus, routePath }
 }

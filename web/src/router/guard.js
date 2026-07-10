@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { useMenuStore } from '../stores/menu.js'
 import { generateRoutes } from './dynamicRoutes.js'
 import { FRAMEWORK_ROUTE_NAMES } from './constants.js'
+import { i18n } from '../lang/index.js'
 
 // Global guard: business routes exist only after the backend menu tree is fetched and
 // registered. On the first business-route navigation we:
@@ -24,10 +25,7 @@ export function installAuthGuard(router) {
     const menu = useMenuStore()
 
     if (!isKeycloakConfigured()) {
-      menu.setError(
-        'Keycloak is not configured on this deployment (VITE_KEYCLOAK_REALM_URL). ' +
-          'Skillify cannot load its routes.',
-      )
+      menu.setError(i18n.global.t('errors.routesNotConfigured'))
       return { name: 'unauthorized' }
     }
 
@@ -45,10 +43,7 @@ export function installAuthGuard(router) {
         }
         // Authenticated but the backend returned no routable Skillify menu for this user:
         // RBAC rows are missing/not registered. Fail visibly (decision: no fallback).
-        menu.setError(
-          'No Skillify routes were returned by Rbac.Api for your account. ' +
-            'The Skillify menu/permission rows are not registered in the RBAC center yet.',
-        )
+        menu.setError(i18n.global.t('errors.noRoutesForAccount'))
         return { name: 'unauthorized' }
       }
     }

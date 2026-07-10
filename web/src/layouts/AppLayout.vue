@@ -4,10 +4,12 @@
 // Rbac.Api returned it for the current user (see router/dynamicRoutes.js). The dynamic
 // business routes render into this component's <router-view>.
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { logout } from '../lib/authBootstrap.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useMenuStore } from '../stores/menu.js'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const menu = useMenuStore()
 const router = useRouter()
@@ -21,7 +23,7 @@ function handleLogout() {
   <div class="app-shell">
     <header class="app-header">
       <router-link to="/" class="brand">Skillify</router-link>
-      <span class="tagline">internal skills catalog</span>
+      <span class="tagline">{{ t('common.tagline') }}</span>
       <nav class="nav-links">
         <router-link v-for="item in menu.navTree" :key="item.name" :to="item.path">
           {{ item.title }}
@@ -30,7 +32,7 @@ function handleLogout() {
       <div class="auth-area">
         <template v-if="auth.isAuthenticated">
           <span class="username">{{ auth.username }}</span>
-          <button type="button" class="link-btn" @click="handleLogout">Log out</button>
+          <button type="button" class="link-btn" @click="handleLogout">{{ t('auth-pages.logOut') }}</button>
         </template>
       </div>
     </header>

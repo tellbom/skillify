@@ -1,7 +1,9 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listSkills } from '../lib/api.js'
 
+const { t } = useI18n()
 const skills = ref([])
 const query = ref('')
 const loading = ref(true)
@@ -34,12 +36,12 @@ onMounted(load)
       v-model="query"
       class="search-input"
       type="search"
-      placeholder="Search skills by name or description..."
+      :placeholder="t('skills.searchPlaceholder')"
     />
 
-    <p v-if="loading" class="hint">Loading…</p>
-    <p v-else-if="error" class="error">Failed to load skills: {{ error }}</p>
-    <p v-else-if="skills.length === 0" class="hint">No skills found.</p>
+    <p v-if="loading" class="hint">{{ t('common.loading') }}</p>
+    <p v-else-if="error" class="error">{{ t('errors.loadFailed', { error }) }}</p>
+    <p v-else-if="skills.length === 0" class="hint">{{ t('skills.noSkillsFound') }}</p>
 
     <ul v-else class="skill-list">
       <li v-for="skill in skills" :key="`${skill.namespace}/${skill.name}`" class="skill-card">
@@ -50,7 +52,7 @@ onMounted(load)
         <div class="tags">
           <span v-for="tag in skill.tags" :key="tag" class="tag">{{ tag }}</span>
         </div>
-        <p class="author">by {{ skill.author }}</p>
+        <p class="author">{{ t('skills.byAuthor', { author: skill.author }) }}</p>
       </li>
     </ul>
   </div>

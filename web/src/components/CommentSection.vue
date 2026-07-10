@@ -1,10 +1,13 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getComments, postComment } from '../lib/api.js'
 import { useAuthStore } from '../stores/auth.js'
+import { formatDateTime } from '../lib/datetime.js'
 
 const props = defineProps({ namespace: { type: String, required: true }, name: { type: String, required: true } })
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const comments = ref([])
 const loading = ref(true)
@@ -46,28 +49,28 @@ onMounted(load)
 
 <template>
   <section class="comments">
-    <h3>Comments</h3>
+    <h3>{{ t('comment-rating.commentsTitle') }}</h3>
 
-    <p v-if="loading" class="hint">Loading…</p>
-    <p v-else-if="error" class="error">Failed to load comments: {{ error }}</p>
-    <p v-else-if="comments.length === 0" class="hint">No comments yet.</p>
+    <p v-if="loading" class="hint">{{ t('common.loading') }}</p>
+    <p v-else-if="error" class="error">{{ t('errors.loadFailed', { error }) }}</p>
+    <p v-else-if="comments.length === 0" class="hint">{{ t('comment-rating.noComments') }}</p>
 
     <ul v-else class="comment-list">
       <li v-for="c in comments" :key="c.id" class="comment">
         <span class="comment-author">{{ c.author }}</span>
-        <span class="comment-time">{{ new Date(c.createdAt).toLocaleString() }}</span>
+        <span class="comment-time">{{ formatDateTime(c.createdAt) }}</span>
         <p class="comment-body">{{ c.body }}</p>
       </li>
     </ul>
 
     <div v-if="auth.isAuthenticated" class="comment-form">
-      <textarea v-model="draft" rows="3" placeholder="Add a comment..." />
+      <textarea v-model="draft" rows="3" :placeholder="t('comment-rating.addCommentPlaceholder')" />
       <button type="button" :disabled="!draft.trim() || posting" @click="submit">
-        {{ posting ? 'Posting…' : 'Post comment' }}
+        {{ posting ? t('comment-rating.posting') : t('comment-rating.postComment') }}
       </button>
       <p v-if="postError" class="error">{{ postError }}</p>
     </div>
-    <p v-else class="hint">Log in to leave a comment.</p>
+    <p v-else class="hint">{{ t('comment-rating.loginToComment') }}</p>
   </section>
 </template>
 

@@ -1,13 +1,16 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { getSkillDetail } from '../lib/api.js'
 import { renderMarkdown } from '../lib/markdown.js'
+import { formatDateTime } from '../lib/datetime.js'
 import CopyButton from '../components/CopyButton.vue'
 import CommentSection from '../components/CommentSection.vue'
 import RatingWidget from '../components/RatingWidget.vue'
 
 const route = useRoute()
+const { t } = useI18n()
 
 const detail = ref(null)
 const loading = ref(true)
@@ -46,15 +49,15 @@ function onRated(result) {
 
 <template>
   <div>
-    <router-link to="/" class="back-link">&larr; back to all skills</router-link>
+    <router-link to="/" class="back-link">{{ t('common.backToSkills') }}</router-link>
 
-    <p v-if="loading" class="hint">Loading…</p>
-    <p v-else-if="error" class="error">Failed to load skill: {{ error }}</p>
+    <p v-if="loading" class="hint">{{ t('common.loading') }}</p>
+    <p v-else-if="error" class="error">{{ t('errors.loadFailed', { error }) }}</p>
 
     <template v-else-if="detail">
       <h2>{{ detail.namespace }}/{{ detail.name }} <span class="version">v{{ detail.version }}</span></h2>
       <p class="description">{{ detail.description }}</p>
-      <p class="author">by {{ detail.author }} &middot; published {{ new Date(detail.publishedAt).toLocaleString() }}</p>
+      <p class="author">{{ t('skills.publishedBy', { author: detail.author, date: formatDateTime(detail.publishedAt) }) }}</p>
 
       <div class="tags">
         <span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span>
@@ -67,25 +70,25 @@ function onRated(result) {
         :rating-count="detail.ratingCount"
         @rated="onRated"
       />
-      <p class="install-count">{{ detail.installCount }} installs reported</p>
+      <p class="install-count">{{ t('skills.installsReported', { n: detail.installCount }) }}</p>
 
       <section class="install-box">
         <div class="install-row">
           <code>{{ detail.installCommand }}</code>
-          <CopyButton :text="detail.installCommand" label="Copy install command" />
+          <CopyButton :text="detail.installCommand" :label="t('skills.copyInstallCommand')" />
         </div>
         <div class="install-row">
           <code class="prompt">{{ detail.agentPrompt }}</code>
-          <CopyButton :text="detail.agentPrompt" label="Copy agent prompt" />
+          <CopyButton :text="detail.agentPrompt" :label="t('skills.copyAgentPrompt')" />
         </div>
         <div class="install-row" v-if="detail.tarballUrl">
-          <a :href="detail.tarballUrl">download tarball</a>
-          <a v-if="detail.checksumUrl" :href="detail.checksumUrl">checksum</a>
+          <a :href="detail.tarballUrl">{{ t('skills.downloadTarball') }}</a>
+          <a v-if="detail.checksumUrl" :href="detail.checksumUrl">{{ t('skills.checksum') }}</a>
         </div>
       </section>
 
       <p class="versions">
-        all versions:
+        {{ t('skills.allVersions') }}
         <span v-for="(v, i) in detail.versions" :key="v">{{ v }}<template v-if="i < detail.versions.length - 1">, </template></span>
       </p>
 
@@ -94,8 +97,8 @@ function onRated(result) {
         <button :class="{ active: activeTab === 'skillMd' }" :disabled="!detail.skillMd" @click="activeTab = 'skillMd'">SKILL.md</button>
       </nav>
 
-      <article v-if="activeTab === 'readme'" class="markdown-body" v-html="readmeHtml || '<p class=\'hint\'>No README.</p>'" />
-      <article v-else class="markdown-body" v-html="skillMdHtml || '<p class=\'hint\'>No SKILL.md.</p>'" />
+      <article v-if="activeTab === 'readme'" class="markdown-body" v-html="readmeHtml || `<p class='hint'>${t('skills.noReadme')}</p>`" />
+      <article v-else class="markdown-body" v-html="skillMdHtml || `<p class='hint'>${t('skills.noSkillMd')}</p>`" />
 
       <CommentSection :namespace="detail.namespace" :name="detail.name" />
     </template>

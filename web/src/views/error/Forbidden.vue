@@ -1,10 +1,12 @@
 <script setup>
 // 401 — no access / initialization failed visibly. The specific reason (Keycloak not
 // configured, no Skillify RBAC menu for this user, etc.) is surfaced from the menu store.
+import { useI18n } from 'vue-i18n'
 import { useMenuStore } from '../../stores/menu.js'
 import { login } from '../../lib/authBootstrap.js'
 import { isKeycloakConfigured } from '../../lib/keycloak.js'
 
+const { t } = useI18n()
 const menu = useMenuStore()
 
 async function retry() {
@@ -18,11 +20,11 @@ async function retry() {
 
 <template>
   <div class="error-page">
-    <h1>No access</h1>
+    <h1>{{ t('auth-pages.noAccessTitle') }}</h1>
     <p v-if="menu.bootstrapError" class="reason">{{ menu.bootstrapError }}</p>
-    <p v-else>You don’t have permission to view Skillify.</p>
+    <p v-else>{{ t('auth-pages.noAccessBody') }}</p>
     <button v-if="isKeycloakConfigured()" type="button" class="retry-btn" @click="retry">
-      Sign in again
+      {{ t('auth-pages.signInAgain') }}
     </button>
   </div>
 </template>

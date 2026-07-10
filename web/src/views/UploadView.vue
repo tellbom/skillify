@@ -1,7 +1,9 @@
 <script setup>
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { uploadSkill } from '../lib/api.js'
 
+const { t } = useI18n()
 const file = ref(null)
 const uploading = ref(false)
 const result = ref(null)
@@ -30,29 +32,25 @@ async function submit() {
 
 <template>
   <div>
-    <router-link to="/" class="back-link">&larr; back to all skills</router-link>
-    <h2>Upload a skill</h2>
-    <p class="hint">
-      Upload a <code>.zip</code> of your skill directory (must contain <code>SKILL.md</code> and
-      <code>skill.yaml</code> at its root, or in a single top-level folder). It's validated against the
-      standard format and published as a Forgejo Release — same result as <code>skillctl publish</code>.
-    </p>
+    <router-link to="/" class="back-link">{{ t('common.backToSkills') }}</router-link>
+    <h2>{{ t('upload.title') }}</h2>
+    <p class="hint" v-html="t('upload.description')" />
 
     <input type="file" accept=".zip" @change="onFileChange" />
     <button type="button" :disabled="!file || uploading" @click="submit">
-      {{ uploading ? 'Uploading…' : 'Upload' }}
+      {{ uploading ? t('upload.uploading') : t('upload.upload') }}
     </button>
 
     <div v-if="error" class="result error">
-      <strong>Rejected:</strong>
+      <strong>{{ t('upload.rejected') }}</strong>
       <pre>{{ error }}</pre>
     </div>
 
     <div v-if="result" class="result success">
-      <strong>Published</strong> {{ result.namespace }}/{{ result.name }}@{{ result.version }}
-      <p><a :href="result.releaseUrl" target="_blank" rel="noopener">view release</a></p>
+      <strong>{{ t('upload.published') }}</strong> {{ result.namespace }}/{{ result.name }}@{{ result.version }}
+      <p><a :href="result.releaseUrl" target="_blank" rel="noopener">{{ t('upload.viewRelease') }}</a></p>
       <p v-if="result.indexError" class="hint">
-        Note: search index update failed ({{ result.indexError }}) — the release itself succeeded.
+        {{ t('upload.indexFailedNote', { error: result.indexError }) }}
       </p>
     </div>
   </div>

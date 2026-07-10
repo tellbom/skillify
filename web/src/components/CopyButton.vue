@@ -1,8 +1,11 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
-const props = defineProps({ text: { type: String, required: true }, label: { type: String, default: 'Copy' } })
+const props = defineProps({ text: { type: String, required: true }, label: { type: String, default: null } })
+const { t } = useI18n()
 const copied = ref(false)
+const displayLabel = computed(() => props.label ?? t('comment-rating.copy'))
 
 async function copy() {
   try {
@@ -17,7 +20,7 @@ async function copy() {
 </script>
 
 <template>
-  <button class="copy-btn" type="button" @click="copy">{{ copied ? 'Copied!' : label }}</button>
+  <button class="copy-btn" type="button" @click="copy">{{ copied ? t('comment-rating.copied') : displayLabel }}</button>
 </template>
 
 <style scoped>
