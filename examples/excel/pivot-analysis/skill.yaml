@@ -1,0 +1,10 @@
+manifestVersion: 1
+namespace: excel
+name: pivot-analysis
+version: 0.1.0
+description: Turn a flat table (CSV-like text or a described dataset) into a pivot-table summary with grouped aggregates.
+author: Skillify examples
+license: MIT
+runtime: claude-agent-skill
+targets: [claude]
+tags: [excel, data, spreadsheet]

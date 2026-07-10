@@ -1,0 +1,14 @@
+manifestVersion: 1
+namespace: text
+name: word-frequency
+version: 0.1.0
+description: Count word frequency in a block of text and print a ranked table using the tabulate library.
+author: Skillify examples
+license: MIT
+runtime: claude-agent-skill
+targets: [claude]
+tags: [text, nlp, cli]
+dependencies:
+  python: ["tabulate>=0.9"]
+  system: []
+  skills: []

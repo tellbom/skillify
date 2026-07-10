@@ -1,0 +1,18 @@
+:root {
+  color-scheme: dark;
+  font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+  background: #121212;
+  color: #e0e0e0;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: #80cbc4;
+}
+
+button {
+  font-family: inherit;
+}
