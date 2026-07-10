@@ -92,6 +92,7 @@ function handleLogout() {
   padding: 0.25rem 0.6rem;
   cursor: pointer;
   font-size: 0.85rem;
+  white-space: nowrap;
 }
 .bootstrap-error {
   margin: 1rem 0 0;
@@ -104,5 +105,26 @@ function handleLogout() {
 }
 .app-main {
   padding: 1.5rem 0 3rem;
+}
+
+@media (max-width: 640px) {
+  .app-header {
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .tagline {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .nav-links {
+    order: 1;
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .auth-area {
+    margin-left: 0;
+    flex-shrink: 0;
+  }
 }
 </style>

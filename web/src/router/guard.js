@@ -41,7 +41,7 @@ export function installAuthGuard(router) {
         menu.setGenerated(generated)
         if (menu.hasRoutes) {
           // Dynamic routes now exist — re-resolve the original target.
-          return { ...to, replace: true }
+          return { path: to.path, query: to.query, replace: true }
         }
         // Authenticated but the backend returned no routable Skillify menu for this user:
         // RBAC rows are missing/not registered. Fail visibly (decision: no fallback).

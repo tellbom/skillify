@@ -12,6 +12,7 @@ replace this dependency, which is the real security boundary for the API).
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 
 import jwt
@@ -23,6 +24,9 @@ from skillify.common.config import SkillifyConfig, load_config
 
 class KeycloakNotConfiguredError(Exception):
     pass
+
+
+JWT_CLOCK_SKEW_SECONDS = 30
 
 
 @lru_cache(maxsize=8)
@@ -41,14 +45,25 @@ def validate_bearer_token(token: str, cfg: SkillifyConfig) -> dict:
     jwks_url = f"{realm_url}/protocol/openid-connect/certs"
     signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(token)
 
-    return jwt.decode(
+    claims = jwt.decode(
         token,
         signing_key.key,
         algorithms=["RS256"],
         audience=cfg.keycloak_audience,
         issuer=realm_url,
-        options={"require": ["exp", "iat"], "verify_aud": cfg.keycloak_audience is not None},
+        options={
+            "require": ["exp", "iat"],
+            "verify_aud": cfg.keycloak_audience is not None,
+            "verify_iat": False,
+        },
     )
+    try:
+        issued_at = int(claims["iat"])
+    except (TypeError, ValueError) as exc:
+        raise jwt.InvalidIssuedAtError("Issued At claim (iat) must be an integer") from exc
+    if issued_at > time.time() + JWT_CLOCK_SKEW_SECONDS:
+        raise jwt.ImmatureSignatureError("The token is not yet valid (iat)")
+    return claims
 
 
 def require_keycloak_user(authorization: str | None = Header(default=None)) -> dict:

@@ -20,6 +20,18 @@ def test_valid_token_is_accepted(fake_keycloak) -> None:
     assert claims["preferred_username"] == "jane"
 
 
+def test_small_issuer_clock_skew_is_accepted(fake_keycloak) -> None:
+    cfg = SkillifyConfig(keycloak_realm_url=fake_keycloak.realm_url, keycloak_audience="skillify-web")
+    token = fake_keycloak.mint_token(
+        audience="skillify-web",
+        subject="jane",
+        extra_claims={"iat": int(time.time()) + 10},
+    )
+
+    claims = validate_bearer_token(token, cfg)
+    assert claims["sub"] == "jane"
+
+
 def test_wrong_audience_is_rejected(fake_keycloak) -> None:
     import jwt
 
