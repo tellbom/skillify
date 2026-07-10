@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
         // M4: dev-only proxy to the external Rbac.Api, avoiding CORS while VITE_RBAC_BASE_URL
-        // is still a placeholder — see src/lib/rbacClient.js and web/.env.example.
+        // is still a placeholder — see src/api/backend/rbac/client and web/.env.example.
         '/rbacServer': {
           target: env.VITE_RBAC_BASE_URL || 'http://127.0.0.1:5005',
           changeOrigin: true,

@@ -7,7 +7,7 @@ import {
   startTokenRefreshPoll,
   stopTokenRefreshPoll,
 } from './keycloak.js'
-import { getRbacMenus, isRbacConfigured, rbacLogin } from './rbacClient.js'
+import { getBackendIndex, isRbacConfigured, rbacLogin } from '../api/backend/rbac/index.ts'
 import { useAuthStore } from '../stores/auth.js'
 import { useMenuStore } from '../stores/menu.js'
 import { removeDynamicRoutes } from '../router/dynamicRoutes.js'
@@ -37,7 +37,7 @@ export async function bootstrapSession() {
   const kc = getKeycloak()
   auth.setSession(kc.token, currentUsername(kc))
   startTokenRefreshPoll((token) => auth.setSession(token, currentUsername(kc)), () => auth.clear())
-  await bridgeToRbac(kc.token)
+  await bridgeToRbac()
   return true
 }
 
@@ -52,7 +52,7 @@ export async function login() {
   const auth = useAuthStore()
   auth.setSession(kc.token, currentUsername(kc))
   startTokenRefreshPoll((token) => auth.setSession(token, currentUsername(kc)), () => auth.clear())
-  await bridgeToRbac(kc.token)
+  await bridgeToRbac()
 }
 
 export async function logout(router) {
@@ -73,12 +73,16 @@ export async function logout(router) {
 // routing, see router/dynamicRoutes.js + docs/frontend-dynamic-routing-migration.md). It is
 // still not a security boundary — Skillify's own API calls are authorized server-side by the
 // Keycloak JWT (M4a). The menu tree fetched here is what the guard turns into routes.
-async function bridgeToRbac(token) {
+//
+// Ported RBAC client (N4.2, D8): rbacLogin()/getBackendIndex() read the Keycloak token
+// straight from useAuthStore() inside the client's request interceptor — auth.setSession()
+// above already ran, so no token needs to be threaded through here.
+async function bridgeToRbac() {
   const auth = useAuthStore()
   if (!isRbacConfigured()) return
   try {
-    const loginResult = await rbacLogin(token)
-    const indexResult = await getRbacMenus(token)
+    const loginResult = await rbacLogin()
+    const indexResult = await getBackendIndex()
     auth.setRbacBridge(loginResult.adminInfo, indexResult.menus)
   } catch (err) {
     console.warn('RBAC bridge failed (menu/permission unavailable):', err.message)

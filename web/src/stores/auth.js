@@ -7,7 +7,8 @@ import { defineStore } from 'pinia'
 // cookie, see lib/keycloak.js's `ensureKeycloakSession` + the router guard that calls it
 // before the first route resolves) — the persisted fields here are just UI niceties
 // (username display, RBAC-driven menu visibility) that don't grant any access on their own.
-// `rbacInfo`/`menus` come from the separate Rbac.Api bridge call (see lib/rbacClient.js).
+// `rbacInfo`/`menus` come from the separate Rbac.Api bridge call (see api/backend/rbac,
+// bridged from lib/authBootstrap.js's bridgeToRbac).
 // `menus` is the raw pruned menu tree the router guard turns into dynamic routes
 // (router/dynamicRoutes.js); derived routing state (navTree/authNode/registered routes) lives
 // in stores/menu.js. None of it authorizes Skillify's own API calls — those check the
