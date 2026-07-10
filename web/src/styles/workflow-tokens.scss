@@ -1,0 +1,244 @@
+/**
+ * Workflow design tokens.
+ * Browser baseline: Chrome 109.
+ *
+ * Verbatim copy from E:\Web\flow\web\src\styles\workflow-tokens.scss (N4.1,
+ * docs/frontend-i18n-and-auth-module-plan.md §5.6) — Commonsearch/Commontable and the ported
+ * auth views depend on these --wf-* CSS custom properties. Also remaps several --el-* Element
+ * Plus tokens globally (root-scoped), so once Element Plus renders anywhere in Skillify it
+ * picks up this theme.
+ */
+
+:root {
+  --wf-primary: #0066cc;
+  --wf-primary-hover: #0071e3;
+  --wf-primary-on-dark: #2997ff;
+  --wf-primary-light: #e8f0fb;
+  --wf-primary-border: #b3d0f0;
+
+  --wf-ink: #1d1d1f;
+  --wf-ink-2: #4e5969;
+  --wf-ink-3: #7a7a7a;
+  --wf-ink-disabled: #c0c4cc;
+
+  --wf-canvas: #ffffff;
+  --wf-bg: #f5f5f7;
+  --wf-bg-card: #fafafa;
+  --wf-bg-section: #f7f8fa;
+  --wf-border: #e0e0e0;
+  --wf-divider: #f0f0f0;
+
+  --wf-status-running: #007aff;
+  --wf-status-running-bg: #e8f3ff;
+  --wf-success: #34c759;
+  --wf-success-bg: #d1fae5;
+  --wf-success-text: #065f46;
+  --wf-warning: #f59e0b;
+  --wf-warning-bg: #fef3c7;
+  --wf-warning-text: #92400e;
+  --wf-danger: #ef4444;
+  --wf-danger-bg: #fee2e2;
+  --wf-danger-text: #991b1b;
+  --wf-neutral: #d1d5db;
+  --wf-neutral-bg: #f3f4f6;
+  --wf-neutral-text: #9ca3af;
+
+  --wf-avatar-0-from: #0066cc;
+  --wf-avatar-0-to: #0071e3;
+  --wf-avatar-1-from: #34c759;
+  --wf-avatar-1-to: #30d158;
+  --wf-avatar-2-from: #f59e0b;
+  --wf-avatar-2-to: #e8940f;
+  --wf-avatar-3-from: #ef4444;
+  --wf-avatar-3-to: #f87171;
+  --wf-avatar-4-from: #8e44ad;
+  --wf-avatar-4-to: #9b59b6;
+  --wf-avatar-5-from: #16a085;
+  --wf-avatar-5-to: #1abc9c;
+
+  --wf-space-2: 2px;
+  --wf-space-4: 4px;
+  --wf-space-6: 6px;
+  --wf-space-8: 8px;
+  --wf-space-12: 12px;
+  --wf-space-16: 16px;
+  --wf-space-20: 20px;
+  --wf-space-24: 24px;
+  --wf-space-32: 32px;
+  --wf-space-48: 48px;
+
+  --wf-radius-sm: 6px;
+  --wf-radius-md: 10px;
+  --wf-radius-lg: 14px;
+  --wf-radius-xl: 18px;
+  --wf-radius-pill: 100px;
+
+  --wf-shadow-card: 0 1px 4px rgba(0, 0, 0, 0.06);
+  --wf-shadow-drawer: -8px 0 32px rgba(0, 0, 0, 0.10);
+  --wf-shadow-dialog: 0 8px 40px rgba(0, 0, 0, 0.14);
+  --wf-shadow-node-card: 0 8px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
+
+  --wf-font-2xs: 10px;
+  --wf-font-xs: 11px;
+  --wf-font-sm: 12px;
+  --wf-font-base: 13px;
+  --wf-font-md: 14px;
+  --wf-font-lg: 15px;
+  --wf-font-xl: 16px;
+  --wf-font-2xl: 20px;
+  --wf-font-3xl: 28px;
+  --wf-font-weight-normal: 400;
+  --wf-font-weight-medium: 500;
+  --wf-font-weight-semibold: 600;
+  --wf-font-weight-bold: 700;
+  --wf-font-weight-black: 800;
+  --wf-line-height-tight: 1.24;
+  --wf-line-height-base: 1.47;
+  --wf-line-height-loose: 1.6;
+
+  --wf-transition-fast: 0.10s ease;
+  --wf-transition-base: 0.15s ease;
+  --wf-transition-slow: 0.25s ease;
+
+  --wf-z-dropdown: 1000;
+  --wf-z-sticky: 1010;
+  --wf-z-drawer: 2000;
+  --wf-z-dialog: 2010;
+  --wf-z-tooltip: 3000;
+  --wf-z-node-card: 9999;
+
+  --el-color-primary: var(--wf-primary);
+  --el-color-primary-light-3: var(--wf-primary-light);
+  --el-color-primary-light-5: var(--wf-primary-light);
+  --el-color-primary-light-7: var(--wf-primary-light);
+  --el-color-primary-light-8: var(--wf-primary-light);
+  --el-color-primary-light-9: var(--wf-primary-light);
+  --el-border-color: var(--wf-border);
+  --el-border-color-light: var(--wf-divider);
+  --el-border-radius-base: var(--wf-radius-sm);
+  --el-border-radius-small: var(--wf-radius-sm);
+  --el-border-radius-round: var(--wf-radius-pill);
+  --el-text-color-primary: var(--wf-ink);
+  --el-text-color-regular: var(--wf-ink-2);
+  --el-text-color-secondary: var(--wf-ink-3);
+  --el-text-color-placeholder: var(--wf-ink-3);
+  --el-text-color-disabled: var(--wf-ink-disabled);
+  --el-fill-color: var(--wf-bg-section);
+  --el-fill-color-light: var(--wf-bg);
+  --el-fill-color-blank: var(--wf-canvas);
+  --el-bg-color: var(--wf-canvas);
+  --el-bg-color-page: var(--wf-bg);
+  --el-bg-color-overlay: var(--wf-canvas);
+  --el-disabled-bg-color: var(--wf-bg-section);
+  --el-disabled-border-color: var(--wf-divider);
+  --el-disabled-text-color: var(--wf-ink-disabled);
+  --el-box-shadow: var(--wf-shadow-card);
+  --el-box-shadow-light: var(--wf-shadow-card);
+  --el-drawer-bg-color: var(--wf-canvas);
+  --el-drawer-box-shadow: var(--wf-shadow-drawer);
+  --el-dialog-bg-color: var(--wf-canvas);
+  --el-dialog-border-radius: var(--wf-radius-xl);
+  --el-dialog-box-shadow: var(--wf-shadow-dialog);
+  --el-tag-border-radius: var(--wf-radius-sm);
+  --el-table-header-bg-color: var(--wf-bg-section);
+  --el-table-header-text-color: var(--wf-ink-2);
+  --el-table-row-hover-bg-color: var(--wf-primary-light);
+  --el-table-border-color: var(--wf-divider);
+  --el-pagination-button-color: var(--wf-ink-2);
+  --el-pagination-hover-color: var(--wf-primary);
+  --el-tabs-header-height: 40px;
+}
+
+$wf-primary: #0066cc;
+$wf-primary-hover: #0071e3;
+$wf-primary-light: #e8f0fb;
+$wf-primary-border: #b3d0f0;
+$wf-ink: #1d1d1f;
+$wf-ink-2: #4e5969;
+$wf-ink-3: #7a7a7a;
+$wf-ink-disabled: #c0c4cc;
+$wf-canvas: #ffffff;
+$wf-bg: #f5f5f7;
+$wf-bg-card: #fafafa;
+$wf-bg-section: #f7f8fa;
+$wf-border: #e0e0e0;
+$wf-divider: #f0f0f0;
+$wf-success: #34c759;
+$wf-warning: #f59e0b;
+$wf-danger: #ef4444;
+$wf-neutral: #d1d5db;
+$wf-radius-sm: 6px;
+$wf-radius-md: 10px;
+$wf-radius-lg: 14px;
+$wf-radius-xl: 18px;
+$wf-radius-pill: 100px;
+
+@mixin wf-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@mixin wf-flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@mixin wf-flex-vcenter {
+  display: flex;
+  align-items: center;
+}
+
+@mixin wf-card {
+  background: var(--wf-canvas);
+  border-radius: var(--wf-radius-lg);
+  box-shadow: var(--wf-shadow-card);
+}
+
+@mixin wf-btn-press {
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+@mixin wf-status-dot($size: 7px) {
+  display: inline-block;
+  width: $size;
+  height: $size;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+@mixin wf-input-focus {
+  box-shadow: 0 0 0 2px var(--wf-primary) inset !important;
+  border-color: var(--wf-primary) !important;
+}
+
+.wf-app {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', sans-serif;
+  font-size: var(--wf-font-base);
+  color: var(--wf-ink);
+  background: var(--wf-bg);
+  line-height: var(--wf-line-height-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  *::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--wf-border);
+    border-radius: var(--wf-radius-pill);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--wf-ink-disabled);
+  }
+}
