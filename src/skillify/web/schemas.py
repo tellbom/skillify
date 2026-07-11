@@ -28,6 +28,9 @@ class SkillDetail(SkillSummary):
     installCount: int
     ratingAverage: float | None
     ratingCount: int
+    starCount: int
+    starred: bool
+    subscribed: bool
 
 
 class InstallInfo(BaseModel):

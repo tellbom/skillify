@@ -161,6 +161,46 @@ def test_skill_detail_enriched_from_forgejo(monkeypatch, tmp_path: Path, index_d
     assert body["checksumUrl"] and body["checksumUrl"].endswith("excel-pivot-analysis-0.1.0.sha256")
 
 
+def test_skill_detail_reflects_current_user_star_and_subscription(
+    monkeypatch, tmp_path: Path, index_db_url: str, fake_keycloak
+) -> None:
+    """C-5 gap fix: `starred`/`subscribed` on `SkillDetail` must reflect the CURRENTLY
+    authenticated user, and `starCount` must be accurate — this is what lets the frontend
+    render the star/subscribe buttons correctly on first page load, before any toggle."""
+    monkeypatch.setenv("SKILLIFY_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", index_db_url)
+    monkeypatch.delenv("SKILLIFY_FORGEJO_URL", raising=False)
+    _configure_keycloak(monkeypatch, fake_keycloak)
+
+    jane_headers = _auth_headers(fake_keycloak)
+    bob_token = fake_keycloak.mint_token(audience="skillify-web", subject="bob")
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    # Before any star/subscribe: both users see false/false, count 0.
+    resp = client.get("/api/skills/excel/pivot-analysis", headers=jane_headers)
+    body = resp.json()
+    assert body["starred"] is False
+    assert body["subscribed"] is False
+    assert body["starCount"] == 0
+
+    client.post("/api/skills/excel/pivot-analysis/star", headers=jane_headers)
+    client.post("/api/skills/excel/pivot-analysis/subscription", headers=jane_headers)
+    client.post("/api/skills/excel/pivot-analysis/star", headers=bob_headers)
+
+    resp = client.get("/api/skills/excel/pivot-analysis", headers=jane_headers)
+    body = resp.json()
+    assert body["starred"] is True
+    assert body["subscribed"] is True
+    assert body["starCount"] == 2
+
+    # bob starred but never subscribed — sees his own star state, not jane's subscription.
+    resp = client.get("/api/skills/excel/pivot-analysis", headers=bob_headers)
+    body = resp.json()
+    assert body["starred"] is True
+    assert body["subscribed"] is False
+    assert body["starCount"] == 2
+
+
 def test_install_info(monkeypatch, fake_keycloak) -> None:
     _configure_keycloak(monkeypatch, fake_keycloak)
     resp = client.get("/api/skills/excel/pivot-analysis/install", headers=_auth_headers(fake_keycloak))

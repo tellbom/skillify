@@ -9,6 +9,8 @@ from skillify.index.events import install_counts
 from skillify.index.models import SkillIndexEntry
 from skillify.index.queries import get_versions, list_latest, search
 from skillify.index.ratings import rating_stats
+from skillify.index.star import has_starred, star_counts
+from skillify.index.subscriptions import is_subscribed
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
 from skillify.web.schemas import SkillDetail, SkillSummary, VersionDiff, VersionInfo
 
@@ -55,7 +57,13 @@ def list_skills(session: Session, query: str | None = None) -> list[SkillSummary
 
 
 def get_skill_detail(
-    session: Session, cfg: SkillifyConfig, namespace: str, name: str, version: str | None = None
+    session: Session,
+    cfg: SkillifyConfig,
+    namespace: str,
+    name: str,
+    version: str | None = None,
+    *,
+    username: str | None = None,
 ) -> SkillDetail | None:
     versions = get_versions(session, namespace, name)  # newest first
     if not versions:
@@ -95,6 +103,17 @@ def get_skill_detail(
             pass  # best-effort enrichment — index data alone is still a valid response
 
     rating_avg, rating_count = rating_stats(session).get((namespace, name), (None, 0))
+    star_count = star_counts(session).get((namespace, name), 0)
+    starred = (
+        has_starred(session, namespace=namespace, name=name, author=username)
+        if username is not None
+        else False
+    )
+    subscribed = (
+        is_subscribed(session, namespace=namespace, name=name, author=username)
+        if username is not None
+        else False
+    )
 
     return SkillDetail(
         namespace=latest.namespace,
@@ -114,6 +133,9 @@ def get_skill_detail(
         installCount=install_counts(session).get((namespace, name), 0),
         ratingAverage=rating_avg,
         ratingCount=rating_count,
+        starCount=star_count,
+        starred=starred,
+        subscribed=subscribed,
     )
 
 

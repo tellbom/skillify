@@ -114,12 +114,13 @@ def skill_detail(
     namespace: str,
     name: str,
     version: str | None = Query(default=None, description="Explicit version (bypasses yanked exclusion)"),
-    _claims: dict = Depends(require_keycloak_user),
+    claims: dict = Depends(require_keycloak_user),
 ) -> SkillDetail:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
     cfg = load_config()
     session = _session()
     try:
-        detail = service.get_skill_detail(session, cfg, namespace, name, version=version)
+        detail = service.get_skill_detail(session, cfg, namespace, name, version=version, username=username)
     finally:
         session.close()
     if detail is None:
