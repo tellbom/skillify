@@ -172,6 +172,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import type { TreeNodeData } from 'element-plus/es/components/tree/src/tree.type'
 import {
   createGroup, updateGroup,
   getGroupOptions, getApiMapList,
@@ -244,8 +245,9 @@ function filterTree(nodes: RuleTreeNode[], kw: string): RuleTreeNode[] {
     return acc
   }, [])
 }
-function filterNode(value: string, data: RuleTreeNode) {
-  return !value || data.title.includes(value) || data.ruleCode.includes(value)
+function filterNode(value: string, data: TreeNodeData) {
+  const node = data as RuleTreeNode
+  return !value || node.title.includes(value) || node.ruleCode.includes(value)
 }
 function checkAll()  { treeRef.value?.setCheckedKeys(flatCodes(props.ruleTree)); updateCheckedCount() }
 function checkNone() { treeRef.value?.setCheckedKeys([]); updateCheckedCount() }
@@ -312,8 +314,8 @@ function toggleApiCode(code: string) {
 function removeExtraCode(code: string) {
   extraPermCodes.value = extraPermCodes.value.filter(c => c !== code)
 }
-function getActionTagType(action: string): '' | 'success' | 'warning' | 'info' | 'danger' {
-  return ({ read:'info', create:'success', update:'', delete:'danger', execute:'warning', access:'info' } as any)[action] ?? 'info'
+function getActionTagType(action: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
+  return ({ read:'info', create:'success', update:'primary', delete:'danger', execute:'warning', access:'info' } as any)[action] ?? 'info'
 }
 
 // ── 监听打开：立即调用 API ────────────────────────────────────

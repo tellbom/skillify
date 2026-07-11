@@ -49,7 +49,7 @@
                             :model-value="row.status === 'Active'"
                             size="small"
                             :active-color="'#0066cc'"
-                            @change="(val: boolean) => handleStatusToggle(row, val)"
+                            @change="(val) => handleStatusToggle(row, val)"
                         />
                         <el-tag v-else :type="row.status === 'Active' ? 'success' : 'danger'" size="small">
                             {{ row.status === 'Active' ? '启用' : '禁用' }}
@@ -301,8 +301,8 @@ function handleRulesSubmit() {
 }
 
 // ── 状态切换 ───────────────────────────────────────────────────
-async function handleStatusToggle(row: GroupItem, active: boolean) {
-    const status = active ? 'Active' : 'Disabled'
+async function handleStatusToggle(row: GroupItem, active: string | number | boolean) {
+    const status = active === true ? 'Active' : 'Disabled'
     try {
         await updateGroupStatus(row.groupCode, { status })
         row.status = status

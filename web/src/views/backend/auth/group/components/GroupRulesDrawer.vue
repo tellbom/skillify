@@ -185,6 +185,7 @@
 import { ref, computed, watch } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { TreeNodeData } from 'element-plus/es/components/tree/src/tree.type'
 import {
   updateGroupRules,
   getApiMapList,
@@ -247,9 +248,10 @@ function filterTree(nodes: RuleTreeNode[], kw: string): RuleTreeNode[] {
   }, [])
 }
 
-function filterNode(value: string, data: RuleTreeNode) {
+function filterNode(value: string, data: TreeNodeData) {
   if (!value) return true
-  return data.title.includes(value) || data.ruleCode.includes(value)
+  const node = data as RuleTreeNode
+  return node.title.includes(value) || node.ruleCode.includes(value)
 }
 
 // ── API 映射选项过滤 ───────────────────────────────────────────
@@ -371,9 +373,9 @@ function removeExtraCode(code: string) {
   isDirty.value = true
 }
 
-function getActionTagType(action: string): '' | 'success' | 'warning' | 'info' | 'danger' {
+function getActionTagType(action: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
   return ({
-    read: 'info', create: 'success', update: '',
+    read: 'info', create: 'success', update: 'primary',
     delete: 'danger', execute: 'warning', access: 'info',
   } as Record<string, any>)[action] ?? 'info'
 }

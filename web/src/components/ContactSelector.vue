@@ -400,9 +400,9 @@ const handleUserClick = (user: UserItem) => {
     }
 }
 
-const handleUserCheckChange = (checked: boolean, user: UserItem) => {
+const handleUserCheckChange = (checked: string | number | boolean, user: UserItem) => {
     const userWithOrg: UserWithOrg = { ...user, orgName: getOrgNameById(user.orgId) }
-    if (checked) {
+    if (checked === true) {
         if (!isUserSelected(user.id)) selectedUsers.value.push(userWithOrg)
     } else {
         selectedUsers.value = selectedUsers.value.filter(u => u.id !== user.id)

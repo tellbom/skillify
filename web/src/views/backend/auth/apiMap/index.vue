@@ -208,11 +208,11 @@ async function handleDelete(row: ApiMapRecordItem) {
     }
 }
 
-function getActionTagType(action: string): '' | 'success' | 'warning' | 'info' | 'danger' {
+function getActionTagType(action: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
     const map: Record<string, any> = {
         read: 'info',
         create: 'success',
-        update: '',
+        update: 'primary',
         delete: 'danger',
         execute: 'warning',
         access: 'info',
@@ -220,10 +220,10 @@ function getActionTagType(action: string): '' | 'success' | 'warning' | 'info' |
     return map[action] ?? 'info'
 }
 
-function getMethodTagType(method: string): '' | 'success' | 'warning' | 'info' | 'danger' {
+function getMethodTagType(method: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
     const map: Record<string, any> = {
         GET: 'success',
-        POST: '',
+        POST: 'primary',
         PUT: 'warning',
         DELETE: 'danger',
         PATCH: 'info',

@@ -17,7 +17,7 @@ export const useAuthStore = defineStore('skillify-auth', {
   state: () => ({
     token: null,
     username: null,
-    rbacInfo: null, // { id, userid, username, super, project } from Rbac.Api /api/auth/login
+    rbacInfo: /** @type {import('/@/api/backend/rbac').RbacAdminInfo | null} */ (null),
     menus: [], // pruned menu tree from Rbac.Api /api/admin/index — source for route generation
   }),
   getters: {
