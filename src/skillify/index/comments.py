@@ -116,7 +116,13 @@ def list_comments_for_display(session: Session, namespace: str, name: str) -> li
 
 
 def soft_delete_comment(
-    session: Session, *, comment_id: int, actor_username: str, is_namespace_owner: bool
+    session: Session,
+    *,
+    namespace: str,
+    name: str,
+    comment_id: int,
+    actor_username: str,
+    is_namespace_owner: bool,
 ) -> SkillComment:
     """Soft-delete: sets `deleted=True` in place (row/body kept for tree rendering; the
     placeholder substitution happens at read time in `list_comments_for_display`, not here).
@@ -132,7 +138,13 @@ def soft_delete_comment(
     Raises `CommentNotFoundError` if the comment doesn't exist, `CommentPermissionError` if
     the actor is neither the author nor the namespace owner — deletion attempts that aren't
     allowed must fail loudly, not silently no-op."""
-    comment = session.execute(select(SkillComment).where(SkillComment.id == comment_id)).scalar_one_or_none()
+    comment = session.execute(
+        select(SkillComment).where(
+            SkillComment.id == comment_id,
+            SkillComment.namespace == namespace,
+            SkillComment.name == name,
+        )
+    ).scalar_one_or_none()
     if comment is None:
         raise CommentNotFoundError(comment_id)
     if comment.author != actor_username and not is_namespace_owner:

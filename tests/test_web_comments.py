@@ -209,6 +209,43 @@ def test_namespace_owner_can_delete_others_comment(tmp_path: Path, monkeypatch, 
     assert resp.status_code == 204
 
 
+def test_namespace_owner_cannot_delete_comment_through_another_skill_route(
+    tmp_path: Path, monkeypatch, fake_keycloak
+) -> None:
+    index_db_url = _configure(monkeypatch, tmp_path, fake_keycloak)
+    author_token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
+    owner_token = fake_keycloak.mint_token(audience="skillify-web", subject="excel-owner")
+    author_headers = {"Authorization": f"Bearer {author_token}"}
+
+    comment = client.post(
+        "/api/skills/text/word-frequency/comments",
+        json={"body": "belongs to text"},
+        headers=author_headers,
+    ).json()
+
+    engine = make_engine(index_db_url)
+    with session_scope(engine) as session:
+        session.add(
+            SkillNamespaceOwner(
+                namespace="excel",
+                owner_username="excel-owner",
+                claimed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+    response = client.delete(
+        f"/api/skills/excel/pivot-analysis/comments/{comment['id']}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+
+    assert response.status_code == 404
+    comments = client.get(
+        "/api/skills/text/word-frequency/comments", headers=author_headers
+    ).json()
+    assert comments[0]["deleted"] is False
+    assert comments[0]["body"] == "belongs to text"
+
+
 def test_delete_unknown_comment_is_404(tmp_path: Path, monkeypatch, fake_keycloak) -> None:
     _configure(monkeypatch, tmp_path, fake_keycloak)
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")

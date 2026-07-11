@@ -400,7 +400,14 @@ def delete_comment(
     try:
         is_owner = can_manage_version(session, namespace=namespace, username=username)
         try:
-            soft_delete_comment(session, comment_id=comment_id, actor_username=username, is_namespace_owner=is_owner)
+            soft_delete_comment(
+                session,
+                namespace=namespace,
+                name=name,
+                comment_id=comment_id,
+                actor_username=username,
+                is_namespace_owner=is_owner,
+            )
         except CommentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except CommentPermissionError as exc:

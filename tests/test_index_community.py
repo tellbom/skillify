@@ -151,7 +151,10 @@ def test_soft_delete_by_author(engine) -> None:
         comment = add_comment(
             session, namespace="excel", name="pivot-analysis", author="jane", body="great skill", created_at=_now()
         )
-        deleted = soft_delete_comment(session, comment_id=comment.id, actor_username="jane", is_namespace_owner=False)
+        deleted = soft_delete_comment(
+            session, namespace="excel", name="pivot-analysis", comment_id=comment.id,
+            actor_username="jane", is_namespace_owner=False,
+        )
         assert deleted.deleted is True
 
 
@@ -160,7 +163,10 @@ def test_soft_delete_by_namespace_owner(engine) -> None:
         comment = add_comment(
             session, namespace="excel", name="pivot-analysis", author="jane", body="great skill", created_at=_now()
         )
-        deleted = soft_delete_comment(session, comment_id=comment.id, actor_username="owner", is_namespace_owner=True)
+        deleted = soft_delete_comment(
+            session, namespace="excel", name="pivot-analysis", comment_id=comment.id,
+            actor_username="owner", is_namespace_owner=True,
+        )
         assert deleted.deleted is True
 
 
@@ -170,7 +176,10 @@ def test_soft_delete_rejected_for_non_author_non_owner(engine) -> None:
             session, namespace="excel", name="pivot-analysis", author="jane", body="great skill", created_at=_now()
         )
         with pytest.raises(CommentPermissionError):
-            soft_delete_comment(session, comment_id=comment.id, actor_username="mallory", is_namespace_owner=False)
+            soft_delete_comment(
+                session, namespace="excel", name="pivot-analysis", comment_id=comment.id,
+                actor_username="mallory", is_namespace_owner=False,
+            )
         # not silently no-op'd — the row must remain undeleted after the rejected attempt
         session.refresh(comment)
         assert comment.deleted is False
@@ -179,7 +188,10 @@ def test_soft_delete_rejected_for_non_author_non_owner(engine) -> None:
 def test_soft_delete_nonexistent_comment_raises(engine) -> None:
     with session_scope(engine) as session:
         with pytest.raises(CommentNotFoundError):
-            soft_delete_comment(session, comment_id=999, actor_username="jane", is_namespace_owner=False)
+            soft_delete_comment(
+                session, namespace="excel", name="pivot-analysis", comment_id=999,
+                actor_username="jane", is_namespace_owner=False,
+            )
 
 
 def test_list_comments_for_display_replaces_deleted_body_but_keeps_tree(engine) -> None:
@@ -191,7 +203,10 @@ def test_list_comments_for_display_replaces_deleted_body_but_keeps_tree(engine) 
             session, namespace="excel", name="pivot-analysis", author="bob", body="agreed",
             created_at=_now(), parent_id=top.id,
         )
-        soft_delete_comment(session, comment_id=top.id, actor_username="jane", is_namespace_owner=False)
+        soft_delete_comment(
+            session, namespace="excel", name="pivot-analysis", comment_id=top.id,
+            actor_username="jane", is_namespace_owner=False,
+        )
 
         displayed = list_comments_for_display(session, "excel", "pivot-analysis")
         by_id = {c.id: c for c in displayed}
