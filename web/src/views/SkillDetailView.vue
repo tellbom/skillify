@@ -2,15 +2,18 @@
 import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getSkillDetail } from '../lib/api.js'
+import { getSkillDetail, getVersions, getVersionDiff, yankVersion, unyankVersion } from '../lib/api.js'
 import { renderMarkdown } from '../lib/markdown.js'
 import { formatDateTime } from '../lib/datetime.js'
+import { sortVersionsDesc, groupDiff, isDiffEmpty } from '../lib/versions.js'
+import { useMenuStore } from '../stores/menu.js'
 import CopyButton from '../components/CopyButton.vue'
 import CommentSection from '../components/CommentSection.vue'
 import RatingWidget from '../components/RatingWidget.vue'
 
 const route = useRoute()
 const { t } = useI18n()
+const menuStore = useMenuStore()
 
 const detail = ref(null)
 const loading = ref(true)
@@ -19,12 +22,32 @@ const readmeHtml = ref('')
 const skillMdHtml = ref('')
 const activeTab = ref('readme')
 
+// Version timeline (C-1): fetched from the yanked-aware /versions endpoint, kept separate
+// from SkillDetail.versions (a plain string[] that stays unaware of yank state — see task
+// brief). viewedVersion tracks which version's detail is currently displayed above; undefined
+// means "server default" (newest non-yanked).
+const versions = ref([])
+const versionsLoading = ref(true)
+const versionsError = ref(null)
+const viewedVersion = ref(undefined)
+
+// Yank/unyank in-flight + error state, keyed by version so multiple rows don't fight.
+const yankBusy = ref(null)
+const yankError = ref(null)
+
+// Diff panel
+const diffFrom = ref('')
+const diffTo = ref('')
+const diffResult = ref(null)
+const diffLoading = ref(false)
+const diffError = ref(null)
+
 async function load() {
   loading.value = true
   error.value = null
   detail.value = null
   try {
-    const data = await getSkillDetail(route.params.namespace, route.params.name)
+    const data = await getSkillDetail(route.params.namespace, route.params.name, viewedVersion.value)
     detail.value = data
     readmeHtml.value = await renderMarkdown(data.readme)
     skillMdHtml.value = await renderMarkdown(data.skillMd)
@@ -36,13 +59,68 @@ async function load() {
   }
 }
 
-watch(() => [route.params.namespace, route.params.name], load)
-onMounted(load)
+async function loadVersions() {
+  versionsLoading.value = true
+  versionsError.value = null
+  try {
+    const data = await getVersions(route.params.namespace, route.params.name)
+    versions.value = sortVersionsDesc(data)
+  } catch (err) {
+    versionsError.value = err.message
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+function loadAll() {
+  viewedVersion.value = undefined
+  diffResult.value = null
+  diffError.value = null
+  load()
+  loadVersions()
+}
+
+watch(() => [route.params.namespace, route.params.name], loadAll)
+onMounted(loadAll)
 
 function onRated(result) {
   if (detail.value) {
     detail.value.ratingAverage = result.ratingAverage
     detail.value.ratingCount = result.ratingCount
+  }
+}
+
+function viewVersion(version) {
+  viewedVersion.value = version
+  load()
+}
+
+async function toggleYank(v) {
+  yankBusy.value = v.version
+  yankError.value = null
+  try {
+    const action = v.yanked ? unyankVersion : yankVersion
+    const result = await action(route.params.namespace, route.params.name, v.version)
+    v.yanked = result.yanked
+  } catch (err) {
+    yankError.value = err.message
+  } finally {
+    yankBusy.value = null
+  }
+}
+
+async function runDiff() {
+  if (!diffFrom.value || !diffTo.value) return
+  diffLoading.value = true
+  diffError.value = null
+  diffResult.value = null
+  try {
+    const data = await getVersionDiff(route.params.namespace, route.params.name, diffFrom.value, diffTo.value)
+    diffResult.value = groupDiff(data)
+  } catch (err) {
+    diffError.value = err.message
+  } finally {
+    diffLoading.value = false
   }
 }
 </script>
@@ -91,6 +169,88 @@ function onRated(result) {
         {{ t('skills.allVersions') }}
         <span v-for="(v, i) in detail.versions" :key="v">{{ v }}<template v-if="i < detail.versions.length - 1">, </template></span>
       </p>
+
+      <section class="version-timeline">
+        <h3>{{ t('versions.title') }}</h3>
+        <p v-if="versionsLoading" class="hint">{{ t('versions.loading') }}</p>
+        <p v-else-if="versionsError" class="error">{{ t('errors.loadFailed', { error: versionsError }) }}</p>
+        <ul v-else class="version-list">
+          <li
+            v-for="v in versions"
+            :key="v.version"
+            class="version-entry"
+            :class="{ current: (viewedVersion || detail.version) === v.version, yanked: v.yanked }"
+          >
+            <div class="version-entry-header">
+              <span class="version-entry-num">v{{ v.version }}</span>
+              <span class="version-entry-date">{{ t('versions.publishedAt', { date: formatDateTime(v.publishedAt) }) }}</span>
+              <span v-if="v.yanked" class="badge-yanked">{{ t('versions.yanked') }}</span>
+            </div>
+            <p class="version-entry-notes">{{ v.releaseNotes || t('versions.noReleaseNotes') }}</p>
+            <div class="version-entry-actions">
+              <button
+                type="button"
+                :disabled="(viewedVersion || detail.version) === v.version"
+                @click="viewVersion(v.version)"
+              >
+                {{ (viewedVersion || detail.version) === v.version ? t('versions.currentlyViewing') : t('versions.viewThisVersion') }}
+              </button>
+              <button
+                v-if="menuStore.can('skillify:yank')"
+                type="button"
+                class="yank-button"
+                :disabled="yankBusy === v.version"
+                @click="toggleYank(v)"
+              >
+                {{ yankBusy === v.version ? t('versions.yanking') : (v.yanked ? t('versions.unyank') : t('versions.yank')) }}
+              </button>
+            </div>
+          </li>
+        </ul>
+        <p v-if="yankError" class="error">{{ t('versions.yankFailed', { error: yankError }) }}</p>
+      </section>
+
+      <section class="version-diff">
+        <h3>{{ t('versions.compare') }}</h3>
+        <div class="diff-controls">
+          <label>
+            {{ t('versions.compareFrom') }}
+            <select v-model="diffFrom">
+              <option value="" disabled>—</option>
+              <option v-for="v in versions" :key="v.version" :value="v.version">v{{ v.version }}</option>
+            </select>
+          </label>
+          <label>
+            {{ t('versions.compareTo') }}
+            <select v-model="diffTo">
+              <option value="" disabled>—</option>
+              <option v-for="v in versions" :key="v.version" :value="v.version">v{{ v.version }}</option>
+            </select>
+          </label>
+          <button type="button" :disabled="!diffFrom || !diffTo || diffLoading" @click="runDiff">
+            {{ t('versions.runDiff') }}
+          </button>
+        </div>
+
+        <p v-if="diffLoading" class="hint">{{ t('versions.diffLoading') }}</p>
+        <p v-else-if="diffError" class="error">{{ t('versions.diffFailed', { error: diffError }) }}</p>
+        <p v-else-if="!diffResult" class="hint">{{ t('versions.noDiffYet') }}</p>
+        <p v-else-if="isDiffEmpty(diffResult)" class="hint">{{ t('versions.noChanges') }}</p>
+        <div v-else class="diff-groups">
+          <div class="diff-group">
+            <h4>{{ t('versions.added') }} ({{ diffResult.added.length }})</h4>
+            <ul><li v-for="f in diffResult.added" :key="f">{{ f }}</li></ul>
+          </div>
+          <div class="diff-group">
+            <h4>{{ t('versions.removed') }} ({{ diffResult.removed.length }})</h4>
+            <ul><li v-for="f in diffResult.removed" :key="f">{{ f }}</li></ul>
+          </div>
+          <div class="diff-group">
+            <h4>{{ t('versions.modified') }} ({{ diffResult.modified.length }})</h4>
+            <ul><li v-for="f in diffResult.modified" :key="f">{{ f }}</li></ul>
+          </div>
+        </div>
+      </section>
 
       <nav class="tabs">
         <button :class="{ active: activeTab === 'readme' }" :disabled="!detail.readme" @click="activeTab = 'readme'">README</button>
@@ -171,5 +331,133 @@ function onRated(result) {
   padding: 0.8rem;
   border-radius: 6px;
   overflow-x: auto;
+}
+.version-timeline, .version-diff {
+  margin-bottom: 1.5rem;
+}
+.version-timeline h3, .version-diff h3 {
+  margin-bottom: 0.6rem;
+  font-size: 1rem;
+}
+.version-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.version-entry {
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+}
+.version-entry.current {
+  border-color: #80cbc4;
+}
+.version-entry.yanked {
+  opacity: 0.7;
+}
+.version-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.version-entry-num {
+  font-weight: 600;
+}
+.version-entry-date {
+  color: #888;
+  font-size: 0.8rem;
+}
+.badge-yanked {
+  background: #4a1f1f;
+  color: #e06c75;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.75rem;
+}
+.version-entry-notes {
+  color: #ccc;
+  font-size: 0.85rem;
+  margin: 0.3rem 0;
+}
+.version-entry-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.version-entry-actions button {
+  padding: 0.3rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.version-entry-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.yank-button {
+  border-color: #e06c75 !important;
+  color: #e06c75;
+}
+.diff-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.diff-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #888;
+}
+.diff-controls select {
+  background: #1c1c1c;
+  color: inherit;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+.diff-controls button {
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+  color: inherit;
+  cursor: pointer;
+}
+.diff-controls button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.diff-groups {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.diff-group {
+  flex: 1;
+  min-width: 200px;
+}
+.diff-group h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  color: #888;
+}
+.diff-group ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.8rem;
+  font-family: monospace;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 </style>

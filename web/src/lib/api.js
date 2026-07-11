@@ -40,8 +40,24 @@ export function listSkills(query) {
   return query ? request('/search', { params: { q: query } }) : request('/skills')
 }
 
-export function getSkillDetail(namespace, name) {
-  return request(`/skills/${namespace}/${name}`)
+export function getSkillDetail(namespace, name, version) {
+  return request(`/skills/${namespace}/${name}`, { params: { version } })
+}
+
+export function getVersions(namespace, name) {
+  return request(`/skills/${namespace}/${name}/versions`)
+}
+
+export function getVersionDiff(namespace, name, from, to) {
+  return request(`/skills/${namespace}/${name}/diff`, { params: { from, to } })
+}
+
+export function yankVersion(namespace, name, version) {
+  return request(`/skills/${namespace}/${name}/versions/${version}/yank`, { method: 'POST', auth: true })
+}
+
+export function unyankVersion(namespace, name, version) {
+  return request(`/skills/${namespace}/${name}/versions/${version}/unyank`, { method: 'POST', auth: true })
 }
 
 export function getInstallInfo(namespace, name) {
