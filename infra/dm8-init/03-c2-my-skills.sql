@@ -16,8 +16,8 @@
 -- 【语义】skill_publish_jobs 记录"谁在什么时候尝试发布了哪个 namespace/name/version，
 -- 结果如何"——是 Web 上传失败后"我的失败发布"列表的数据来源，不依赖扫描 Forgejo 全量
 -- 仓库找 draft release（那样在多 namespace 场景下不可行）。UNIQUE(namespace, name,
--- version) 意味着同一个版本号的发布尝试只保留最新一条状态：重试会更新同一行的
--- status/error_message/updated_at，不是插入新行。
+-- version, initiator) 意味着同一用户重试同一个版本时更新自己的状态；不同用户的
+-- 尝试分别保留，不能覆盖 namespace owner 的发布结果。
 -- =============================================================================
 
 CREATE TABLE skill_publish_jobs (
@@ -31,7 +31,7 @@ CREATE TABLE skill_publish_jobs (
     created_at    TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at    TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT pk_skill_publish_jobs PRIMARY KEY (id),
-    CONSTRAINT uq_skill_publish_job_identity UNIQUE (namespace, name, version)
+    CONSTRAINT uq_skill_publish_job_identity UNIQUE (namespace, name, version, initiator)
 );
 CREATE INDEX ix_skill_publish_jobs_namespace ON skill_publish_jobs (namespace);
 CREATE INDEX ix_skill_publish_jobs_name      ON skill_publish_jobs (name);

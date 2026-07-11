@@ -159,12 +159,14 @@ class SkillPublishJob(Base):
     stranded draft can exist at all), so instead the web-upload path (`upload_service.py`)
     writes one row per attempt here.
 
-    `UniqueConstraint(namespace, name, version)`: a retry of the same version updates the
-    same row in place (status/error_message/updated_at) rather than accumulating history —
-    only the latest attempt's outcome matters for "is this currently broken."""
+    `UniqueConstraint(namespace, name, version, initiator)`: a retry of the same version by
+    the same user updates that user's row in place. Attempts by different users remain
+    isolated so an ownership failure cannot replace the owner's publish result."""
 
     __tablename__ = "skill_publish_jobs"
-    __table_args__ = (UniqueConstraint("namespace", "name", "version", name="uq_skill_publish_job_identity"),)
+    __table_args__ = (
+        UniqueConstraint("namespace", "name", "version", "initiator", name="uq_skill_publish_job_identity"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     namespace: Mapped[str] = mapped_column(String(64), index=True)

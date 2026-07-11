@@ -85,6 +85,30 @@ def test_record_job_result_retry_updates_same_row_not_insert(engine) -> None:
         assert jobs[0].updated_at.replace(tzinfo=timezone.utc) == datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 
+def test_record_job_result_keeps_same_target_isolated_per_initiator(engine) -> None:
+    with session_scope(engine) as session:
+        record_job_result(
+            session, namespace="excel", name="pivot-analysis", version="0.1.0",
+            initiator="jane", status="succeeded", error_message=None,
+            at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    with session_scope(engine) as session:
+        record_job_result(
+            session, namespace="excel", name="pivot-analysis", version="0.1.0",
+            initiator="mallory", status="failed", error_message="namespace is owned by jane",
+            at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+
+    with session_scope(engine) as session:
+        jane_jobs = list_my_jobs(session, "jane")
+        mallory_jobs = list_my_jobs(session, "mallory")
+        assert len(jane_jobs) == 1
+        assert jane_jobs[0].status == "succeeded"
+        assert len(mallory_jobs) == 1
+        assert mallory_jobs[0].status == "failed"
+
+
 def test_list_my_failed_jobs_filters_status_and_initiator(engine) -> None:
     with session_scope(engine) as session:
         record_job_result(

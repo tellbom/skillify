@@ -29,10 +29,9 @@ def record_job_result(
     error_message: str | None,
     at: datetime,
 ) -> SkillPublishJob:
-    """Idempotent + concurrency-safe insert-or-update on (namespace, name, version), same
-    SAVEPOINT-then-fallback-to-update pattern as `ingest.py::upsert_release`: a retry of the
-    same version updates the existing row's status/error_message/updated_at in place rather
-    than raising a unique-constraint error or accumulating history rows."""
+    """Idempotent + concurrency-safe insert-or-update on
+    (namespace, name, version, initiator), using the same SAVEPOINT fallback pattern as
+    `ingest.py::upsert_release`. A retry updates only that initiator's existing row."""
     if status not in ("succeeded", "failed"):
         raise ValueError(f"unknown status {status!r} (expected 'succeeded' or 'failed')")
 
@@ -59,9 +58,9 @@ def record_job_result(
             SkillPublishJob.namespace == namespace,
             SkillPublishJob.name == name,
             SkillPublishJob.version == version,
+            SkillPublishJob.initiator == initiator,
         )
     ).scalar_one()
-    existing.initiator = initiator
     existing.status = status
     existing.error_message = error_message
     existing.updated_at = at
