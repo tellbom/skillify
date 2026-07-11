@@ -36,8 +36,18 @@ async function request(path, { params, method = 'GET', body, json, auth = false 
   return resp.json()
 }
 
-export function listSkills(query) {
-  return query ? request('/search', { params: { q: query } }) : request('/skills')
+// C-4 search/filter/sort/pagination (Task 9 endpoints). Both /skills and /search now share the
+// same query-param contract and both return the SearchResult wrapper
+// ({items, total, page, pageSize}) instead of a bare array — this is a breaking change from the
+// pre-Task-9 shape, so every call site consuming listSkills() must read `.items`, not treat the
+// result itself as the array. `/search` is used whenever a text query is present (existing
+// behavior); `/skills` otherwise — filters/sort/pagination apply identically either way per the
+// Task 9 brief. `params` here (namespace/author/tags/sort/page/pageSize) are optional and passed
+// straight through to request(), which already drops undefined/null/'' entries.
+export function listSkills(query, params = {}) {
+  const q = query ? query.trim() : ''
+  const allParams = { ...params, q: q || undefined }
+  return q ? request('/search', { params: allParams }) : request('/skills', { params: allParams })
 }
 
 export function getSkillDetail(namespace, name, version) {

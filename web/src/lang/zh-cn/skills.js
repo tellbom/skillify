@@ -11,4 +11,22 @@ export default {
   allVersions: '全部版本：',
   noReadme: '暂无 README。',
   noSkillMd: '暂无 SKILL.md。',
+  filters: {
+    namespacePlaceholder: '按命名空间筛选…',
+    authorPlaceholder: '按作者筛选…',
+    tagsPlaceholder: '按标签筛选，多个标签用逗号分隔…',
+    sortLabel: '排序：',
+    clear: '清除筛选',
+  },
+  sort: {
+    updated: '最近更新',
+    installs: '安装量最多',
+    rating: '评分最高',
+  },
+  pagination: {
+    prev: '上一页',
+    next: '下一页',
+    pageOf: '第 {page} / {totalPages} 页',
+    totalResults: '共 {total} 条结果',
+  },
 }
