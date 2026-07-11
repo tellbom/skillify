@@ -1,6 +1,9 @@
 FROM python:3.12-slim AS base
 
-RUN pip install --no-cache-dir uv
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -9,6 +12,7 @@ COPY spec ./spec
 
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8088
+EXPOSE 8088 8089
 
-ENTRYPOINT ["uv", "run", "skillify-webhook"]
+ENTRYPOINT ["uv", "run"]
+CMD ["skillify-webhook"]

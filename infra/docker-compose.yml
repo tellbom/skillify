@@ -67,8 +67,53 @@ services:
       SKILLIFY_WEBHOOK_SECRET: ${SKILLIFY_WEBHOOK_SECRET:?set a shared secret and configure it on the Forgejo webhook}
       SKILLIFY_DEVPI_INDEX_URL: ${SKILLIFY_DEVPI_INDEX_URL:-http://devpi:3141/skillify/dev/+simple/}
       SKILLIFY_INDEX_DB_URL: ${SKILLIFY_INDEX_DB_URL:?set the external DM8 SQLAlchemy URL}
+    command: ["skillify-webhook"]
     ports:
       - "${WEBHOOK_PORT:-8088}:8088"
+    networks: [skillify]
+
+  skillify-web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      forgejo:
+        condition: service_started
+      devpi:
+        condition: service_started
+    environment:
+      SKILLIFY_FORGEJO_URL: ${SKILLIFY_FORGEJO_URL:-http://forgejo:3000}
+      SKILLIFY_FORGEJO_TOKEN: ${SKILLIFY_FORGEJO_TOKEN:?set a Forgejo access token for Skillify}
+      SKILLIFY_DEVPI_INDEX_URL: ${SKILLIFY_DEVPI_INDEX_URL:-http://devpi:3141/skillify/dev/+simple/}
+      SKILLIFY_INDEX_DB_URL: ${SKILLIFY_INDEX_DB_URL:?set the external DM8 SQLAlchemy URL}
+      SKILLIFY_KEYCLOAK_REALM_URL: ${SKILLIFY_KEYCLOAK_REALM_URL:?set the Keycloak realm issuer URL}
+      SKILLIFY_KEYCLOAK_AUDIENCE: ${SKILLIFY_KEYCLOAK_AUDIENCE:-skillify-web}
+    command: ["skillify-web"]
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-c", "import requests; requests.get('http://127.0.0.1:8089/healthz', timeout=2).raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [skillify]
+
+  frontend:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: /api
+        VITE_KEYCLOAK_REALM_URL: ${VITE_KEYCLOAK_REALM_URL:?set the frontend Keycloak realm URL}
+        VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-}
+        VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-skillify-web}
+        VITE_RBAC_BASE_URL: ${VITE_RBAC_BASE_URL:?set the Rbac.Api base URL}
+        VITE_RBAC_PROJECT: ${VITE_RBAC_PROJECT:-skillify}
+    restart: unless-stopped
+    depends_on:
+      skillify-web:
+        condition: service_healthy
+    ports:
+      - "${SKILLIFY_HTTP_PORT:-8080}:80"
     networks: [skillify]
 
 volumes:

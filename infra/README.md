@@ -30,7 +30,9 @@ Forgejo's PostgreSQL initialization does not create a `skillify_index` database.
 ## Verify acceptance criteria (T0.3)
 
 1. **Starts with one command**: `docker compose up -d --build` exits 0, `docker compose ps`
-   shows `db`, `forgejo`, `devpi`, `webhook` all `running`/`healthy`.
+   shows `db`, `forgejo`, `devpi`, `webhook`, `skillify-web`, and `frontend` running. Open
+   `http://localhost:8080` (or `SKILLIFY_HTTP_PORT`) for the complete Skillify UI. The Nginx
+   frontend proxies `/api`, `/docs`, and `/openapi.json` to `skillify-web`.
 
 2. **Forgejo can create an org/repo/Release**:
    - Open `http://localhost:3000`, complete first-run install (DB fields are pre-filled from
@@ -79,15 +81,13 @@ Forgejo's PostgreSQL initialization does not create a `skillify_index` database.
 
 ## Known gaps (flagging per the joint-review ask)
 
-- **T0.3's original three services** have **not been run end-to-end** in this session — the
+- **The complete Compose stack** has **not been run end-to-end** in this session — the
   dev sandbox is Windows without Docker available (`docker: command not found`). The YAML has
   been syntax/schema-sanity-checked (`tests/test_infra_compose.py`), and the image choices +
   env wiring follow each project's documented docker configuration, but nobody has actually
   clicked through steps 2–3 above yet.
-- **The `webhook` service + its `Dockerfile`** (repo root) are new in this pass and have the
-  same limitation — `uv sync --frozen` inside the Dockerfile has not been build-tested against
-  a real Docker daemon; it mirrors the exact `uv sync` invocation exercised interactively in
-  this repo throughout development, but the container build itself is unverified.
+- **The shared Python image and frontend Nginx image** have the same limitation: their
+  Docker builds and container health checks still need a real Linux Docker host.
 - Whoever has a Docker host next should run through this whole README top to bottom and report
   back — this is exactly the kind of thing that should get exercised before M2's pipeline is
   pointed at a real intranet Forgejo for real.

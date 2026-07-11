@@ -24,7 +24,9 @@ def _load_compose() -> dict:
 
 def test_compose_is_valid_yaml_with_expected_services() -> None:
     compose = _load_compose()
-    assert set(compose["services"].keys()) == {"db", "forgejo", "devpi", "webhook"}
+    assert set(compose["services"].keys()) == {
+        "db", "forgejo", "devpi", "webhook", "skillify-web", "frontend",
+    }
 
 
 def test_compose_declares_named_volumes_for_persistence() -> None:
