@@ -1,6 +1,7 @@
-"""Engine/session creation for the index DB (T2.2). Production points `index_db_url` at
-Postgres (`postgresql+psycopg://...`); tests use SQLite (`sqlite:///...` or `sqlite://`
-in-memory) — the schema in `models.py` sticks to portable column types for this reason.
+"""Engine/session creation for the Skillify business database.
+
+Production points ``index_db_url`` at the externally initialized DM8 schema. SQLite tests
+still create their transient schema from ORM metadata; production databases never do so.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ def make_engine(db_url: str) -> Engine:
 
 
 def init_db(engine: Engine) -> None:
-    Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(engine)
 
 
 @contextmanager

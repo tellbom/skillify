@@ -24,7 +24,9 @@ class SkillifyConfig:
     forgejo_token: str | None = None
     devpi_index_url: str | None = None
     webhook_secret: str | None = None  # T2.1: shared secret for Forgejo webhook HMAC verification
-    index_db_url: str | None = None  # T2.2: Postgres index DB (postgresql+psycopg://... in prod)
+    # Skillify business DB. Production uses the external DM8 schema initialized by
+    # infra/dm8-init/01-skillify-schema.sql; SQLite remains available for local tests.
+    index_db_url: str | None = None
     # M4: Keycloak JWT validation for write endpoints (upload). Frontend auth (login redirect,
     # RBAC menu bridge to the separate Rbac.Api) is a Vue3-side concern (web/) and doesn't read
     # this config — this is only what the FastAPI backend needs to *validate* a bearer token.

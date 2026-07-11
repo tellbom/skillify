@@ -16,6 +16,8 @@ dependencies = [
   "psycopg[binary]>=3.1",
   "pyjwt[crypto]>=2.8",
   "python-multipart>=0.0.9",
+  "dmpython==2.5.32",
+  "dmsqlalchemy==2.0.12",
 ]
 
 [project.scripts]
