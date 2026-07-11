@@ -60,6 +60,20 @@ class ForgejoClient:
             raise ForgejoError(f"{method} {url} failed: {exc}") from exc
         return resp
 
+    def current_username(self) -> str:
+        resp = self._request("GET", "/user")
+        if resp.status_code != 200:
+            raise ForgejoError(
+                f"failed to resolve Forgejo service-account username: HTTP {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        data = resp.json()
+        username = data.get("login") or data.get("username")
+        if not username:
+            raise ForgejoError("Forgejo /user response did not contain a username")
+        return str(username)
+
     def repo_exists(self, owner: str, repo: str) -> bool:
         resp = self._request("GET", f"/repos/{owner}/{repo}")
         if resp.status_code == 200:

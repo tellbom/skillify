@@ -36,6 +36,9 @@ class SkillifyConfig:
     # explicitly configured — no network call, no data collected, by default.
     web_base_url: str | None = None  # e.g. http://localhost:8089 (skillify-web, T3.1)
     reporting_enabled: bool = False
+    # C-3: Web uploads can mirror validated source into Forgejo Git before publishing.
+    # Disabled by default for local/fake-Forgejo use; the complete Compose stack enables it.
+    web_upload_git_enabled: bool = False
     # M-D (docs/review-m2-m6.md): caps on the browser upload endpoint to bound memory use —
     # a raw upload larger than max_upload_bytes is rejected before being read into memory;
     # max_extracted_bytes/max_extracted_files bound the zip's *decompressed* size/entry count
@@ -113,6 +116,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         keycloak_audience=data.get("keycloak_audience"),
         web_base_url=data.get("web_base_url"),
         reporting_enabled=bool(data.get("reporting_enabled", False)),
+        web_upload_git_enabled=bool(data.get("web_upload_git_enabled", False)),
         max_upload_bytes=int(data.get("max_upload_bytes") or 20 * 1024 * 1024),
         max_extracted_bytes=int(data.get("max_extracted_bytes") or 100 * 1024 * 1024),
         max_extracted_files=int(data.get("max_extracted_files") or 5000),
@@ -137,5 +141,9 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
     reporting_env = os.environ.get("SKILLIFY_REPORTING_ENABLED")
     if reporting_env is not None:
         cfg.reporting_enabled = reporting_env.strip().lower() in ("1", "true", "yes", "on")
+
+    web_git_env = os.environ.get("SKILLIFY_WEB_UPLOAD_GIT_ENABLED")
+    if web_git_env is not None:
+        cfg.web_upload_git_enabled = web_git_env.strip().lower() in ("1", "true", "yes", "on")
 
     return cfg

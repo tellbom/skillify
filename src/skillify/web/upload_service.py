@@ -13,6 +13,7 @@ from skillify.common.skill_dir import InvalidDeclaredName, rehome_to_declared_na
 from skillify.index.db import init_db, make_engine, session_scope
 from skillify.index.ownership import NamespaceOwnershipError, claim_or_verify_namespace
 from skillify.publish.publisher import PublishResult, publish_skill_dir
+from skillify.publish.git_source import push_skill_source
 from skillify.validator import ValidationIssue, validate_skill_dir
 from skillify.web.upload import safe_extract_zip
 from skillify.webhook.archive import resolve_archive_root
@@ -77,6 +78,16 @@ def handle_upload(zip_path: Path, cfg: SkillifyConfig, *, uploader: str, work_di
         with session_scope(engine) as session:
             claim_or_verify_namespace(
                 session, namespace=namespace, username=uploader, claimed_at=datetime.now(timezone.utc)
+            )
+
+        if cfg.web_upload_git_enabled:
+            push_skill_source(
+                publish_src_dir,
+                cfg,
+                org=cfg.forgejo_org or namespace,
+                repo=declared_name,
+                tag=f"v{manifest['version']}",
+                uploader=uploader,
             )
 
         return publish_skill_dir(

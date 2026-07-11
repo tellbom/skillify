@@ -43,6 +43,10 @@ Forgejo's PostgreSQL initialization does not create a `skillify_index` database.
      the exact path `skillctl publish` (T1.3) will drive via the Forgejo API.
    - Generate a personal access token (`Settings → Applications`) — this becomes
      `forgejo_token` in `~/.skillify/config.yaml` / `SKILLIFY_FORGEJO_TOKEN`.
+   - The complete Compose stack enables `SKILLIFY_WEB_UPLOAD_GIT_ENABLED`: validated Web
+     uploads create a normal source commit and version tag through Forgejo Git before the
+     Release is finalized. Git objects and metadata remain owned by Forgejo; DM8 stores none
+     of this source data.
 
 3. **devpi works as a pip index**:
    ```sh

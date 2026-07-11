@@ -89,6 +89,7 @@ services:
       SKILLIFY_INDEX_DB_URL: ${SKILLIFY_INDEX_DB_URL:?set the external DM8 SQLAlchemy URL}
       SKILLIFY_KEYCLOAK_REALM_URL: ${SKILLIFY_KEYCLOAK_REALM_URL:?set the Keycloak realm issuer URL}
       SKILLIFY_KEYCLOAK_AUDIENCE: ${SKILLIFY_KEYCLOAK_AUDIENCE:-skillify-web}
+      SKILLIFY_WEB_UPLOAD_GIT_ENABLED: "true"
     command: ["skillify-web"]
     healthcheck:
       test: ["CMD", "uv", "run", "python", "-c", "import requests; requests.get('http://127.0.0.1:8089/healthz', timeout=2).raise_for_status()"]
