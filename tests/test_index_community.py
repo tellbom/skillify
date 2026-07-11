@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import select
 
 from skillify.index.comments import (
     CommentNotFoundError,
@@ -15,6 +16,7 @@ from skillify.index.comments import (
     soft_delete_comment,
 )
 from skillify.index.db import init_db, make_engine, session_scope
+from skillify.index.models import SkillComment
 from skillify.index.star import add_star, has_starred, remove_star, star_counts
 from skillify.index.subscriptions import (
     add_subscription,
@@ -201,3 +203,15 @@ def test_list_comments_for_display_replaces_deleted_body_but_keeps_tree(engine) 
         assert by_id[reply.id].deleted is False
         assert by_id[reply.id].body == "agreed"
         assert by_id[reply.id].parent_id == top.id
+        top_id = top.id
+
+    # Regression test: list_comments_for_display must NOT mutate the tracked ORM instances'
+    # `body` in place. The block above ran inside a `session_scope`, which commits on normal
+    # exit — if the placeholder substitution had touched the session-tracked `SkillComment`
+    # objects (rather than returning detached `CommentForDisplay` values), that commit would
+    # have persisted "[已删除]" over the real comment text. Verify by re-querying the row from
+    # a fresh session: the stored body must still be the original text.
+    with session_scope(engine) as session:
+        stored = session.execute(select(SkillComment).where(SkillComment.id == top_id)).scalar_one()
+        assert stored.body == "great skill"
+        assert stored.deleted is True
