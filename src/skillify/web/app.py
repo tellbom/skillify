@@ -377,11 +377,12 @@ def delete_comment(
 @app.get("/api/leaderboard", response_model=list[LeaderboardEntry])
 def get_leaderboard(
     dimension: str = Query(default="installs", description="installs | rating | recent"),
+    window: str = Query(default="all", description="week | month | all"),
     _claims: dict = Depends(require_keycloak_user),
 ) -> list[LeaderboardEntry]:
     session = _session()
     try:
-        rows = leaderboard_query(session, dimension)
+        rows = leaderboard_query(session, dimension, window=window)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:

@@ -32,11 +32,18 @@ def record_event(
     return event
 
 
-def install_counts(session: Session) -> dict[tuple[str, str], int]:
-    """(namespace, name) -> total install event count, across all versions."""
+def install_counts(session: Session, *, since: datetime | None = None) -> dict[tuple[str, str], int]:
+    """(namespace, name) -> total install event count, across all versions.
+
+    `since`, if given, restricts to events with `occurred_at >= since` (C-6 leaderboard
+    time windows). This is a plain parameter comparison — the cutoff is computed in Python
+    by the caller and bound as an ordinary value, no DB-side date/time function involved, so
+    it's portable across SQLite/Postgres/DM8 without any dialect-specific date arithmetic."""
     stmt = (
         select(SkillEvent.namespace, SkillEvent.name, func.count(SkillEvent.id))
         .where(SkillEvent.event_type == "install")
-        .group_by(SkillEvent.namespace, SkillEvent.name)
     )
+    if since is not None:
+        stmt = stmt.where(SkillEvent.occurred_at >= since)
+    stmt = stmt.group_by(SkillEvent.namespace, SkillEvent.name)
     return {(ns, n): count for ns, n, count in session.execute(stmt)}

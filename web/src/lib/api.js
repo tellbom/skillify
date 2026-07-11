@@ -105,8 +105,8 @@ export function getMySubscriptions() {
   return request('/my/subscriptions', { auth: true })
 }
 
-export function getLeaderboard(dimension) {
-  return request('/leaderboard', { params: { dimension } })
+export function getLeaderboard(dimension, window) {
+  return request('/leaderboard', { params: { dimension, window } })
 }
 
 export function postRating(namespace, name, score) {

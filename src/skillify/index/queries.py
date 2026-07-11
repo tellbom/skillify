@@ -8,6 +8,7 @@ backend will build on.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 from skillify.index.events import install_counts
 from skillify.index.models import SkillIndexEntry
 from skillify.index.ratings import rating_stats
+
+_WINDOW_DAYS = {"week": 7, "month": 30}
 
 
 def get_versions(session: Session, namespace: str, name: str) -> list[SkillIndexEntry]:
@@ -65,15 +68,29 @@ class LeaderboardRow:
     rating_count: int
 
 
-def leaderboard(session: Session, dimension: str, *, include_yanked: bool = False) -> list[LeaderboardRow]:
+def leaderboard(
+    session: Session, dimension: str, *, window: str = "all", include_yanked: bool = False
+) -> list[LeaderboardRow]:
     """T5.2 — one row per skill (latest published version), ranked by `dimension`:
     "installs" (total install events desc), "rating" (average rating desc, unrated last),
-    or "recent" (published_at desc — same ordering `list_latest` already produces)."""
+    or "recent" (published_at desc — same ordering `list_latest` already produces).
+
+    C-6: `window` ("week" | "month" | "all") restricts the "installs" dimension's counts to
+    events in the last 7/30 days (or unrestricted for "all") — cutoff is computed here in
+    Python and passed to `install_counts` as a plain bound parameter, never a DB-side date
+    function, so the comparison stays portable across SQLite/Postgres/DM8. `rating`/`recent`
+    ignore `window`: an average rating or a publish date don't have a meaningful "this week's
+    value" distinct from their all-time value, so windowing them isn't attempted here."""
     if dimension not in ("installs", "rating", "recent"):
         raise ValueError(f"unknown leaderboard dimension {dimension!r}")
+    if window not in ("week", "month", "all"):
+        raise ValueError(f"unknown leaderboard window {window!r}")
 
     entries = list_latest(session, include_yanked=include_yanked)
-    counts = install_counts(session)
+    since = None
+    if dimension == "installs" and window in _WINDOW_DAYS:
+        since = datetime.now(timezone.utc) - timedelta(days=_WINDOW_DAYS[window])
+    counts = install_counts(session, since=since)
     stats = rating_stats(session)
 
     rows = [

@@ -6,6 +6,7 @@ import { formatDate } from '../lib/datetime.js'
 
 const { t } = useI18n()
 const dimension = ref('installs')
+const window_ = ref('all')
 const rows = ref([])
 const loading = ref(true)
 const error = ref(null)
@@ -16,11 +17,20 @@ const DIMENSIONS = [
   { key: 'recent', labelKey: 'leaderboard.dimensions.recent' },
 ]
 
+// C-6: time window only affects the "installs" dimension server-side (rating/recent ignore
+// it) — the tab is still shown for all dimensions so switching dimensions doesn't reset the
+// user's choice, but it only has a visible effect while on "installs".
+const WINDOWS = [
+  { key: 'week', labelKey: 'leaderboard.windows.week' },
+  { key: 'month', labelKey: 'leaderboard.windows.month' },
+  { key: 'all', labelKey: 'leaderboard.windows.all' },
+]
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    rows.value = await getLeaderboard(dimension.value)
+    rows.value = await getLeaderboard(dimension.value, window_.value)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -28,7 +38,7 @@ async function load() {
   }
 }
 
-watch(dimension, load)
+watch([dimension, window_], load)
 onMounted(load)
 </script>
 
@@ -40,6 +50,12 @@ onMounted(load)
     <nav class="tabs">
       <button v-for="d in DIMENSIONS" :key="d.key" :class="{ active: dimension === d.key }" @click="dimension = d.key">
         {{ t(d.labelKey) }}
+      </button>
+    </nav>
+
+    <nav class="tabs">
+      <button v-for="w in WINDOWS" :key="w.key" :class="{ active: window_ === w.key }" @click="window_ = w.key">
+        {{ t(w.labelKey) }}
       </button>
     </nav>
 

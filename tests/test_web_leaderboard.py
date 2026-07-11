@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from skillify.index.db import init_db, make_engine, session_scope
+from skillify.index.events import record_event
 from skillify.index.ingest import ReleaseEvent, upsert_release
 from skillify.web.app import app
 from tests.fake_keycloak import fake_keycloak  # noqa: F401
@@ -99,6 +100,45 @@ def test_leaderboard_installs_dimension_reflects_events(tmp_path: Path, monkeypa
     assert rows[0]["name"] == "pivot-analysis"
     assert rows[0]["installCount"] == 3
     assert rows[1]["installCount"] == 1
+
+
+def test_leaderboard_window_filters_installs(tmp_path: Path, monkeypatch, index_db_url, fake_keycloak) -> None:
+    """C-6: `window` query param reaches `leaderboard(..., window=...)` and restricts the
+    "installs" dimension's counts — old events (well outside a 7-day window) don't count
+    toward the "week" total."""
+    _configure(monkeypatch, tmp_path, index_db_url, fake_keycloak)
+
+    with session_scope(make_engine(index_db_url)) as session:
+        record_event(
+            session, namespace="excel", name="pivot-analysis", version="0.1.0",
+            event_type="install", occurred_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        )
+
+    resp_all = client.get(
+        "/api/leaderboard",
+        params={"dimension": "installs", "window": "all"},
+        headers={"Authorization": f"Bearer {fake_keycloak.mint_token(audience='skillify-web')}"},
+    )
+    rows_all = {r["name"]: r["installCount"] for r in resp_all.json()}
+    assert rows_all["pivot-analysis"] == 1
+
+    resp_week = client.get(
+        "/api/leaderboard",
+        params={"dimension": "installs", "window": "week"},
+        headers={"Authorization": f"Bearer {fake_keycloak.mint_token(audience='skillify-web')}"},
+    )
+    rows_week = {r["name"]: r["installCount"] for r in resp_week.json()}
+    assert rows_week["pivot-analysis"] == 0  # 2020 event is far outside any 7-day window
+
+
+def test_leaderboard_rejects_bad_window(tmp_path: Path, monkeypatch, index_db_url, fake_keycloak) -> None:
+    _configure(monkeypatch, tmp_path, index_db_url, fake_keycloak)
+    resp = client.get(
+        "/api/leaderboard",
+        params={"dimension": "installs", "window": "bogus"},
+        headers={"Authorization": f"Bearer {fake_keycloak.mint_token(audience='skillify-web')}"},
+    )
+    assert resp.status_code == 400
 
 
 def test_rating_requires_auth(tmp_path: Path, monkeypatch, index_db_url, fake_keycloak) -> None:
