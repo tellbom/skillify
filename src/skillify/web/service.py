@@ -10,7 +10,7 @@ from skillify.index.models import SkillIndexEntry
 from skillify.index.queries import get_versions, list_latest, search
 from skillify.index.ratings import rating_stats
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
-from skillify.web.schemas import SkillDetail, SkillSummary
+from skillify.web.schemas import SkillDetail, SkillSummary, VersionDiff, VersionInfo
 
 
 def install_command(namespace: str, name: str) -> str:
@@ -55,12 +55,22 @@ def list_skills(session: Session, query: str | None = None) -> list[SkillSummary
 
 
 def get_skill_detail(
-    session: Session, cfg: SkillifyConfig, namespace: str, name: str
+    session: Session, cfg: SkillifyConfig, namespace: str, name: str, version: str | None = None
 ) -> SkillDetail | None:
     versions = get_versions(session, namespace, name)  # newest first
     if not versions:
         return None
-    latest = versions[0]
+    if version is None:
+        # C-1: default ("no version pinned") means "latest non-yanked" — a yanked newest
+        # version should not be what a plain GET .../{namespace}/{name} silently serves.
+        # Explicitly requesting a version (below) bypasses this and can return a yanked one.
+        latest = next((v for v in versions if not v.yanked), None)
+        if latest is None:
+            return None
+    else:
+        latest = next((v for v in versions if v.version == version), None)
+        if latest is None:
+            return None
 
     readme: str | None = None
     skill_md: str | None = None
@@ -105,3 +115,53 @@ def get_skill_detail(
         ratingAverage=rating_avg,
         ratingCount=rating_count,
     )
+
+
+def list_versions(
+    session: Session, cfg: SkillifyConfig, namespace: str, name: str
+) -> list[VersionInfo]:
+    """C-1 version timeline — every published version (yanked or not), with `releaseNotes`
+    fetched best-effort from the matching Forgejo release body. Forgejo being unconfigured
+    or a tag lookup failing just leaves `releaseNotes` as `None`; it never fails the whole
+    endpoint (same best-effort spirit as `get_skill_detail`'s README/tarball enrichment)."""
+    versions = get_versions(session, namespace, name)  # newest first
+
+    client: ForgejoClient | None = None
+    org = cfg.forgejo_org or namespace
+    if cfg.forgejo_url and cfg.forgejo_token:
+        client = ForgejoClient(cfg.forgejo_url, cfg.forgejo_token)
+
+    infos = []
+    for v in versions:
+        release_notes: str | None = None
+        if client is not None:
+            try:
+                release = client.get_release_by_tag(org, name, f"v{v.version}")
+                if release is not None:
+                    release_notes = release.body
+            except ForgejoError:
+                pass
+        infos.append(
+            VersionInfo(version=v.version, publishedAt=v.published_at, yanked=v.yanked, releaseNotes=release_notes)
+        )
+    return infos
+
+
+def diff_versions(
+    cfg: SkillifyConfig, namespace: str, name: str, from_version: str, to_version: str
+) -> VersionDiff:
+    """C-1 — pure computation, nothing persisted: diffs the file trees of two tags via
+    Forgejo's recursive git tree API. A path present in only one tree is added/removed; a
+    path present in both with a different `sha` is modified."""
+    if not cfg.forgejo_url or not cfg.forgejo_token:
+        raise ForgejoError("forgejo_url/forgejo_token not configured")
+
+    org = cfg.forgejo_org or namespace
+    client = ForgejoClient(cfg.forgejo_url, cfg.forgejo_token)
+    from_tree = {e["path"]: e.get("sha") for e in client.list_tree(org, name, f"v{from_version}") if e.get("type") == "blob"}
+    to_tree = {e["path"]: e.get("sha") for e in client.list_tree(org, name, f"v{to_version}") if e.get("type") == "blob"}
+
+    added = sorted(p for p in to_tree if p not in from_tree)
+    removed = sorted(p for p in from_tree if p not in to_tree)
+    modified = sorted(p for p in from_tree if p in to_tree and from_tree[p] != to_tree[p])
+    return VersionDiff(added=added, removed=removed, modified=modified)

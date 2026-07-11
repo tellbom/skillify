@@ -22,6 +22,7 @@ from skillify.index.events import record_event
 from skillify.index.ownership import NamespaceOwnershipError
 from skillify.index.queries import get_versions, leaderboard as leaderboard_query
 from skillify.index.ratings import rating_stats, upsert_rating
+from skillify.index.yank import VersionNotFoundError, can_manage_version, set_yanked
 from skillify.packaging.pack import PackagingError
 from skillify.publish.forgejo_client import ForgejoError
 from skillify.publish.publisher import AlreadyPublishedError, PublishNotConfiguredError
@@ -38,6 +39,9 @@ from skillify.web.schemas import (
     SkillDetail,
     SkillSummary,
     UploadResponse,
+    VersionDiff,
+    VersionInfo,
+    YankOut,
 )
 from skillify.web.upload import UnsafeUpload
 from skillify.web.upload_service import NamespaceOwnershipNotConfiguredError, UploadRejected, handle_upload
@@ -90,16 +94,111 @@ def search_skills(
 
 
 @app.get("/api/skills/{namespace}/{name}", response_model=SkillDetail)
-def skill_detail(namespace: str, name: str, _claims: dict = Depends(require_keycloak_user)) -> SkillDetail:
+def skill_detail(
+    namespace: str,
+    name: str,
+    version: str | None = Query(default=None, description="Explicit version (bypasses yanked exclusion)"),
+    _claims: dict = Depends(require_keycloak_user),
+) -> SkillDetail:
     cfg = load_config()
     session = _session()
     try:
-        detail = service.get_skill_detail(session, cfg, namespace, name)
+        detail = service.get_skill_detail(session, cfg, namespace, name, version=version)
     finally:
         session.close()
     if detail is None:
         raise HTTPException(status_code=404, detail=f"{namespace}/{name} not found in index")
     return detail
+
+
+@app.get("/api/skills/{namespace}/{name}/versions", response_model=list[VersionInfo])
+def skill_versions(namespace: str, name: str, _claims: dict = Depends(require_keycloak_user)) -> list[VersionInfo]:
+    """C-1 — the full version timeline (yanked and not), release notes best-effort from
+    Forgejo. Unlike `skill_detail`, this deliberately does not filter yanked versions out —
+    the whole point is to show yank status per version."""
+    cfg = load_config()
+    session = _session()
+    try:
+        versions = service.list_versions(session, cfg, namespace, name)
+    finally:
+        session.close()
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"{namespace}/{name} not found in index")
+    return versions
+
+
+@app.get("/api/skills/{namespace}/{name}/diff", response_model=VersionDiff)
+def skill_diff(
+    namespace: str,
+    name: str,
+    from_: str = Query(..., alias="from"),
+    to: str = Query(...),
+    _claims: dict = Depends(require_keycloak_user),
+) -> VersionDiff:
+    """C-1 — pure computation (nothing persisted): file-tree diff between two versions via
+    Forgejo's recursive git tree API. 404 if either version isn't in the index; 400 if
+    Forgejo isn't configured (can't compute a tree diff without it)."""
+    cfg = load_config()
+    if not cfg.forgejo_url or not cfg.forgejo_token:
+        raise HTTPException(status_code=400, detail="forgejo_url/forgejo_token not configured")
+    session = _session()
+    try:
+        versions = {v.version for v in get_versions(session, namespace, name)}
+    finally:
+        session.close()
+    if from_ not in versions:
+        raise HTTPException(status_code=404, detail=f"{namespace}/{name}@{from_} not found in index")
+    if to not in versions:
+        raise HTTPException(status_code=404, detail=f"{namespace}/{name}@{to} not found in index")
+    try:
+        return service.diff_versions(cfg, namespace, name, from_, to)
+    except ForgejoError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _authorize_version_management(session: Session, *, namespace: str, name: str, version: str, username: str) -> None:
+    """Author or namespace owner may yank/unyank — shared by both endpoints below."""
+    entries = get_versions(session, namespace, name)
+    entry = next((e for e in entries if e.version == version), None)
+    if entry is None:
+        raise VersionNotFoundError(namespace, name, version)
+    if entry.author == username:
+        return
+    if can_manage_version(session, namespace=namespace, username=username):
+        return
+    raise HTTPException(status_code=403, detail="only the author or namespace owner may yank/unyank this version")
+
+
+@app.post("/api/skills/{namespace}/{name}/versions/{version}/yank", response_model=YankOut)
+def yank_version(
+    namespace: str, name: str, version: str, claims: dict = Depends(require_keycloak_user)
+) -> YankOut:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        _authorize_version_management(session, namespace=namespace, name=name, version=version, username=username)
+        entry = set_yanked(session, namespace=namespace, name=name, version=version, yanked=True)
+        return YankOut(version=entry.version, yanked=entry.yanked)
+    except VersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/skills/{namespace}/{name}/versions/{version}/unyank", response_model=YankOut)
+def unyank_version(
+    namespace: str, name: str, version: str, claims: dict = Depends(require_keycloak_user)
+) -> YankOut:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        _authorize_version_management(session, namespace=namespace, name=name, version=version, username=username)
+        entry = set_yanked(session, namespace=namespace, name=name, version=version, yanked=False)
+        return YankOut(version=entry.version, yanked=entry.yanked)
+    except VersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        session.close()
 
 
 @app.get("/api/skills/{namespace}/{name}/install", response_model=InstallInfo)

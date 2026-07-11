@@ -80,3 +80,35 @@ def test_get_raw_file_present_and_missing(fake_forgejo) -> None:
 
     missing = client.get_raw_file("excel", "pivot-analysis", "MISSING.md", "v0.1.0")
     assert missing is None
+
+
+def test_release_body_round_trips(fake_forgejo) -> None:
+    """C-1: Release.body is used for version-timeline release notes."""
+    client = ForgejoClient(f"http://127.0.0.1:{fake_forgejo.server_port}", "tok")
+    client.ensure_org_repo("excel", "pivot-analysis")
+
+    release = client.create_release(
+        "excel", "pivot-analysis", tag_name="v0.1.0", name="v0.1.0", body="fixed a bug"
+    )
+    assert release.body == "fixed a bug"
+
+    fetched = client.get_release_by_tag("excel", "pivot-analysis", "v0.1.0")
+    assert fetched.body == "fixed a bug"
+
+    default_body = client.create_release("excel", "pivot-analysis", tag_name="v0.2.0", name="v0.2.0")
+    assert default_body.body == ""
+
+
+def test_list_tree_returns_entries_and_empty_on_missing_ref(fake_forgejo) -> None:
+    """C-1: list_tree backs the version diff endpoint — 404 (unknown ref) is not an error,
+    it's just an empty tree, since the caller decides what a missing version means."""
+    client = ForgejoClient(f"http://127.0.0.1:{fake_forgejo.server_port}", "tok")
+
+    assert client.list_tree("excel", "pivot-analysis", "v0.1.0") == []
+
+    fake_forgejo.state.trees["excel/pivot-analysis/v0.1.0"] = [
+        {"path": "SKILL.md", "sha": "abc123", "type": "blob"},
+        {"path": "skill.yaml", "sha": "def456", "type": "blob"},
+    ]
+    tree = client.list_tree("excel", "pivot-analysis", "v0.1.0")
+    assert {e["path"] for e in tree} == {"SKILL.md", "skill.yaml"}

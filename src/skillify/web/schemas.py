@@ -83,3 +83,21 @@ class EventIn(BaseModel):
     version: str
     success: bool | None = None
     machineId: str | None = None
+
+
+class VersionInfo(BaseModel):
+    version: str
+    publishedAt: datetime
+    yanked: bool
+    releaseNotes: str | None = None
+
+
+class YankOut(BaseModel):
+    version: str
+    yanked: bool
+
+
+class VersionDiff(BaseModel):
+    added: list[str]
+    removed: list[str]
+    modified: list[str]

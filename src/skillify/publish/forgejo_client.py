@@ -297,6 +297,24 @@ class ForgejoClient:
             id=data["id"], name=data["name"], browser_download_url=data["browser_download_url"]
         )
 
+    def list_tree(self, owner: str, repo: str, ref: str) -> list[dict]:
+        """List the full recursive file tree at `ref` (branch/tag/sha) — C-1: used to diff
+        two versions' file lists. `GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=true`
+        (Gitea/Forgejo tree API). Returns `[]` if `ref` doesn't exist (a nonexistent version
+        isn't an error here — the caller decides what that means)."""
+        resp = self._request(
+            "GET", f"/repos/{owner}/{repo}/git/trees/{ref}", params={"recursive": "true"}
+        )
+        if resp.status_code == 404:
+            return []
+        if resp.status_code != 200:
+            raise ForgejoError(
+                f"failed to list tree {owner}/{repo}@{ref}: HTTP {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json().get("tree", [])
+
     @staticmethod
     def _release_from_json(data: dict[str, Any]) -> Release:
         assets = [

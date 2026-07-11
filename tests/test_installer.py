@@ -109,6 +109,46 @@ def test_install_via_forgejo(tmp_path: Path, fake_forgejo, monkeypatch) -> None:
     assert (cfg.skills_dir / "excel" / "pivot-analysis" / "SKILL.md").is_file()
 
 
+def test_install_with_explicit_version_is_unaffected_by_index_yanked_status(
+    tmp_path: Path, fake_forgejo, monkeypatch
+) -> None:
+    """C-1 sanity check for `skillctl install ns/name@version`: the CLI install path resolves
+    directly against Forgejo releases (`resolve_release_artifact` -> `get_release_by_tag`),
+    never consulting the DM8/SQLite index at all — so a version's `yanked` flag there (which
+    only affects `list_latest`/`search`/`leaderboard`) cannot influence which artifact gets
+    installed here. No `SKILLIFY_INDEX_DB_URL` is configured for this test at all, which is
+    itself part of the proof: if install_skill needed the index, this would fail outright."""
+    from skillify.cli.publish_cmd import run_publish
+
+    class _Console:
+        def print(self, *a, **k):
+            pass
+
+    monkeypatch.setenv("SKILLIFY_HOME", str(tmp_path / "publish-home"))
+    monkeypatch.setenv("SKILLIFY_FORGEJO_URL", f"http://127.0.0.1:{fake_forgejo.server_port}")
+    monkeypatch.setenv("SKILLIFY_FORGEJO_TOKEN", "tok")
+    monkeypatch.delenv("SKILLIFY_INDEX_DB_URL", raising=False)
+
+    skill_dir = _make_skill(tmp_path)
+    run_publish(skill_dir=skill_dir, dry_run=False, console=_Console(), err_console=_Console())
+
+    manifest_path = skill_dir / "skill.yaml"
+    manifest_path.write_text(manifest_path.read_text(encoding="utf-8").replace("0.1.0", "0.2.0"), encoding="utf-8")
+    run_publish(skill_dir=skill_dir, dry_run=False, console=_Console(), err_console=_Console())
+
+    cfg = SkillifyConfig(
+        forgejo_url=f"http://127.0.0.1:{fake_forgejo.server_port}",
+        forgejo_token="tok",
+        home=tmp_path / "install-home",
+    )
+    # Explicit older version pins to that exact release even though a newer one exists.
+    lock = install_skill("excel/pivot-analysis@0.1.0", cfg=cfg)
+    assert lock.version == "0.1.0"
+
+    lock2 = install_skill("excel/pivot-analysis@0.2.0", cfg=cfg)
+    assert lock2.version == "0.2.0"
+
+
 def test_reinstall_overwrites_cleanly(tmp_path: Path, static_file_server) -> None:
     server, static_dir = static_file_server
     skill_dir = _make_skill(tmp_path)

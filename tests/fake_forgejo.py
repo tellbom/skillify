@@ -20,6 +20,7 @@ class FakeForgejoState:
         self.asset_bytes: dict[int, bytes] = {}  # asset id -> raw uploaded bytes
         self.archives: dict[str, bytes] = {}  # f"{owner}/{repo}/{ref}" -> raw tar.gz bytes
         self.raw_files: dict[str, str] = {}  # f"{owner}/{repo}/{ref}/{path}" -> file text
+        self.trees: dict[str, list[dict]] = {}  # f"{owner}/{repo}/{ref}" -> tree entries (path/sha/type)
         self._next_release_id = 1
         self._next_asset_id = 1
         self.required_token: str | None = None
@@ -163,6 +164,14 @@ class FakeForgejoHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
 
+        # GET /api/v1/repos/{owner}/{repo}/git/trees/{ref}?recursive=true
+        if parts[:3] == ["api", "v1", "repos"] and len(parts) == 8 and parts[5:7] == ["git", "trees"]:
+            owner, repo, ref = parts[3], parts[4], parts[7]
+            key = f"{owner}/{repo}/{ref}"
+            if key not in state.trees:
+                return self._json(404, {"message": f"no tree for {owner}/{repo}@{ref}"})
+            return self._json(200, {"sha": ref, "tree": state.trees[key], "truncated": False})
+
         self._json(404, {"message": f"unhandled GET {self.path}"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -195,6 +204,7 @@ class FakeForgejoHandler(BaseHTTPRequestHandler):
                 "draft": bool(data.get("draft", False)),
                 "html_url": f"http://fake-forgejo/{owner}/{repo}/releases/tag/{tag}",
                 "assets": [],
+                "body": data.get("body", ""),
             }
             state.releases[f"{owner}/{repo}/{tag}"] = release
             state.latest_tag[f"{owner}/{repo}"] = tag

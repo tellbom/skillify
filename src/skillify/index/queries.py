@@ -26,11 +26,19 @@ def get_versions(session: Session, namespace: str, name: str) -> list[SkillIndex
     return list(session.execute(stmt).scalars())
 
 
-def list_latest(session: Session) -> list[SkillIndexEntry]:
-    """One row per (namespace, name) — the most recently published version of each."""
-    latest_ids = select(func.max(SkillIndexEntry.id)).group_by(
-        SkillIndexEntry.namespace, SkillIndexEntry.name
-    )
+def list_latest(session: Session, *, include_yanked: bool = False) -> list[SkillIndexEntry]:
+    """One row per (namespace, name) — the most recently published version of each.
+
+    C-1: by default excludes yanked rows *before* picking "most recent per skill" — if a
+    skill's newest version is yanked, its "latest" falls back to the newest non-yanked
+    version; if every version is yanked, the skill drops out of the list entirely
+    (crates.io-style). `include_yanked=True` restores the old unfiltered behavior, for
+    internal/admin use."""
+    base = select(SkillIndexEntry)
+    if not include_yanked:
+        base = base.where(SkillIndexEntry.yanked.is_(False))
+    filtered = base.subquery()
+    latest_ids = select(func.max(filtered.c.id)).group_by(filtered.c.namespace, filtered.c.name)
     stmt = (
         select(SkillIndexEntry)
         .where(SkillIndexEntry.id.in_(latest_ids))
@@ -39,12 +47,12 @@ def list_latest(session: Session) -> list[SkillIndexEntry]:
     return list(session.execute(stmt).scalars())
 
 
-def search(session: Session, query: str) -> list[SkillIndexEntry]:
+def search(session: Session, query: str, *, include_yanked: bool = False) -> list[SkillIndexEntry]:
     """Substring match over name/description (case-insensitive), latest version per skill."""
     needle = query.lower()
     return [
         entry
-        for entry in list_latest(session)
+        for entry in list_latest(session, include_yanked=include_yanked)
         if needle in entry.name.lower() or needle in entry.description.lower()
     ]
 
@@ -57,14 +65,14 @@ class LeaderboardRow:
     rating_count: int
 
 
-def leaderboard(session: Session, dimension: str) -> list[LeaderboardRow]:
+def leaderboard(session: Session, dimension: str, *, include_yanked: bool = False) -> list[LeaderboardRow]:
     """T5.2 — one row per skill (latest published version), ranked by `dimension`:
     "installs" (total install events desc), "rating" (average rating desc, unrated last),
     or "recent" (published_at desc — same ordering `list_latest` already produces)."""
     if dimension not in ("installs", "rating", "recent"):
         raise ValueError(f"unknown leaderboard dimension {dimension!r}")
 
-    entries = list_latest(session)
+    entries = list_latest(session, include_yanked=include_yanked)
     counts = install_counts(session)
     stats = rating_stats(session)
 

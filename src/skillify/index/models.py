@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -35,6 +35,11 @@ class SkillIndexEntry(Base):
     # interpreted/validated beyond "must be a JSON object" (already enforced at manifest
     # validation time, T0.2) — no orchestration engine is implemented here.
     orchestration: Mapped[dict] = mapped_column(JSON, default=dict)
+    # C-1 (version center): a yanked version stays installable if explicitly requested
+    # (by tag/version) but drops out of "latest" resolution (list_latest/search/leaderboard)
+    # — crates.io-style semantics. Unlike SkillEvent.success this is NOT nullable/tri-state:
+    # every row has a concrete yanked/not-yanked status from the moment it's inserted.
+    yanked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<SkillIndexEntry {self.namespace}/{self.name}@{self.version}>"
