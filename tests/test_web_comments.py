@@ -253,4 +253,3 @@ def test_delete_unknown_comment_is_404(tmp_path: Path, monkeypatch, fake_keycloa
         "/api/skills/excel/pivot-analysis/comments/999", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 404
-

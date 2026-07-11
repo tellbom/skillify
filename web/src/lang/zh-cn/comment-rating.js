@@ -20,4 +20,3 @@ export default {
   deleteConfirm: '确定要删除这条评论吗？',
   deletedPlaceholder: '[已删除]',
 }
-
