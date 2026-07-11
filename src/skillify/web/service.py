@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from skillify.common.config import SkillifyConfig
 from skillify.index.events import install_counts
 from skillify.index.models import SkillIndexEntry
-from skillify.index.queries import get_versions, list_latest, search
+from skillify.index.queries import get_versions, search
 from skillify.index.ratings import rating_stats
 from skillify.index.star import has_starred, star_counts
 from skillify.index.subscriptions import is_subscribed
@@ -51,9 +51,26 @@ def _summary_from_entry(entry: SkillIndexEntry) -> SkillSummary:
     )
 
 
-def list_skills(session: Session, query: str | None = None) -> list[SkillSummary]:
-    entries = search(session, query) if query else list_latest(session)
-    return [_summary_from_entry(e) for e in entries]
+def list_skills(
+    session: Session,
+    query: str | None = None,
+    *,
+    namespace: str | None = None,
+    author: str | None = None,
+    tags: list[str] | None = None,
+    sort: str = "updated",
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[SkillSummary], int]:
+    """C-4: thin passthrough to `queries.search` — always goes through `search` now (not just
+    when `query` is set) so namespace/author/tags/sort/pagination apply uniformly whether or
+    not there's a text query. `list_latest` alone no longer has a caller here; it stays in
+    `queries.py` for `leaderboard`/`my_skills`/`subscriptions`, which want the unfiltered
+    "every skill's latest version" shape rather than a paginated search result."""
+    entries, total = search(
+        session, query, namespace=namespace, author=author, tags=tags, sort=sort, page=page, page_size=page_size
+    )
+    return [_summary_from_entry(e) for e in entries], total
 
 
 def get_skill_detail(

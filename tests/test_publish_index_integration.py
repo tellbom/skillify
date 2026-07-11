@@ -69,5 +69,6 @@ def test_publish_via_webhook_makes_skill_searchable_in_index(tmp_path: Path, mon
         assert entry.checksum
         assert entry.release_url
 
-        results = search(session, "pivot")
+        results, total = search(session, "pivot")
         assert [e.name for e in results] == ["pivot-analysis"]
+        assert total == 1

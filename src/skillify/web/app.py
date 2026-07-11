@@ -50,6 +50,7 @@ from skillify.web.schemas import (
     PublishJobOut,
     RatingIn,
     RatingOut,
+    SearchResult,
     SkillDetail,
     SkillSummary,
     StarOut,
@@ -85,28 +86,62 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/skills", response_model=list[SkillSummary])
+def _split_tags(tags: str | None) -> list[str] | None:
+    """C-4: `tags` arrives as a comma-separated query string (matches how `namespace`/
+    `author` etc. are passed as single query params) — split + drop empties, or `None` if
+    the param wasn't given at all (distinct from "given but empty")."""
+    if tags is None:
+        return None
+    parsed = [t.strip() for t in tags.split(",") if t.strip()]
+    return parsed or None
+
+
+@app.get("/api/skills", response_model=SearchResult)
 def list_skills(
     q: str | None = Query(default=None, description="Search query (name/description)"),
+    namespace: str | None = Query(default=None),
+    author: str | None = Query(default=None),
+    tags: str | None = Query(default=None, description="Comma-separated tag list (AND match)"),
+    sort: str = Query(default="updated", description="installs | rating | updated"),
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
     _claims: dict = Depends(require_keycloak_user),
-) -> list[SkillSummary]:
+) -> SearchResult:
     session = _session()
     try:
-        return service.list_skills(session, q)
+        items, total = service.list_skills(
+            session, q, namespace=namespace, author=author, tags=_split_tags(tags),
+            sort=sort, page=page, page_size=pageSize,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+    return SearchResult(items=items, total=total, page=page, pageSize=pageSize)
 
 
-@app.get("/api/search", response_model=list[SkillSummary])
+@app.get("/api/search", response_model=SearchResult)
 def search_skills(
     q: str = Query(..., description="Search query (name/description)"),
+    namespace: str | None = Query(default=None),
+    author: str | None = Query(default=None),
+    tags: str | None = Query(default=None, description="Comma-separated tag list (AND match)"),
+    sort: str = Query(default="updated", description="installs | rating | updated"),
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
     _claims: dict = Depends(require_keycloak_user),
-) -> list[SkillSummary]:
+) -> SearchResult:
     session = _session()
     try:
-        return service.list_skills(session, q)
+        items, total = service.list_skills(
+            session, q, namespace=namespace, author=author, tags=_split_tags(tags),
+            sort=sort, page=page, page_size=pageSize,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+    return SearchResult(items=items, total=total, page=page, pageSize=pageSize)
 
 
 @app.get("/api/skills/{namespace}/{name}", response_model=SkillDetail)

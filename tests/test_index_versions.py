@@ -63,7 +63,9 @@ def test_yank_excludes_from_list_latest_search_leaderboard_but_not_get_versions(
         assert latest[0].version == "0.1.0"
 
         # search/leaderboard propagate the same default exclusion.
-        assert {e.version for e in search(session, "pivot")} == {"0.1.0"}
+        results, total = search(session, "pivot")
+        assert {e.version for e in results} == {"0.1.0"}
+        assert total == 1
         rows = leaderboard(session, "recent")
         assert [r.entry.version for r in rows] == ["0.1.0"]
 
@@ -81,7 +83,9 @@ def test_yank_only_version_removes_skill_from_list_latest(engine) -> None:
 
     with session_scope(engine) as session:
         assert list_latest(session) == []
-        assert search(session, "pivot") == []
+        results, total = search(session, "pivot")
+        assert results == []
+        assert total == 0
         assert leaderboard(session, "recent") == []
         # get_versions still shows it, yanked.
         versions = get_versions(session, "excel", "pivot-analysis")

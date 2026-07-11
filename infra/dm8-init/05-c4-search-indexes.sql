@@ -1,0 +1,34 @@
+-- =============================================================================
+-- Skillify 业务库 · DM8（达梦）增量脚本 05 · C-4 搜索下沉 SQL（仅索引，无表结构变更）
+-- -----------------------------------------------------------------------------
+-- 对应改动：src/skillify/index/queries.py::search 新增 `author` 等值过滤（namespace/
+-- name 已在 01-skillify-schema.sql 建过索引，此处只补 author 这一新增过滤列）。
+-- 前置：已执行 01-skillify-schema.sql（skill_index 表已存在）。
+--
+-- 【为什么只加这一个索引】
+--   - `namespace`/`name` 过滤复用的是 01 里已建的 ix_skill_index_namespace /
+--     ix_skill_index_name，本文件不重复建。
+--   - `sort="installs"/"rating"` 走的是 skill_events / skill_ratings 上的聚合子查询
+--     （outerjoin），这两张表的 namespace/name 索引同样已在 01 建好（
+--     ix_skill_events_namespace/name、ix_skill_ratings_namespace/name），足够支撑
+--     GROUP BY (namespace, name) 的聚合，不需要新索引。
+--   - `sort="updated"` 直接按 skill_index.published_at 排序，内网数据量下全表排序
+--     可接受，暂不加索引（如后续数据量增长需要，可在此文件追加）。
+--   - `query`（name/description 的大小写不敏感 LIKE）：LIKE '%...%' 这种两端通配的
+--     模式天然无法有效利用 B-tree 索引做前缀扫描，加索引对这条路径没有实际收益，
+--     所以不为 description 建索引。
+--   - `tags` 过滤在应用层完成（不下推 SQL，见 queries.py::search 文档字符串），
+--     不涉及索引。
+--
+-- 【本文件加什么】skill_index.author：新增的等值过滤列，之前没有索引，内网数据量虽小
+-- 但加一个单列索引成本很低，顺手补上，避免全表扫描。
+-- =============================================================================
+
+CREATE INDEX ix_skill_index_author ON skill_index (author);
+
+-- 【验证清单】导入后执行以确认索引就绪：
+--   SELECT COUNT(*) FROM skill_index WHERE author = 'demo-user';  -- 应为 0，且不报错
+--   （执行计划核对，可选）
+--   EXPLAIN SELECT * FROM skill_index WHERE author = 'demo-user';  -- 应显示走
+--     ix_skill_index_author 而非全表扫描
+-- =============================================================================

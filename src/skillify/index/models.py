@@ -25,7 +25,11 @@ class SkillIndexEntry(Base):
     name: Mapped[str] = mapped_column(String(64), index=True)
     version: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(String(500), default="")
-    author: Mapped[str] = mapped_column(String(255), default="")
+    # C-4: indexed because `queries.py::search`'s `author` filter is now a SQL-level
+    # `.where(SkillIndexEntry.author == author)` equality match (see infra/dm8-init/
+    # 05-c4-search-indexes.sql for the DM8-side equivalent, since DM8 doesn't pick up
+    # SQLAlchemy's `Base.metadata.create_all` the way SQLite/Postgres do in this project).
+    author: Mapped[str] = mapped_column(String(255), default="", index=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     checksum: Mapped[str] = mapped_column(String(64))
     release_url: Mapped[str] = mapped_column(String(1024), default="")

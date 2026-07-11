@@ -33,6 +33,16 @@ class SkillDetail(SkillSummary):
     subscribed: bool
 
 
+class SearchResult(BaseModel):
+    """C-4: pagination wrapper for `GET /api/skills` / `GET /api/search` — `total` is the
+    full matching count (not just `len(items)`), so the frontend can compute page count."""
+
+    items: list[SkillSummary]
+    total: int
+    page: int
+    pageSize: int
+
+
 class InstallInfo(BaseModel):
     installCommand: str
     agentPrompt: str

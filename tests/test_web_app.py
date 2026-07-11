@@ -92,8 +92,13 @@ def test_list_skills(monkeypatch, tmp_path: Path, index_db_url: str, fake_keyclo
 
     resp = client.get("/api/skills", headers=_auth_headers(fake_keycloak))
     assert resp.status_code == 200
-    names = {s["name"] for s in resp.json()}
+    body = resp.json()
+    # C-4: /api/skills now returns a SearchResult pagination wrapper, not a bare list.
+    names = {s["name"] for s in body["items"]}
     assert names == {"pivot-analysis", "word-frequency"}
+    assert body["total"] == 2
+    assert body["page"] == 1
+    assert body["pageSize"] == 20
 
 
 def test_search_skills(monkeypatch, tmp_path: Path, index_db_url: str, fake_keycloak) -> None:
@@ -103,8 +108,10 @@ def test_search_skills(monkeypatch, tmp_path: Path, index_db_url: str, fake_keyc
 
     resp = client.get("/api/search", params={"q": "pivot"}, headers=_auth_headers(fake_keycloak))
     assert resp.status_code == 200
-    names = {s["name"] for s in resp.json()}
+    body = resp.json()
+    names = {s["name"] for s in body["items"]}
     assert names == {"pivot-analysis"}
+    assert body["total"] == 1
 
 
 def test_skill_detail_not_found(monkeypatch, tmp_path: Path, index_db_url: str, fake_keycloak) -> None:
