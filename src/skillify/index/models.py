@@ -1,6 +1,7 @@
-"""SQLAlchemy models for the Skillify Postgres index DB (T2.2 skill_index, T5.1 comments,
-T5.2 events/ratings). One database, several tables — see infra/postgres-init/ for the
-Postgres database this all lives in (separate from Forgejo's own DB, same instance).
+"""SQLAlchemy models for the five Skillify DM8 business tables.
+
+The schema is initialized by ``infra/dm8-init/01-skillify-schema.sql`` and is physically
+separate from Forgejo's PostgreSQL database.
 """
 
 from __future__ import annotations

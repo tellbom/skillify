@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -51,6 +52,17 @@ class ForgejoClient:
         self._timeout = timeout
         self._session = requests.Session()
         self._session.headers["Authorization"] = f"token {token}"
+
+    def _service_url(self, url: str) -> str:
+        """Route Forgejo asset paths through the configured service URL.
+
+        Forgejo may advertise an external ROOT_URL that is not resolvable from a container.
+        """
+        advertised = urlsplit(url)
+        service = urlsplit(self.base_url)
+        if not advertised.path:
+            return url
+        return urlunsplit((service.scheme, service.netloc, advertised.path, advertised.query, ""))
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         url = f"{self.base_url}/api/v1{path}"
@@ -198,7 +210,8 @@ class ForgejoClient:
         """Download an asset URL (e.g. a release asset's browser_download_url)
         using this client's authenticated session — needed for private repos."""
         try:
-            resp = self._session.get(url, timeout=self._timeout, stream=True)
+            service_url = self._service_url(url)
+            resp = self._session.get(service_url, timeout=self._timeout, stream=True)
         except requests.RequestException as exc:
             raise ForgejoError(f"GET {url} failed: {exc}") from exc
         if resp.status_code != 200:
@@ -215,7 +228,8 @@ class ForgejoClient:
     def fetch_text(self, url: str) -> str:
         """Fetch a small asset (e.g. `.sha256`/`.artifact.json`) as text, authenticated."""
         try:
-            resp = self._session.get(url, timeout=self._timeout)
+            service_url = self._service_url(url)
+            resp = self._session.get(service_url, timeout=self._timeout)
         except requests.RequestException as exc:
             raise ForgejoError(f"GET {url} failed: {exc}") from exc
         if resp.status_code != 200:

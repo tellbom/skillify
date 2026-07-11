@@ -176,3 +176,21 @@
 - 共享 DM8 实例的**兼容模式**（决定空串 `''` 是否被当 NULL，见 SQL 头注释第 2 条）。
 
 > 默认推进：空表起步、`.env` 占位连接串、DM-1 先验证驱动与实例模式，遇阻回问。**A-3（修 vue-tsc 错误）完全在 GPT 自校验范围内、无依赖，建议最先起步。**
+
+---
+
+## 10. Codex 开发交付状态（2026-07-11）
+
+本轮按用户最终裁决完成 `M-DM -> A -> B -> C-3` 的代码与文档交付，不新增测试用例，不引入 Alembic，不处理历史数据。
+
+| 范围 | 开发状态 | 留测试环境验证 |
+| --- | --- | --- |
+| M-DM | 已锁定 `dmPython 2.5.32` + `dmSQLAlchemy 2.0.12`；非 SQLite 禁止 `create_all`；Forgejo PG 与 Skillify DM8 拆分 | DM8 建表、类型往返、SAVEPOINT、空串和保留字 |
+| A-1 | 已增加 `skillify-web`、前端 Nginx 和统一 Compose 入口 | Linux Docker 镜像构建、容器健康和浏览器访问 |
+| A-2 | 已增加 draft Release 恢复、缺失 asset 补传、索引重建和 namespace 修复 | 真实 Forgejo 中断恢复与全量扫描 |
+| A-3 | 21 个类型错误已清零，类型检查纳入前端 build | 目标浏览器 E2E |
+| A-4 | 三入口共用同一 Release/索引结构的代码路径已保持 | Web/CLI/tag webhook 真实闭环 |
+| B | 已提供备份恢复、发布回退、RBAC 回归和种子灰度文档 | 实际备份恢复演练和灰度周期 |
+| C-3 | Web 上传可通过 Forgejo smart HTTP 创建源码 commit/tag；Git 数据不进入 DM8 | 服务账号 Git 权限、重复 tag 和真实网络中断 |
+
+详细交付和门禁结果见 `docs/development-delivery-dm8-readiness-c3-2026-07-11.md`。

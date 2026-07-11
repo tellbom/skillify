@@ -6,10 +6,10 @@ service (T2.1, `push`/tag-triggered/automatic) so the two never drift.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 from typing import Any
 
 from skillify.common.config import SkillifyConfig
@@ -65,7 +65,7 @@ def _author_display(author: Any) -> str:
 
 
 def _index_release(cfg: SkillifyConfig, result: PackResult, release_html_url: str) -> str | None:
-    """Best-effort (T2.2): the Postgres index is a derived cache rebuildable from Forgejo
+    """Best-effort: the DM8 business index is derived and rebuildable from Forgejo
     (PLAN.md §1), so a missing/unreachable index DB must never fail an actual publish —
     the Release itself is already the source of truth by the time this runs."""
     if not cfg.index_db_url:

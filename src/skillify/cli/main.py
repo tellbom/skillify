@@ -162,7 +162,7 @@ def remove(
 @app.command()
 def search(query: str = typer.Argument(...)) -> None:
     """Search the Skillify index (requires the Web/index backend — T3.1)."""
-    _not_implemented("search", "M3 T3.1 (FastAPI backend + Postgres index)")
+    _not_implemented("search", "M3 T3.1 (FastAPI backend + Skillify business index)")
 
 
 @app.command(name="rebuild-index")
