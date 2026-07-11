@@ -74,8 +74,35 @@ export function getComments(namespace, name) {
   return request(`/skills/${namespace}/${name}/comments`)
 }
 
-export function postComment(namespace, name, body) {
-  return request(`/skills/${namespace}/${name}/comments`, { method: 'POST', json: { body }, auth: true })
+export function postComment(namespace, name, body, parentId) {
+  const payload = parentId != null ? { body, parentId } : { body }
+  return request(`/skills/${namespace}/${name}/comments`, { method: 'POST', json: payload, auth: true })
+}
+
+export function deleteComment(namespace, name, commentId) {
+  return request(`/skills/${namespace}/${name}/comments/${commentId}`, { method: 'DELETE', auth: true })
+}
+
+// C-5 community (Task 6 endpoints): star / subscribe are idempotent both directions — no need
+// to check current state before calling, just toggle the button and call the matching verb.
+export function starSkill(namespace, name) {
+  return request(`/skills/${namespace}/${name}/star`, { method: 'POST', auth: true })
+}
+
+export function unstarSkill(namespace, name) {
+  return request(`/skills/${namespace}/${name}/star`, { method: 'DELETE', auth: true })
+}
+
+export function subscribeSkill(namespace, name) {
+  return request(`/skills/${namespace}/${name}/subscription`, { method: 'POST', auth: true })
+}
+
+export function unsubscribeSkill(namespace, name) {
+  return request(`/skills/${namespace}/${name}/subscription`, { method: 'DELETE', auth: true })
+}
+
+export function getMySubscriptions() {
+  return request('/my/subscriptions', { auth: true })
 }
 
 export function getLeaderboard(dimension) {

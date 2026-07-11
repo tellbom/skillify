@@ -2,7 +2,8 @@
 import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getSkillDetail, getVersions, getVersionDiff, yankVersion, unyankVersion } from '../lib/api.js'
+import { getSkillDetail, getVersions, getVersionDiff, yankVersion, unyankVersion, starSkill, unstarSkill, subscribeSkill, unsubscribeSkill } from '../lib/api.js'
+import { useAuthStore } from '../stores/auth.js'
 import { renderMarkdown } from '../lib/markdown.js'
 import { formatDateTime } from '../lib/datetime.js'
 import { sortVersionsDesc, groupDiff, isDiffEmpty } from '../lib/versions.js'
@@ -14,6 +15,7 @@ import RatingWidget from '../components/RatingWidget.vue'
 const route = useRoute()
 const { t } = useI18n()
 const menuStore = useMenuStore()
+const auth = useAuthStore()
 
 const detail = ref(null)
 const loading = ref(true)
@@ -41,6 +43,15 @@ const diffTo = ref('')
 const diffResult = ref(null)
 const diffLoading = ref(false)
 const diffError = ref(null)
+
+// Star / subscribe (C-5): initial state comes straight off the skill-detail payload
+// (starred/starCount/subscribed reflect the CURRENTLY LOGGED-IN user, per Task 6) — no separate
+// fetch needed. Both actions are idempotent both directions server-side, so the button just
+// toggles and calls the matching verb without checking current state first.
+const starBusy = ref(false)
+const starError = ref(null)
+const subscribeBusy = ref(false)
+const subscribeError = ref(null)
 
 async function load() {
   loading.value = true
@@ -123,6 +134,37 @@ async function runDiff() {
     diffLoading.value = false
   }
 }
+
+async function toggleStar() {
+  if (!detail.value) return
+  starBusy.value = true
+  starError.value = null
+  try {
+    const action = detail.value.starred ? unstarSkill : starSkill
+    const result = await action(route.params.namespace, route.params.name)
+    detail.value.starred = result.starred
+    detail.value.starCount = result.starCount
+  } catch (err) {
+    starError.value = err.message
+  } finally {
+    starBusy.value = false
+  }
+}
+
+async function toggleSubscribe() {
+  if (!detail.value) return
+  subscribeBusy.value = true
+  subscribeError.value = null
+  try {
+    const action = detail.value.subscribed ? unsubscribeSkill : subscribeSkill
+    const result = await action(route.params.namespace, route.params.name)
+    detail.value.subscribed = result.subscribed
+  } catch (err) {
+    subscribeError.value = err.message
+  } finally {
+    subscribeBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -140,6 +182,32 @@ async function runDiff() {
       <div class="tags">
         <span v-for="tag in detail.tags" :key="tag" class="tag">{{ tag }}</span>
       </div>
+
+      <div class="community-actions">
+        <button
+          type="button"
+          class="star-button"
+          :class="{ active: detail.starred }"
+          :disabled="!auth.isAuthenticated || starBusy"
+          :title="auth.isAuthenticated ? '' : t('community.loginToUse')"
+          @click="toggleStar"
+        >
+          {{ detail.starred ? '★' : '☆' }} {{ detail.starred ? t('community.starred') : t('community.star') }}
+          <span class="star-count">({{ detail.starCount }})</span>
+        </button>
+        <button
+          type="button"
+          class="subscribe-button"
+          :class="{ active: detail.subscribed }"
+          :disabled="!auth.isAuthenticated || subscribeBusy"
+          :title="auth.isAuthenticated ? '' : t('community.loginToUse')"
+          @click="toggleSubscribe"
+        >
+          {{ detail.subscribed ? t('community.subscribed') : t('community.subscribe') }}
+        </button>
+      </div>
+      <p v-if="starError" class="error">{{ starError }}</p>
+      <p v-if="subscribeError" class="error">{{ subscribeError }}</p>
 
       <RatingWidget
         :namespace="detail.namespace"
@@ -279,6 +347,36 @@ async function runDiff() {
 .author { color: #888; font-size: 0.85rem; }
 .tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.5rem 0 1rem; }
 .tag { background: #263238; color: #80cbc4; border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; }
+.community-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+.star-button, .subscribe-button {
+  padding: 0.35rem 0.8rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.star-button.active {
+  border-color: #ffca28;
+  color: #ffca28;
+}
+.subscribe-button.active {
+  border-color: #80cbc4;
+  color: #80cbc4;
+}
+.star-button:disabled, .subscribe-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.star-count {
+  color: #888;
+  font-size: 0.8rem;
+}
 .install-count { color: #888; font-size: 0.8rem; margin: 0.3rem 0 1rem; }
 .install-box {
   border: 1px solid #333;

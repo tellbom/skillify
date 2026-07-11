@@ -10,4 +10,14 @@ export default {
   loginToRate: '登录后可评分',
   copy: '复制',
   copied: '已复制！',
+  reply: '回复',
+  cancelReply: '取消回复',
+  replyPlaceholder: '回复该评论…',
+  postReply: '发表回复',
+  delete: '删除',
+  deleting: '删除中…',
+  deleteFailed: '删除失败：{error}',
+  deleteConfirm: '确定要删除这条评论吗？',
+  deletedPlaceholder: '[已删除]',
 }
+
