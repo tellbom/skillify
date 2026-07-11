@@ -2,7 +2,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listSkills } from '../lib/api.js'
-import { buildSearchParams, paginationState, SORT_OPTIONS } from '../lib/search.js'
+import { buildSearchParams, paginationState, resolveFilterChange, SORT_OPTIONS } from '../lib/search.js'
 
 const { t } = useI18n()
 const skills = ref([])
@@ -37,26 +37,12 @@ async function load() {
   }
 }
 
-// Any filter/sort change resets to page 1 — otherwise a narrower filter could leave the user
-// stranded past the new last page (e.g. was on page 5, new filter only has 2 pages of results).
-// resetToFirstPage() only *sets* page; it deliberately does not also call load() itself — the
-// `watch(page, load)` below already fires on that assignment (and, when page was already 1, the
-// assignment is a no-op so the caller must call load() itself instead). This avoids the double
-// fetch that would happen if both the watcher and an explicit load() ran for the same change.
-function resetToFirstPage() {
-  if (page.value === 1) {
-    load()
-  } else {
-    page.value = 1
-  }
-}
-
 function clearFilters() {
   namespace.value = ''
   author.value = ''
   tagsInput.value = ''
   sort.value = 'updated'
-  resetToFirstPage()
+  page.value = 1
 }
 
 function prevPage() {
@@ -67,15 +53,35 @@ function nextPage() {
   if (pagination.value.hasNext) page.value += 1
 }
 
+// Single watcher over every source that should trigger a reload, instead of one watch() per
+// source. Vue's default `flush: 'pre'` only collapses multiple *synchronous mutations to the
+// same watched source* into one job — it does NOT collapse separate watch() registrations that
+// each depend on different sources, even when those sources all change in the same tick (e.g.
+// clearFilters() touches namespace/author/tagsInput/sort/page together). With independent
+// watchers that used to mean 2-3 redundant load() calls per clearFilters() click. Watching the
+// whole tuple together makes it one Vue reactivity job, so `flush: 'post'` fires the callback
+// exactly once per tick no matter how many of the six refs changed.
 let debounceHandle
-watch([query, namespace, author, tagsInput], () => {
-  clearTimeout(debounceHandle)
-  debounceHandle = setTimeout(resetToFirstPage, 250)
-})
-
-watch(sort, resetToFirstPage)
-
-watch(page, load)
+watch(
+  [query, namespace, author, tagsInput, sort, page],
+  (next, prev) => {
+    const { action } = resolveFilterChange(prev, next)
+    clearTimeout(debounceHandle)
+    if (action === 'none') return
+    if (action === 'load') {
+      load()
+    } else if (action === 'resetImmediate') {
+      if (page.value === 1) load()
+      else page.value = 1
+    } else if (action === 'resetDebounced') {
+      debounceHandle = setTimeout(() => {
+        if (page.value === 1) load()
+        else page.value = 1
+      }, 250)
+    }
+  },
+  { flush: 'post' },
+)
 
 onMounted(load)
 </script>

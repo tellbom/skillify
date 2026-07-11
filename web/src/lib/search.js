@@ -52,6 +52,40 @@ export function normalizePage(page) {
 }
 
 /**
+ * Given the previous and next values of the six reactive sources SkillListView watches together
+ * (`[query, namespace, author, tagsInput, sort, page]`, in that order), decide how to react to a
+ * single batched change. Used by a single `watch()` covering all six sources so that N
+ * simultaneous ref mutations in one tick (e.g. `clearFilters()` resetting namespace/author/
+ * tagsInput/sort/page all at once) resolve to exactly one action instead of one `load()` per
+ * independent watcher. See SkillListView.vue for how the result is applied.
+ *
+ * - Only `page` changed: load immediately, no page reset, no debounce (that's just prev/next).
+ * - `sort` changed (alone or together with anything else, e.g. clearFilters therefore counts as
+ *   this case): reset to page 1 and load immediately — a deliberate, discrete user action, not
+ *   free text the user might still be typing.
+ * - Only text filters (`query`/`namespace`/`author`/`tagsInput`) changed: reset to page 1, but
+ *   debounced, so rapid typing doesn't fire a request per keystroke.
+ * - Nothing changed (e.g. initial call before any real diff): no-op.
+ *
+ * @param {[string, string, string, string, string, number]} prev
+ * @param {[string, string, string, string, string, number]} next
+ * @returns {{action: 'none'|'load'|'resetImmediate'|'resetDebounced'}}
+ */
+export function resolveFilterChange(prev, next) {
+  const [pQuery, pNamespace, pAuthor, pTags, pSort, pPage] = prev || []
+  const [nQuery, nNamespace, nAuthor, nTags, nSort, nPage] = next || []
+
+  const textChanged = pQuery !== nQuery || pNamespace !== nNamespace || pAuthor !== nAuthor || pTags !== nTags
+  const sortChanged = pSort !== nSort
+  const pageChanged = pPage !== nPage
+
+  if (!textChanged && !sortChanged && !pageChanged) return { action: 'none' }
+  if (sortChanged) return { action: 'resetImmediate' }
+  if (textChanged) return { action: 'resetDebounced' }
+  return { action: 'load' }
+}
+
+/**
  * Derive pagination display state from a SearchResult ({items, total, page, pageSize}).
  * `totalPages` is at least 1 even when total is 0, so a "page 1 of 1" UI never divides by zero.
  * @param {{total?: number, page?: number, pageSize?: number}} result

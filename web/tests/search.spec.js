@@ -6,6 +6,7 @@ import {
   normalizeSort,
   normalizePage,
   paginationState,
+  resolveFilterChange,
   SORT_OPTIONS,
   DEFAULT_SORT,
   DEFAULT_PAGE_SIZE,
@@ -116,6 +117,50 @@ describe('paginationState', () => {
     const state = paginationState({ total: 40, page: 2, pageSize: 20 })
     expect(state.hasNext).toBe(false)
     expect(state.hasPrev).toBe(true)
+  })
+})
+
+describe('resolveFilterChange (C-4 single-watcher reload consolidation)', () => {
+  // Tuple shape: [query, namespace, author, tagsInput, sort, page]
+  const base = ['', '', '', '', 'updated', 1]
+
+  it('does nothing when nothing actually changed', () => {
+    expect(resolveFilterChange(base, [...base])).toEqual({ action: 'none' })
+  })
+
+  it('loads immediately when only page changed (prev/next buttons)', () => {
+    const next = [...base]
+    next[5] = 2
+    expect(resolveFilterChange(base, next)).toEqual({ action: 'load' })
+  })
+
+  it('resets immediately (no debounce) when sort changed', () => {
+    const next = [...base]
+    next[4] = 'installs'
+    expect(resolveFilterChange(base, next)).toEqual({ action: 'resetImmediate' })
+  })
+
+  it('debounces when only a text filter changed', () => {
+    const next = [...base]
+    next[1] = 'excel-team' // namespace
+    expect(resolveFilterChange(base, next)).toEqual({ action: 'resetDebounced' })
+
+    const queryNext = [...base]
+    queryNext[0] = 'hello'
+    expect(resolveFilterChange(base, queryNext)).toEqual({ action: 'resetDebounced' })
+  })
+
+  it('treats a clearFilters()-style batch (text + sort + page all change at once) as a single immediate reset', () => {
+    // Mirrors clearFilters(): namespace/author/tagsInput/sort/page all reset together in one tick.
+    const prev = ['', 'excel-team', 'alice', 'ai,cli', 'installs', 3]
+    const next = ['', '', '', '', 'updated', 1]
+    expect(resolveFilterChange(prev, next)).toEqual({ action: 'resetImmediate' })
+  })
+
+  it('sort change takes priority over a simultaneous text-filter change (does not debounce)', () => {
+    const prev = ['', 'ns', '', '', 'updated', 1]
+    const next = ['', 'ns2', '', '', 'installs', 1]
+    expect(resolveFilterChange(prev, next)).toEqual({ action: 'resetImmediate' })
   })
 })
 
