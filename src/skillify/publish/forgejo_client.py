@@ -33,6 +33,16 @@ class Release:
     tag_name: str
     html_url: str
     assets: list[ReleaseAsset]
+    name: str = ""
+    body: str = ""
+    draft: bool = False
+    published_at: str | None = None
+
+
+@dataclass
+class Repository:
+    owner: str
+    name: str
 
 
 class ForgejoClient:
@@ -102,14 +112,51 @@ class ForgejoClient:
         return self._release_from_json(resp.json())
 
     def list_releases(self, owner: str, repo: str) -> list[Release]:
-        resp = self._request("GET", f"/repos/{owner}/{repo}/releases", params={"limit": 50})
-        if resp.status_code != 200:
-            raise ForgejoError(
-                f"failed to list releases for {owner}/{repo}: HTTP {resp.status_code}",
-                status_code=resp.status_code,
-                body=resp.text,
+        releases: list[Release] = []
+        page = 1
+        while True:
+            resp = self._request(
+                "GET", f"/repos/{owner}/{repo}/releases", params={"limit": 50, "page": page}
             )
-        return [self._release_from_json(r) for r in resp.json()]
+            if resp.status_code != 200:
+                raise ForgejoError(
+                    f"failed to list releases for {owner}/{repo}: HTTP {resp.status_code}",
+                    status_code=resp.status_code,
+                    body=resp.text,
+                )
+            batch = [self._release_from_json(item) for item in resp.json()]
+            releases.extend(batch)
+            if len(batch) < 50:
+                return releases
+            page += 1
+
+    def list_repositories(self) -> list[Repository]:
+        """List repositories visible to the configured Forgejo service account."""
+        repositories: list[Repository] = []
+        page = 1
+        while True:
+            resp = self._request("GET", "/user/repos", params={"limit": 50, "page": page})
+            if resp.status_code != 200:
+                raise ForgejoError(
+                    f"failed to list service-account repositories: HTTP {resp.status_code}",
+                    status_code=resp.status_code,
+                    body=resp.text,
+                )
+            payload = resp.json()
+            for item in payload:
+                owner = item.get("owner", {}).get("login") or item.get("owner", {}).get("username")
+                if owner and item.get("name"):
+                    repositories.append(Repository(owner=owner, name=item["name"]))
+            if len(payload) < 50:
+                return repositories
+            page += 1
+
+    def find_release_by_tag(self, owner: str, repo: str, tag_name: str) -> Release | None:
+        """Find a published or draft release for ``tag_name``."""
+        release = self.get_release_by_tag(owner, repo, tag_name)
+        if release is not None:
+            return release
+        return next((item for item in self.list_releases(owner, repo) if item.tag_name == tag_name), None)
 
     def get_raw_file(self, owner: str, repo: str, path: str, ref: str) -> str | None:
         """Fetch a file's raw content at `ref` (branch/tag/sha) — T3.1: used to render a
@@ -164,16 +211,40 @@ class ForgejoClient:
         return resp.text
 
     def create_release(
-        self, owner: str, repo: str, *, tag_name: str, name: str, body: str = ""
+        self, owner: str, repo: str, *, tag_name: str, name: str, body: str = "", draft: bool = False
     ) -> Release:
         resp = self._request(
             "POST",
             f"/repos/{owner}/{repo}/releases",
-            json={"tag_name": tag_name, "name": name, "body": body, "draft": False, "prerelease": False},
+            json={"tag_name": tag_name, "name": name, "body": body, "draft": draft, "prerelease": False},
         )
         if resp.status_code not in (200, 201):
             raise ForgejoError(
                 f"failed to create release {tag_name} for {owner}/{repo}: HTTP {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return self._release_from_json(resp.json())
+
+    def update_release(
+        self,
+        owner: str,
+        repo: str,
+        release_id: int,
+        *,
+        tag_name: str,
+        name: str,
+        body: str,
+        draft: bool,
+    ) -> Release:
+        resp = self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/releases/{release_id}",
+            json={"tag_name": tag_name, "name": name, "body": body, "draft": draft, "prerelease": False},
+        )
+        if resp.status_code != 200:
+            raise ForgejoError(
+                f"failed to update release {release_id} for {owner}/{repo}: HTTP {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
             )
@@ -204,4 +275,13 @@ class ForgejoClient:
             ReleaseAsset(id=a["id"], name=a["name"], browser_download_url=a["browser_download_url"])
             for a in data.get("assets", [])
         ]
-        return Release(id=data["id"], tag_name=data["tag_name"], html_url=data["html_url"], assets=assets)
+        return Release(
+            id=data["id"],
+            tag_name=data["tag_name"],
+            html_url=data["html_url"],
+            assets=assets,
+            name=data.get("name", ""),
+            body=data.get("body", ""),
+            draft=bool(data.get("draft", False)),
+            published_at=data.get("published_at") or data.get("created_at"),
+        )

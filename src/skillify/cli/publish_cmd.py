@@ -70,8 +70,9 @@ def run_publish(*, skill_dir: Path, dry_run: bool, console: Console, err_console
     console.print(f"  tarball:  {result.tarball_path}")
     console.print(f"  checksum: {result.checksum_path}")
     console.print(f"  artifact: {result.artifact_manifest_path}")
+    action = "Recovered" if publish_result.recovered else "Published"
     console.print(
-        f"[green]Published[/green] {publish_result.org}/{publish_result.repo}@{publish_result.tag} "
+        f"[green]{action}[/green] {publish_result.org}/{publish_result.repo}@{publish_result.tag} "
         f"— {publish_result.release_html_url}"
     )
     if publish_result.index_error:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -49,3 +49,14 @@ def claim_or_verify_namespace(session: Session, *, namespace: str, username: str
         ).scalar_one()
         if winner.owner_username != username:
             raise NamespaceOwnershipError(namespace, winner.owner_username) from None
+
+
+def release_namespace(session: Session, *, namespace: str, expected_owner: str) -> bool:
+    """Delete one ownership row only when both namespace and current owner match."""
+    result = session.execute(
+        delete(SkillNamespaceOwner).where(
+            SkillNamespaceOwner.namespace == namespace,
+            SkillNamespaceOwner.owner_username == expected_owner,
+        )
+    )
+    return bool(result.rowcount)

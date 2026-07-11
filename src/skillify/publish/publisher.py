@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 
 from skillify.common.config import SkillifyConfig
@@ -44,6 +45,15 @@ class PublishResult:
     tag: str
     release_html_url: str
     index_error: str | None = None  # T2.2: set if best-effort index-write failed
+    recovered: bool = False
+
+
+_CHECKSUM_RE = re.compile(r"(?m)^sha256=([0-9a-f]{64})$")
+
+
+def _release_checksum(body: str) -> str | None:
+    match = _CHECKSUM_RE.search(body)
+    return match.group(1) if match else None
 
 
 def _author_display(author: Any) -> str:
@@ -114,22 +124,43 @@ def publish_skill_dir(
 
     client.ensure_org_repo(org, repo)
 
-    existing = client.get_release_by_tag(org, repo, tag)
-    if existing is not None:
-        raise AlreadyPublishedError(org, repo, tag)
-
     body = f"sha256={result.sha256}"
     if extra_release_notes:
         body = f"{extra_release_notes}\n{body}"
-    release = client.create_release(
-        org, repo, tag_name=tag, name=f"{result.name} {result.version}", body=body,
-    )
-    for asset_path in (result.tarball_path, result.checksum_path, result.artifact_manifest_path):
+
+    release = client.find_release_by_tag(org, repo, tag)
+    recovered = release is not None
+    if release is None:
+        release = client.create_release(
+            org, repo, tag_name=tag, name=f"{result.name} {result.version}", body=body, draft=True,
+        )
+    elif _release_checksum(release.body) != result.sha256:
+        raise AlreadyPublishedError(org, repo, tag)
+
+    asset_paths = (result.tarball_path, result.checksum_path, result.artifact_manifest_path)
+    existing_asset_names = {asset.name for asset in release.assets}
+    missing_assets = [path for path in asset_paths if path.name not in existing_asset_names]
+    if recovered and not release.draft and not missing_assets:
+        _index_release(cfg, result, release.html_url)
+        raise AlreadyPublishedError(org, repo, tag)
+
+    for asset_path in missing_assets:
         client.upload_release_asset(org, repo, release.id, asset_path)
+
+    if release.draft:
+        release = client.update_release(
+            org,
+            repo,
+            release.id,
+            tag_name=tag,
+            name=f"{result.name} {result.version}",
+            body=body,
+            draft=False,
+        )
 
     index_error = _index_release(cfg, result, release.html_url)
 
     return PublishResult(
         pack_result=result, org=org, repo=repo, tag=tag, release_html_url=release.html_url,
-        index_error=index_error,
+        index_error=index_error, recovered=recovered,
     )

@@ -190,6 +190,9 @@ class FakeForgejoHandler(BaseHTTPRequestHandler):
             release = {
                 "id": state.new_release_id(),
                 "tag_name": tag,
+                "name": data.get("name", ""),
+                "body": data.get("body", ""),
+                "draft": bool(data.get("draft", False)),
                 "html_url": f"http://fake-forgejo/{owner}/{repo}/releases/tag/{tag}",
                 "assets": [],
             }
@@ -220,6 +223,27 @@ class FakeForgejoHandler(BaseHTTPRequestHandler):
             return self._json(201, asset)
 
         self._json(404, {"message": f"unhandled POST {self.path}"})
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        if not self._authorized():
+            return self._json(401, {"message": "unauthorized"})
+        parsed = urlparse(self.path)
+        parts = parsed.path.strip("/").split("/")
+        state = self.server.state
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length)) if length else {}
+
+        if parts[:3] == ["api", "v1", "repos"] and len(parts) == 7 and parts[5] == "releases":
+            owner, repo, release_id = parts[3], parts[4], int(parts[6])
+            for release in state.releases.values():
+                if release["id"] == release_id:
+                    release.update(
+                        {key: data[key] for key in ("tag_name", "name", "body", "draft") if key in data}
+                    )
+                    return self._json(200, release)
+            return self._json(404, {"message": f"release {owner}/{repo}/{release_id} not found"})
+
+        self._json(404, {"message": f"unhandled PATCH {self.path}"})
 
 
 class FakeForgejoServer(HTTPServer):

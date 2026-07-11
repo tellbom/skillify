@@ -165,5 +165,32 @@ def search(query: str = typer.Argument(...)) -> None:
     _not_implemented("search", "M3 T3.1 (FastAPI backend + Postgres index)")
 
 
+@app.command(name="rebuild-index")
+def rebuild_index(
+    identifier: Optional[str] = typer.Argument(None, help="Optional '<namespace>/<name>' repository."),
+    all_repositories: bool = typer.Option(False, "--all", help="Scan every repository visible to the service account."),
+) -> None:
+    """Rebuild the derived Skillify index from Forgejo release manifests."""
+    from skillify.cli.repair_cmd import run_rebuild_index
+
+    ok = run_rebuild_index(identifier=identifier, all_repositories=all_repositories, console=console)
+    raise typer.Exit(code=0 if ok else 1)
+
+
+@app.command(name="release-namespace")
+def release_namespace_cmd(
+    namespace: str = typer.Argument(...),
+    expected_owner: str = typer.Option(..., "--owner", help="Current owner that must match the DM8 row."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the destructive ownership repair."),
+) -> None:
+    """Release a failed first-upload namespace claim after explicit confirmation."""
+    from skillify.cli.repair_cmd import run_release_namespace
+
+    ok = run_release_namespace(
+        namespace=namespace, expected_owner=expected_owner, confirmed=yes, console=console
+    )
+    raise typer.Exit(code=0 if ok else 1)
+
+
 if __name__ == "__main__":
     app()
