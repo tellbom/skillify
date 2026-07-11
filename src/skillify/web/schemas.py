@@ -101,3 +101,24 @@ class VersionDiff(BaseModel):
     added: list[str]
     removed: list[str]
     modified: list[str]
+
+
+class MyNamespaceOut(BaseModel):
+    namespace: str
+    claimedAt: datetime
+
+
+class PublishJobOut(BaseModel):
+    namespace: str
+    name: str
+    version: str
+    status: str
+    errorMessage: str | None = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class MyUsageStats(BaseModel):
+    totalSkills: int
+    totalInstalls: int
+    installsBySkill: dict[str, int]

@@ -12,6 +12,7 @@ from skillify.common.config import SkillifyConfig
 from skillify.common.skill_dir import InvalidDeclaredName, rehome_to_declared_name
 from skillify.index.db import init_db, make_engine, session_scope
 from skillify.index.ownership import NamespaceOwnershipError, claim_or_verify_namespace
+from skillify.index.publish_jobs import record_job_result
 from skillify.publish.publisher import PublishResult, publish_skill_dir
 from skillify.publish.git_source import push_skill_source
 from skillify.validator import ValidationIssue, validate_skill_dir
@@ -71,27 +72,88 @@ def handle_upload(zip_path: Path, cfg: SkillifyConfig, *, uploader: str, work_di
         if not validation.ok:
             raise UploadRejected(validation.issues)
 
+        # C-2: from here on, namespace/declared_name are known, so any failure is a real
+        # "publish attempt failed" (not "the upload request itself was malformed") and gets
+        # recorded as a job row the user can see under /api/my/publish-jobs. `version` may
+        # not be parseable yet (manifest validation above only guarantees name/namespace),
+        # so fall back to "" rather than blocking the publish attempt on it.
+        version = str(manifest.get("version") or "")
+
         if not cfg.index_db_url:
             raise NamespaceOwnershipNotConfiguredError("index_db_url not configured on this service")
+
+        # C-2: namespace claim + publish are wrapped together — any failure past this point
+        # (including losing the namespace-ownership race) is a genuine "publish attempt
+        # failed" and gets recorded as a job row the user can see under
+        # /api/my/publish-jobs, then re-raised unchanged so app.py's existing
+        # exception->HTTP mapping is untouched.
+        try:
+            engine = make_engine(cfg.index_db_url)
+            init_db(engine)
+            with session_scope(engine) as session:
+                claim_or_verify_namespace(
+                    session, namespace=namespace, username=uploader, claimed_at=datetime.now(timezone.utc)
+                )
+
+            if cfg.web_upload_git_enabled:
+                push_skill_source(
+                    publish_src_dir,
+                    cfg,
+                    org=cfg.forgejo_org or namespace,
+                    repo=declared_name,
+                    tag=f"v{manifest['version']}",
+                    uploader=uploader,
+                )
+
+            result = publish_skill_dir(
+                publish_src_dir, cfg, extra_release_notes=f"Uploaded via Skillify Web by {uploader}."
+            )
+        except Exception as exc:
+            _record_job_best_effort(
+                cfg, namespace=namespace, name=declared_name, version=version,
+                initiator=uploader, status="failed", error_message=str(exc),
+            )
+            raise
+
+        _record_job_best_effort(
+            cfg, namespace=namespace, name=declared_name, version=result.pack_result.version,
+            initiator=uploader, status="succeeded", error_message=None,
+        )
+        return result
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _record_job_best_effort(
+    cfg: SkillifyConfig,
+    *,
+    namespace: str,
+    name: str,
+    version: str,
+    initiator: str,
+    status: str,
+    error_message: str | None,
+) -> None:
+    """Best-effort, same philosophy as `publisher.py::_index_release`: recording a publish
+    job is a side effect for the user's benefit, not a correctness requirement — if the
+    index DB is unreachable (or anything else goes wrong while writing the job row), the
+    original publish outcome (success or the real exception) must still be what the caller
+    sees, never masked or replaced by a job-recording failure."""
+    if not cfg.index_db_url:
+        return
+    try:
         engine = make_engine(cfg.index_db_url)
         init_db(engine)
         with session_scope(engine) as session:
-            claim_or_verify_namespace(
-                session, namespace=namespace, username=uploader, claimed_at=datetime.now(timezone.utc)
+            record_job_result(
+                session,
+                namespace=namespace,
+                name=name,
+                version=version,
+                initiator=initiator,
+                status=status,
+                error_message=error_message,
+                at=datetime.now(timezone.utc),
             )
-
-        if cfg.web_upload_git_enabled:
-            push_skill_source(
-                publish_src_dir,
-                cfg,
-                org=cfg.forgejo_org or namespace,
-                repo=declared_name,
-                tag=f"v{manifest['version']}",
-                uploader=uploader,
-            )
-
-        return publish_skill_dir(
-            publish_src_dir, cfg, extra_release_notes=f"Uploaded via Skillify Web by {uploader}."
-        )
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - see docstring
+        pass

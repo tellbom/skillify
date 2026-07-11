@@ -97,6 +97,36 @@ class SkillNamespaceOwner(Base):
         return f"<SkillNamespaceOwner {self.namespace} owned by {self.owner_username}>"
 
 
+class SkillPublishJob(Base):
+    """C-2 (`skill_publish_jobs`) — records the outcome of the most recent publish attempt
+    for a given (namespace, name, version), keyed by who triggered it (`initiator`, a
+    Keycloak `preferred_username`/`sub`). This is the data source for "my failed
+    publishes": scanning every Forgejo repo for stranded draft releases across every
+    namespace is not feasible (see `publisher.py`'s A-2 draft-resume mechanism for why a
+    stranded draft can exist at all), so instead the web-upload path (`upload_service.py`)
+    writes one row per attempt here.
+
+    `UniqueConstraint(namespace, name, version)`: a retry of the same version updates the
+    same row in place (status/error_message/updated_at) rather than accumulating history —
+    only the latest attempt's outcome matters for "is this currently broken."""
+
+    __tablename__ = "skill_publish_jobs"
+    __table_args__ = (UniqueConstraint("namespace", "name", "version", name="uq_skill_publish_job_identity"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(64))
+    initiator: Mapped[str] = mapped_column(String(255), index=True)  # Keycloak preferred_username/sub
+    status: Mapped[str] = mapped_column(String(16))  # "succeeded" | "failed"
+    error_message: Mapped[str | None] = mapped_column(String(2000), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SkillPublishJob {self.namespace}/{self.name}@{self.version} {self.status} by {self.initiator}>"
+
+
 class SkillEvent(Base):
     """T5.2 (install count for the leaderboard) + T6.2 (client->server run report stub)
     share this table, distinguished by `event_type`. Deliberately minimal columns — see

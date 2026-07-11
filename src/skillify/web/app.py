@@ -19,7 +19,9 @@ from skillify.common.config import load_config
 from skillify.index.comments import add_comment, list_comments
 from skillify.index.db import init_db, make_engine
 from skillify.index.events import record_event
+from skillify.index.my_skills import list_my_namespaces, list_my_skills, my_usage_stats
 from skillify.index.ownership import NamespaceOwnershipError
+from skillify.index.publish_jobs import list_my_failed_jobs, list_my_jobs
 from skillify.index.queries import get_versions, leaderboard as leaderboard_query
 from skillify.index.ratings import rating_stats, upsert_rating
 from skillify.index.yank import VersionNotFoundError, can_manage_version, set_yanked
@@ -34,6 +36,9 @@ from skillify.web.schemas import (
     EventIn,
     InstallInfo,
     LeaderboardEntry,
+    MyNamespaceOut,
+    MyUsageStats,
+    PublishJobOut,
     RatingIn,
     RatingOut,
     SkillDetail,
@@ -400,6 +405,82 @@ async def upload_skill(
         releaseUrl=result.release_html_url,
         indexError=result.index_error,
     )
+
+
+@app.get("/api/my/skills", response_model=list[SkillSummary])
+def my_skills(claims: dict = Depends(require_keycloak_user)) -> list[SkillSummary]:
+    """C-2 — the "My Skills" workspace: latest (non-yanked) version of every skill authored
+    by the caller, same shape as `GET /api/skills` for reuse on the frontend."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        entries = list_my_skills(session, username)
+        return [
+            SkillSummary(
+                namespace=e.namespace, name=e.name, version=e.version, description=e.description,
+                author=e.author, tags=e.tags, publishedAt=e.published_at,
+            )
+            for e in entries
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/api/my/namespaces", response_model=list[MyNamespaceOut])
+def my_namespaces(claims: dict = Depends(require_keycloak_user)) -> list[MyNamespaceOut]:
+    """C-2 — namespaces the caller owns (first-publish-wins, see `SkillNamespaceOwner`)."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        owners = list_my_namespaces(session, username)
+        return [MyNamespaceOut(namespace=o.namespace, claimedAt=o.claimed_at) for o in owners]
+    finally:
+        session.close()
+
+
+@app.get("/api/my/publish-jobs", response_model=list[PublishJobOut])
+def my_publish_jobs(
+    status: str = Query(default="failed", description="failed | all"),
+    claims: dict = Depends(require_keycloak_user),
+) -> list[PublishJobOut]:
+    """C-2 — visibility into the caller's own web-upload publish attempts, most notably the
+    failed ones (`skill_publish_jobs`, written by `upload_service.handle_upload`). There is
+    no dedicated retry endpoint: retrying means re-submitting the same zip to
+    `POST /api/skills/upload` — Task 3's draft-resume mechanism in `publish_skill_dir` makes
+    that safe to redo (it skips assets already uploaded to the stranded draft release
+    rather than duplicating them). The web upload path keeps no server-side copy of the
+    extracted source after a failure (`work_dir` is always cleaned up), so "re-upload the
+    zip" is the only realistic resumption unit here."""
+    if status not in ("failed", "all"):
+        raise HTTPException(status_code=400, detail="status must be 'failed' or 'all'")
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        jobs = list_my_failed_jobs(session, username) if status == "failed" else list_my_jobs(session, username)
+        return [
+            PublishJobOut(
+                namespace=j.namespace, name=j.name, version=j.version, status=j.status,
+                errorMessage=j.error_message, createdAt=j.created_at, updatedAt=j.updated_at,
+            )
+            for j in jobs
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/api/my/usage", response_model=MyUsageStats)
+def my_usage(claims: dict = Depends(require_keycloak_user)) -> MyUsageStats:
+    """C-2 — summary stats (total skills authored, total installs across them) for the "My
+    Skills" page header. Not in the brief's three-endpoint list verbatim, but
+    `my_usage_stats` was required as index-layer aggregation for that page — exposed here
+    rather than left unreachable."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        stats = my_usage_stats(session, username)
+        return MyUsageStats(**stats)
+    finally:
+        session.close()
 
 
 def run() -> None:
