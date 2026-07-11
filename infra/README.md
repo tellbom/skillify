@@ -1,19 +1,31 @@
 # Skillify local infra (T0.3 + T2.1/T2.2 additions)
 
-Forgejo + PostgreSQL + devpi + the webhook packaging service, for local development against
-M1's CLI closed loop and M2's automated publish pipeline. Not the production topology —
-production is intranet-only Linux (see PLAN.md §0).
+Forgejo + its dedicated PostgreSQL + devpi + Skillify services. Skillify business tables
+live in a separate, externally managed DM8 schema; Skillify never reads or writes Forgejo's
+PostgreSQL database directly.
 
 ## Start
 
 ```sh
 cd infra
 cp .env.example .env
-# required for the webhook service — see step 4 below for where these come from:
+# required before startup — see the sections below:
+#   SKILLIFY_INDEX_DB_URL=dm+dmPython://...
 #   SKILLIFY_FORGEJO_TOKEN=<a Forgejo access token>
 #   SKILLIFY_WEBHOOK_SECRET=<any random string; must match the Forgejo webhook config>
 docker compose up -d --build
 ```
+
+Before starting Skillify, create its dedicated DM8 user/schema and import the five empty
+business tables with DIsql:
+
+```text
+DIsql SKILLIFY_USER/<password>@<dm8-host>:5236 `infra/dm8-init/01-skillify-schema.sql`
+```
+
+Use the DIsql invocation supported by the target DM8 installation. The committed command is
+deliberately a placeholder: credentials and server addresses must stay outside the repository.
+Forgejo's PostgreSQL initialization does not create a `skillify_index` database.
 
 ## Verify acceptance criteria (T0.3)
 
@@ -60,13 +72,10 @@ docker compose up -d --build
      same outcome as running `skillctl publish` locally, without a human running it.
    - Check `docker compose logs webhook` and the repo's Releases page to confirm.
 
-5. **Index DB (T2.2) gets populated automatically by a successful publish**:
-   ```sh
-   psql "postgresql://forgejo:forgejo@localhost:5432/skillify_index" \
-     -c "select namespace, name, version, tags from skill_index;"
-   ```
-   should show a row for whatever was published in step 4 (or via `skillctl publish` with
-   `SKILLIFY_INDEX_DB_URL` pointed at the same DB).
+5. **DM8 business DB (T2.2) gets populated automatically by a successful publish**:
+   connect to the dedicated Skillify schema with DIsql and run
+   `SELECT namespace, name, version, tags FROM skill_index;`. It should show a row for the
+   release published in step 4. The application never creates or alters DM8 tables at runtime.
 
 ## Known gaps (flagging per the joint-review ask)
 

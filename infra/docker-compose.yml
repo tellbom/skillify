@@ -10,7 +10,6 @@ services:
       POSTGRES_DB: ${FORGEJO_DB_NAME:-forgejo}
     volumes:
       - forgejo-db:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${FORGEJO_DB_USER:-forgejo}"]
       interval: 5s
@@ -67,7 +66,7 @@ services:
       SKILLIFY_FORGEJO_TOKEN: ${SKILLIFY_FORGEJO_TOKEN:?set a Forgejo access token for the webhook service}
       SKILLIFY_WEBHOOK_SECRET: ${SKILLIFY_WEBHOOK_SECRET:?set a shared secret and configure it on the Forgejo webhook}
       SKILLIFY_DEVPI_INDEX_URL: ${SKILLIFY_DEVPI_INDEX_URL:-http://devpi:3141/skillify/dev/+simple/}
-      SKILLIFY_INDEX_DB_URL: postgresql+psycopg://${FORGEJO_DB_USER:-forgejo}:${FORGEJO_DB_PASSWORD:-forgejo}@db:5432/skillify_index
+      SKILLIFY_INDEX_DB_URL: ${SKILLIFY_INDEX_DB_URL:?set the external DM8 SQLAlchemy URL}
     ports:
       - "${WEBHOOK_PORT:-8088}:8088"
     networks: [skillify]
