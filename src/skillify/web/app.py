@@ -16,14 +16,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, sessionmaker
 
 from skillify.common.config import load_config
-from skillify.index.comments import add_comment, list_comments
+from skillify.index.comments import (
+    CommentNotFoundError,
+    CommentPermissionError,
+    add_comment,
+    list_comments_for_display,
+    soft_delete_comment,
+)
 from skillify.index.db import init_db, make_engine
 from skillify.index.events import record_event
 from skillify.index.my_skills import list_my_namespaces, list_my_skills, my_usage_stats
 from skillify.index.ownership import NamespaceOwnershipError
 from skillify.index.publish_jobs import list_my_failed_jobs, list_my_jobs
-from skillify.index.queries import get_versions, leaderboard as leaderboard_query
+from skillify.index.queries import get_versions, leaderboard as leaderboard_query, list_latest
 from skillify.index.ratings import rating_stats, upsert_rating
+from skillify.index.star import add_star, remove_star, star_counts
+from skillify.index.subscriptions import add_subscription, list_subscriptions_for_user, remove_subscription
 from skillify.index.yank import VersionNotFoundError, can_manage_version, set_yanked
 from skillify.packaging.pack import PackagingError
 from skillify.publish.forgejo_client import ForgejoError
@@ -37,12 +45,15 @@ from skillify.web.schemas import (
     InstallInfo,
     LeaderboardEntry,
     MyNamespaceOut,
+    MySubscriptionOut,
     MyUsageStats,
     PublishJobOut,
     RatingIn,
     RatingOut,
     SkillDetail,
     SkillSummary,
+    StarOut,
+    SubscriptionOut,
     UploadResponse,
     VersionDiff,
     VersionInfo,
@@ -232,15 +243,74 @@ def skill_orchestration(namespace: str, name: str, _claims: dict = Depends(requi
     return versions[0].orchestration or {}
 
 
+@app.post("/api/skills/{namespace}/{name}/star", response_model=StarOut)
+def star_skill(namespace: str, name: str, claims: dict = Depends(require_keycloak_user)) -> StarOut:
+    """C-5 — idempotent: starring an already-starred skill just returns the current state."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        add_star(session, namespace=namespace, name=name, author=username, created_at=datetime.now(timezone.utc))
+        count = star_counts(session).get((namespace, name), 0)
+        return StarOut(starred=True, starCount=count)
+    finally:
+        session.close()
+
+
+@app.delete("/api/skills/{namespace}/{name}/star", response_model=StarOut)
+def unstar_skill(namespace: str, name: str, claims: dict = Depends(require_keycloak_user)) -> StarOut:
+    """C-5 — no-op (not an error) if the skill wasn't starred by this user."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        remove_star(session, namespace=namespace, name=name, author=username)
+        count = star_counts(session).get((namespace, name), 0)
+        return StarOut(starred=False, starCount=count)
+    finally:
+        session.close()
+
+
+@app.post("/api/skills/{namespace}/{name}/subscription", response_model=SubscriptionOut)
+def subscribe_skill(namespace: str, name: str, claims: dict = Depends(require_keycloak_user)) -> SubscriptionOut:
+    """C-5 — idempotent subscribe. No notification tracking (explicitly deferred, see
+    `subscriptions.py` docstring) — this only records the intent to be subscribed;
+    `GET /api/my/subscriptions` is a snapshot query, not a feed."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        add_subscription(session, namespace=namespace, name=name, author=username, created_at=datetime.now(timezone.utc))
+        return SubscriptionOut(subscribed=True)
+    finally:
+        session.close()
+
+
+@app.delete("/api/skills/{namespace}/{name}/subscription", response_model=SubscriptionOut)
+def unsubscribe_skill(namespace: str, name: str, claims: dict = Depends(require_keycloak_user)) -> SubscriptionOut:
+    """C-5 — no-op (not an error) if the skill wasn't subscribed to by this user."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        remove_subscription(session, namespace=namespace, name=name, author=username)
+        return SubscriptionOut(subscribed=False)
+    finally:
+        session.close()
+
+
 @app.get("/api/skills/{namespace}/{name}/comments", response_model=list[CommentOut])
 def get_comments(namespace: str, name: str, _claims: dict = Depends(require_keycloak_user)) -> list[CommentOut]:
     """M-A (docs/review-m2-m6.md): market-wide login requirement — reads require a valid
-    Keycloak session too, not just writes. Superseded the earlier T5.1 "public read" design."""
+    Keycloak session too, not just writes. Superseded the earlier T5.1 "public read" design.
+
+    C-5: uses `list_comments_for_display` so soft-deleted comments come back with their body
+    replaced by a placeholder rather than the original text, while keeping `id`/`parentId` so
+    the frontend can still render the reply tree."""
     session = _session()
     try:
-        comments = list_comments(session, namespace, name)
+        comments = list_comments_for_display(session, namespace, name)
         return [
-            CommentOut(id=c.id, namespace=c.namespace, name=c.name, author=c.author, body=c.body, createdAt=c.created_at)
+            CommentOut(
+                id=c.id, namespace=c.namespace, name=c.name, author=c.author, body=c.body,
+                createdAt=c.created_at, parentId=c.parent_id, deleted=c.deleted,
+            )
             for c in comments
         ]
     finally:
@@ -251,7 +321,9 @@ def get_comments(namespace: str, name: str, _claims: dict = Depends(require_keyc
 def post_comment(
     namespace: str, name: str, payload: CommentIn, claims: dict = Depends(require_keycloak_user)
 ) -> CommentOut:
-    """T5.1: posting requires a valid Keycloak session (M4a), same as upload."""
+    """T5.1: posting requires a valid Keycloak session (M4a), same as upload. C-5: optional
+    `parentId` makes this a reply; `add_comment` validates the parent belongs to the same
+    (namespace, name) and raises `ValueError` (mapped to 400) otherwise."""
     body = payload.body.strip()
     if not body:
         raise HTTPException(status_code=400, detail="comment body must not be empty")
@@ -261,15 +333,42 @@ def post_comment(
     author = claims.get("preferred_username") or claims.get("sub") or "unknown"
     session = _session()
     try:
-        comment = add_comment(
-            session, namespace=namespace, name=name, author=author, body=body,
-            created_at=datetime.now(timezone.utc),
-        )
+        try:
+            comment = add_comment(
+                session, namespace=namespace, name=name, author=author, body=body,
+                created_at=datetime.now(timezone.utc), parent_id=payload.parentId,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.commit()
         return CommentOut(
             id=comment.id, namespace=comment.namespace, name=comment.name,
             author=comment.author, body=comment.body, createdAt=comment.created_at,
+            parentId=comment.parent_id, deleted=comment.deleted,
         )
+    finally:
+        session.close()
+
+
+@app.delete("/api/skills/{namespace}/{name}/comments/{comment_id}", status_code=204)
+def delete_comment(
+    namespace: str, name: str, comment_id: int, claims: dict = Depends(require_keycloak_user)
+) -> None:
+    """C-5: soft-delete. Only the comment's own author or the skill's namespace owner may
+    delete it — the "author" half compares `comment.author` directly (a comment's author is
+    not necessarily the skill's author), the "namespace owner" half reuses
+    `yank.py::can_manage_version`'s namespace-owner check (same query, no need to duplicate
+    it)."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        is_owner = can_manage_version(session, namespace=namespace, username=username)
+        try:
+            soft_delete_comment(session, comment_id=comment_id, actor_username=username, is_namespace_owner=is_owner)
+        except CommentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CommentPermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     finally:
         session.close()
 
@@ -479,6 +578,33 @@ def my_usage(claims: dict = Depends(require_keycloak_user)) -> MyUsageStats:
     try:
         stats = my_usage_stats(session, username)
         return MyUsageStats(**stats)
+    finally:
+        session.close()
+
+
+@app.get("/api/my/subscriptions", response_model=list[MySubscriptionOut])
+def my_subscriptions(claims: dict = Depends(require_keycloak_user)) -> list[MySubscriptionOut]:
+    """C-5 — snapshot of "what is currently the latest version of everything I'm subscribed
+    to." Deliberately not a feed/inbox (no read/unread tracking — a dedicated notifications
+    table is explicitly deferred, see `subscriptions.py`): each call just re-resolves the
+    current latest (non-yanked) version for every subscribed (namespace, name) pair. A
+    subscription whose skill has since been entirely yanked (so it no longer appears in
+    `list_latest`) is silently omitted rather than erroring — there is no "latest version" to
+    report for it."""
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        subscribed = set(list_subscriptions_for_user(session, username))
+        if not subscribed:
+            return []
+        latest_by_skill = {(e.namespace, e.name): e for e in list_latest(session)}
+        return [
+            MySubscriptionOut(
+                namespace=ns, name=n, latestVersion=entry.version, publishedAt=entry.published_at
+            )
+            for (ns, n) in subscribed
+            if (entry := latest_by_skill.get((ns, n))) is not None
+        ]
     finally:
         session.close()
 

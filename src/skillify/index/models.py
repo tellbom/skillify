@@ -46,7 +46,15 @@ class SkillIndexEntry(Base):
 
 
 class SkillComment(Base):
-    """T5.1 — flat (no threading) comments on a skill's detail page."""
+    """T5.1 — flat (no threading) comments on a skill's detail page.
+
+    C-5: `parent_id` adds one level of self-referencing tree structure (NULL = top-level
+    comment; non-NULL = a reply to another comment in the same (namespace, name) — validated
+    in the application layer at write time, see `comments.py::add_comment`). No DB foreign
+    key on `parent_id`, consistent with this table (and this whole schema) never using FKs
+    even for its other logical parent-child relationships. `deleted` is a soft-delete flag:
+    a deleted comment's row stays (so replies keep a valid tree to render against) but its
+    body is replaced with a placeholder at read time (see `list_comments_for_display`)."""
 
     __tablename__ = "skill_comments"
 
@@ -56,6 +64,8 @@ class SkillComment(Base):
     author: Mapped[str] = mapped_column(String(255))  # Keycloak preferred_username/sub
     body: Mapped[str] = mapped_column(String(4000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    parent_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<SkillComment {self.namespace}/{self.name} by {self.author}>"
@@ -76,6 +86,45 @@ class SkillRating(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<SkillRating {self.namespace}/{self.name} {self.score} by {self.author}>"
+
+
+class SkillStar(Base):
+    """C-5 — one row per (namespace, name, author) means "author has starred this skill";
+    absence of a row means not starred. No score field (unlike `SkillRating`) — existence
+    is the only signal. `star_counts` (events.py-style batch aggregation) powers the star
+    count shown on listing/detail pages."""
+
+    __tablename__ = "skill_stars"
+    __table_args__ = (UniqueConstraint("namespace", "name", "author", name="uq_skill_star_identity"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    author: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SkillStar {self.namespace}/{self.name} by {self.author}>"
+
+
+class SkillSubscription(Base):
+    """C-5 — one row per (namespace, name, author) means "author is subscribed to new
+    versions of this skill". Structurally identical to `SkillStar` (existence-only, no
+    score); kept as a separate table because star and subscribe are independent actions
+    (you can star without subscribing and vice versa) even though the row shape is the
+    same, matching the source task doc's explicit "two tables, same shape" design."""
+
+    __tablename__ = "skill_subscriptions"
+    __table_args__ = (UniqueConstraint("namespace", "name", "author", name="uq_skill_subscription_identity"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    author: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SkillSubscription {self.namespace}/{self.name} by {self.author}>"
 
 
 class SkillNamespaceOwner(Base):

@@ -45,6 +45,7 @@ class UploadResponse(BaseModel):
 
 class CommentIn(BaseModel):
     body: str
+    parentId: int | None = None
 
 
 class CommentOut(BaseModel):
@@ -54,6 +55,8 @@ class CommentOut(BaseModel):
     author: str
     body: str
     createdAt: datetime
+    parentId: int | None = None
+    deleted: bool = False
 
 
 class RatingIn(BaseModel):
@@ -122,3 +125,19 @@ class MyUsageStats(BaseModel):
     totalSkills: int
     totalInstalls: int
     installsBySkill: dict[str, int]
+
+
+class StarOut(BaseModel):
+    starred: bool
+    starCount: int
+
+
+class SubscriptionOut(BaseModel):
+    subscribed: bool
+
+
+class MySubscriptionOut(BaseModel):
+    namespace: str
+    name: str
+    latestVersion: str
+    publishedAt: datetime
