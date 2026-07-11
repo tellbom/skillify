@@ -85,3 +85,22 @@ export function getLeaderboard(dimension) {
 export function postRating(namespace, name, score) {
   return request(`/skills/${namespace}/${name}/rating`, { method: 'POST', json: { score }, auth: true })
 }
+
+// C-2 "我的 Skill" workspace (Task 4 endpoints). All four require auth like every other call
+// here now (see the request() comment above) — `auth: true` kept for readability at the call
+// site even though it's currently a no-op flag.
+export function getMySkills() {
+  return request('/my/skills', { auth: true })
+}
+
+export function getMyNamespaces() {
+  return request('/my/namespaces', { auth: true })
+}
+
+export function getMyPublishJobs(status) {
+  return request('/my/publish-jobs', { params: { status }, auth: true })
+}
+
+export function getMyUsage() {
+  return request('/my/usage', { auth: true })
+}

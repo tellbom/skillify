@@ -1,13 +1,23 @@
 <script setup>
 import { ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { uploadSkill } from '../lib/api.js'
 
 const { t } = useI18n()
+const route = useRoute()
 const file = ref(null)
 const uploading = ref(false)
 const result = ref(null)
 const error = ref(null)
+
+// C-2 "retry a failed publish" deep link (MySkillsView.vue -> here): carries just the
+// namespace/name/version as a hint, never the file itself — the user must still re-select the
+// same zip and resubmit; the backend's draft-based idempotency (A-2) makes that resubmission
+// safe under the hood, but this view makes no implicit-resume promise (per Task 4/5 design).
+const retryHint = route.query.retryNamespace
+  ? `${route.query.retryNamespace}/${route.query.retryName}@${route.query.retryVersion}`
+  : null
 
 function onFileChange(event) {
   file.value = event.target.files[0] || null
@@ -34,6 +44,7 @@ async function submit() {
   <div>
     <router-link to="/" class="back-link">{{ t('common.backToSkills') }}</router-link>
     <h2>{{ t('upload.title') }}</h2>
+    <p v-if="retryHint" class="hint retry-hint">{{ t('upload.retryHint', { target: retryHint }) }}</p>
     <p class="hint" v-html="t('upload.description')" />
 
     <input type="file" accept=".zip" @change="onFileChange" />
@@ -62,6 +73,9 @@ async function submit() {
   margin-bottom: 1rem;
   color: #888;
   text-decoration: none;
+}
+.retry-hint {
+  color: #80cbc4;
 }
 .hint {
   color: #888;
