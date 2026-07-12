@@ -167,21 +167,26 @@ class BuildStore:
         try:
             yield record
         finally:
-            with self._operation_lock(build_dir):
-                marker.unlink(missing_ok=True)
-                if lease_dir.is_dir() and not any(lease_dir.iterdir()):
-                    lease_dir.rmdir()
-                readers_root = build_dir / "readers"
-                if readers_root.is_dir() and not any(readers_root.iterdir()):
-                    readers_root.rmdir()
-                try:
-                    current = self.load(build_id, owner)
-                except BuildNotFound:
-                    current = None
-                if current is not None and current.revision != record.revision:
-                    old_workspace = build_dir / "revisions" / str(record.revision)
-                    if not self._revision_has_readers(build_dir, record.revision):
-                        shutil.rmtree(old_workspace, ignore_errors=True)
+            marker.unlink(missing_ok=True)
+            try:
+                with self._operation_lock(build_dir):
+                    if lease_dir.is_dir() and not any(lease_dir.iterdir()):
+                        lease_dir.rmdir()
+                    readers_root = build_dir / "readers"
+                    if readers_root.is_dir() and not any(readers_root.iterdir()):
+                        readers_root.rmdir()
+                    try:
+                        current = self.load(build_id, owner)
+                    except BuildNotFound:
+                        current = None
+                    if current is not None and current.revision != record.revision:
+                        old_workspace = build_dir / "revisions" / str(record.revision)
+                        if not self._revision_has_readers(build_dir, record.revision):
+                            shutil.rmtree(old_workspace, ignore_errors=True)
+            except BuildStateConflict:
+                # Marker removal is the correctness boundary. If a mutation owns the lock,
+                # that mutation (or the next one) performs the now-safe revision cleanup.
+                pass
 
     def delete(self, build_id: str, owner: str) -> None:
         record = self.load(build_id, owner)

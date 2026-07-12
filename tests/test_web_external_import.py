@@ -289,6 +289,7 @@ def test_external_selection_lease_prevents_expiry_cleanup_during_copy(
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["expiresAt"] = "2000-01-01T00:00:00+00:00"
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        os.utime(scan_dir / ".selection.lock", (946684800, 946684800))
         external_import._cleanup_expired_scans(load_config())
         cleanup_attempted.append(True)
         assert scan_dir.is_dir()

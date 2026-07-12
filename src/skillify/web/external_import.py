@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,19 @@ _DETECTED_NAMES = (
     "pyproject.toml",
     "package.json",
 )
+
+_ACTIVE_SELECTION_TOKENS: set[str] = set()
+_ACTIVE_SELECTION_TOKENS_LOCK = threading.Lock()
+
+
+def _process_is_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 class ExternalScanNotFound(Exception):
@@ -83,8 +97,14 @@ def _cleanup_expired_scans(cfg: SkillifyConfig) -> None:
                 continue
             except FileExistsError:
                 try:
+                    lease = json.loads(lock_path.read_text(encoding="utf-8"))
                     lock_age = now.timestamp() - lock_path.stat().st_mtime
-                except FileNotFoundError:
+                except (OSError, json.JSONDecodeError):
+                    lease = {}
+                    lock_age = max(cfg.build_ttl_seconds, 300) + 1
+                with _ACTIVE_SELECTION_TOKENS_LOCK:
+                    locally_active = lease.get("token") in _ACTIVE_SELECTION_TOKENS
+                if locally_active or _process_is_alive(lease.get("pid")):
                     continue
                 if lock_age <= max(cfg.build_ttl_seconds, 300):
                     continue
@@ -114,7 +134,25 @@ def _scan_selection_lease(directory: Path):
         descriptor,
         json.dumps({"token": token, "pid": os.getpid(), "startedAt": _now().isoformat()}).encode("utf-8"),
     )
+    os.fsync(descriptor)
     os.close(descriptor)
+    with _ACTIVE_SELECTION_TOKENS_LOCK:
+        _ACTIVE_SELECTION_TOKENS.add(token)
+
+    stop_heartbeat = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_heartbeat.wait(1.0):
+            try:
+                value = json.loads(lock_path.read_text(encoding="utf-8"))
+                if value.get("token") != token:
+                    return
+                os.utime(lock_path, None)
+            except (OSError, json.JSONDecodeError):
+                return
+
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
 
     def heartbeat() -> None:
         try:
@@ -128,6 +166,10 @@ def _scan_selection_lease(directory: Path):
     try:
         yield heartbeat
     finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=2.0)
+        with _ACTIVE_SELECTION_TOKENS_LOCK:
+            _ACTIVE_SELECTION_TOKENS.discard(token)
         try:
             value = json.loads(lock_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

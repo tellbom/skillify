@@ -121,6 +121,19 @@ def test_successful_mutation_retains_immutable_prior_revision_for_readers(tmp_pa
     assert not original.workspace.exists()
 
 
+def test_reader_lease_release_never_fails_when_mutation_lock_is_busy(tmp_path: Path) -> None:
+    store = BuildStore(tmp_path, ttl_seconds=60)
+    created = store.create("jane", "guided")
+    build_dir = created.workspace.parents[1]
+
+    with store.read_lease(created.build_id, "jane"):
+        (build_dir / ".operation.lock").write_text("busy mutation", encoding="utf-8")
+
+    reader_markers = build_dir / "readers"
+    assert not reader_markers.exists() or not any(path.is_file() for path in reader_markers.rglob("*"))
+    (build_dir / ".operation.lock").unlink(missing_ok=True)
+
+
 def test_build_preview_reports_exact_native_content_and_validation(tmp_path: Path) -> None:
     now = datetime(2026, 7, 12, tzinfo=timezone.utc)
     store = BuildStore(tmp_path, ttl_seconds=60, clock=lambda: now)
