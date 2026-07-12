@@ -334,6 +334,13 @@ def test_expired_scan_cleanup_reclaims_stale_selection_lease(
     assert not scan_dir.exists()
 
 
+def test_process_liveness_probe_is_read_only_and_handles_missing_pid() -> None:
+    import skillify.web.external_import as external_import
+
+    assert external_import._process_is_alive(os.getpid()) is True
+    assert external_import._process_is_alive(2_147_483_647) is False
+
+
 def test_external_scan_reads_only_explicit_pyproject_project_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
 ) -> None:
