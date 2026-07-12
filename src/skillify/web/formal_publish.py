@@ -116,10 +116,10 @@ def publish_build(
     expected_revision: int,
 ) -> tuple[PublishResult, BuildRecord]:
     store = store_for_config(cfg)
-    record = store.load(build_id, owner)
-    if record.revision != expected_revision:
-        raise BuildRevisionConflict(record.revision)
-    preview = build_preview(record)
+    with store.read_lease(build_id, owner) as record:
+        if record.revision != expected_revision:
+            raise BuildRevisionConflict(record.revision)
+        preview = build_preview(record)
     if not preview["publishable"]:
         raise BuildNotReady(
             missing_fields=preview["missingFields"],

@@ -79,28 +79,61 @@ def _cleanup_expired_scans(cfg: SkillifyConfig) -> None:
             lock_path = directory / ".selection.lock"
             try:
                 descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except (FileExistsError, FileNotFoundError):
+            except FileNotFoundError:
                 continue
+            except FileExistsError:
+                try:
+                    lock_age = now.timestamp() - lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if lock_age <= max(cfg.build_ttl_seconds, 300):
+                    continue
+                stale_path = directory / f".selection.lock.stale.{uuid.uuid4().hex}"
+                try:
+                    lock_path.replace(stale_path)
+                    descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except (FileNotFoundError, FileExistsError):
+                    continue
             else:
-                os.close(descriptor)
-                shutil.rmtree(directory, ignore_errors=True)
+                pass
+            os.close(descriptor)
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 @contextmanager
 def _scan_selection_lease(directory: Path):
     lock_path = directory / ".selection.lock"
+    token = uuid.uuid4().hex
     try:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileNotFoundError as exc:
         raise ExternalScanNotFound("external scan not found") from exc
     except FileExistsError as exc:
         raise InvalidExternalScan("external scan is already being selected") from exc
+    os.write(
+        descriptor,
+        json.dumps({"token": token, "pid": os.getpid(), "startedAt": _now().isoformat()}).encode("utf-8"),
+    )
+    os.close(descriptor)
+
+    def heartbeat() -> None:
+        try:
+            value = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExternalScanNotFound("external scan lease was lost") from exc
+        if value.get("token") != token:
+            raise ExternalScanNotFound("external scan lease was lost")
+        os.utime(lock_path, None)
+
     try:
-        os.write(descriptor, str(os.getpid()).encode("ascii"))
-        yield
+        yield heartbeat
     finally:
-        os.close(descriptor)
-        lock_path.unlink(missing_ok=True)
+        try:
+            value = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            value = {}
+        if value.get("token") == token:
+            lock_path.unlink(missing_ok=True)
 
 
 def _scan_dir(cfg: SkillifyConfig, scan_id: str) -> Path:
@@ -276,7 +309,7 @@ def select_external_candidates(
         raise InvalidExternalScan("candidateIds must not contain duplicates")
 
     directory = _scan_dir(cfg, scan_id)
-    with _scan_selection_lease(directory):
+    with _scan_selection_lease(directory) as heartbeat:
         directory, metadata = _load_scan(cfg, scan_id, owner)
         by_id = {item["candidateId"]: item for item in metadata.get("candidates") or []}
         if any(candidate_id not in by_id for candidate_id in candidate_ids):
@@ -296,7 +329,9 @@ def select_external_candidates(
                 record = store.create(owner, "external", detected_facts=facts)
                 records.append(record)
                 source = directory / "extracted" / Path(candidate["rootPath"])
+                heartbeat()
                 shutil.copytree(source, record.workspace, dirs_exist_ok=True)
+                heartbeat()
 
                 manifest: dict[str, Any] = {
                     "manifestVersion": 1,

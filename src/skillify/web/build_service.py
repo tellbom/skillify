@@ -9,6 +9,7 @@ import yaml
 
 from skillify.common.config import SkillifyConfig
 from skillify.web.build_models import BuildLimitExceeded, BuildRecord, InvalidBuildFile
+from skillify.web.build_preview import build_preview
 from skillify.web.build_store import BuildStore
 
 _RESERVED_BUILD_PATHS = {"skill.yaml", "skill.md"}
@@ -67,6 +68,12 @@ def create_guided_build(
 
 def get_build(cfg: SkillifyConfig, *, owner: str, build_id: str) -> BuildRecord:
     return store_for_config(cfg).load(build_id, owner)
+
+
+def preview_build(cfg: SkillifyConfig, *, owner: str, build_id: str) -> dict[str, Any]:
+    store = store_for_config(cfg)
+    with store.read_lease(build_id, owner) as record:
+        return build_preview(record)
 
 
 def update_build(

@@ -76,12 +76,12 @@ from skillify.web.build_models import (
     BuildStateConflict,
     InvalidBuildFile,
 )
-from skillify.web.build_preview import build_preview
 from skillify.web.build_service import (
     create_guided_build,
     delete_build_file,
     get_build,
     put_build_file,
+    preview_build,
     update_build,
 )
 from skillify.web.external_import import (
@@ -584,10 +584,12 @@ def external_skill_selection(
     payload: ExternalSelectionIn,
     claims: dict = Depends(require_keycloak_user),
 ) -> ExternalSelectionOut:
+    cfg = load_config()
+    owner = _build_owner(claims)
     try:
         records = select_external_candidates(
-            load_config(),
-            owner=_build_owner(claims),
+            cfg,
+            owner=owner,
             scan_id=scan_id,
             candidate_ids=payload.candidateIds,
         )
@@ -595,7 +597,12 @@ def external_skill_selection(
         raise HTTPException(status_code=404, detail="external scan not found") from exc
     except InvalidExternalScan as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ExternalSelectionOut(builds=[BuildPreviewOut(**build_preview(record)) for record in records])
+    return ExternalSelectionOut(
+        builds=[
+            BuildPreviewOut(**preview_build(cfg, owner=owner, build_id=record.build_id))
+            for record in records
+        ]
+    )
 
 
 @app.post("/api/skill-builds/guided", response_model=BuildPreviewOut)
@@ -613,7 +620,7 @@ def guided_skill_build(
         )
     except BuildLimitExceeded as exc:
         _raise_build_http_error(exc)
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(**preview_build(cfg, owner=_build_owner(claims), build_id=record.build_id))
 
 
 @app.get("/api/skill-builds/{build_id}", response_model=BuildPreviewOut)
@@ -622,10 +629,12 @@ def skill_build_preview(
     claims: dict = Depends(require_keycloak_user),
 ) -> BuildPreviewOut:
     try:
-        record = get_build(load_config(), owner=_build_owner(claims), build_id=build_id)
+        cfg = load_config()
+        owner = _build_owner(claims)
+        preview = preview_build(cfg, owner=owner, build_id=build_id)
     except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(**preview)
 
 
 @app.patch("/api/skill-builds/{build_id}", response_model=BuildPreviewOut)
@@ -645,7 +654,9 @@ def patch_skill_build(
         )
     except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(
+        **preview_build(load_config(), owner=_build_owner(claims), build_id=record.build_id)
+    )
 
 
 @app.post("/api/skill-builds/{build_id}/files", response_model=BuildPreviewOut)
@@ -674,7 +685,7 @@ async def add_skill_build_file(
         )
     except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(**preview_build(cfg, owner=_build_owner(claims), build_id=record.build_id))
 
 
 @app.delete("/api/skill-builds/{build_id}/files", response_model=BuildPreviewOut)
@@ -694,7 +705,9 @@ def remove_skill_build_file(
         )
     except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(
+        **preview_build(load_config(), owner=_build_owner(claims), build_id=record.build_id)
+    )
 
 
 @app.post("/api/skill-builds/{build_id}/publish", response_model=PublishBuildOut)
@@ -802,7 +815,7 @@ async def upload_skill(
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    return BuildPreviewOut(**build_preview(record))
+    return BuildPreviewOut(**preview_build(cfg, owner=_build_owner(claims), build_id=record.build_id))
 
 
 @app.get("/api/my/skills", response_model=list[SkillSummary])

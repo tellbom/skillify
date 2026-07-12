@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -302,6 +303,34 @@ def test_external_selection_lease_prevents_expiry_cleanup_during_copy(
 
     assert selected.status_code == 200, selected.text
     assert cleanup_attempted
+
+
+def test_expired_scan_cleanup_reclaims_stale_selection_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    first = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("first.zip", _multi_skill_zip(), "application/zip")},
+        headers=_headers(token),
+    ).json()
+    scan_dir = tmp_path / "home" / "cache" / "skill-scans" / first["scanId"]
+    metadata_path = scan_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["expiresAt"] = "2000-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    lock_path = scan_dir / ".selection.lock"
+    lock_path.write_text('{"token":"abandoned"}', encoding="utf-8")
+    os.utime(lock_path, (946684800, 946684800))
+
+    second = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("second.zip", _multi_skill_zip(), "application/zip")},
+        headers=_headers(token),
+    )
+
+    assert second.status_code == 200, second.text
+    assert not scan_dir.exists()
 
 
 def test_external_scan_reads_only_explicit_pyproject_project_dependencies(

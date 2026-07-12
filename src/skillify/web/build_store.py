@@ -120,6 +120,15 @@ class BuildStore:
                     raise
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
+            for old_revision in revisions_dir.iterdir():
+                if not old_revision.is_dir() or old_revision == target:
+                    continue
+                try:
+                    revision_number = int(old_revision.name)
+                except ValueError:
+                    continue
+                if not self._revision_has_readers(build_dir, revision_number):
+                    shutil.rmtree(old_revision, ignore_errors=True)
             return self._record(build_dir, metadata)
 
     def transition_status(
@@ -144,6 +153,36 @@ class BuildStore:
             self._write_metadata(build_dir, metadata)
             return self._record(build_dir, metadata)
 
+    @contextmanager
+    def read_lease(self, build_id: str, owner: str):
+        initial = self.load(build_id, owner)
+        build_dir = self._build_dir(initial.build_id)
+        lease_id = uuid.uuid4().hex
+        with self._operation_lock(build_dir):
+            record = self.load(build_id, owner)
+            lease_dir = build_dir / "readers" / str(record.revision)
+            lease_dir.mkdir(parents=True, exist_ok=True)
+            marker = lease_dir / lease_id
+            marker.write_text(str(os.getpid()), encoding="ascii")
+        try:
+            yield record
+        finally:
+            with self._operation_lock(build_dir):
+                marker.unlink(missing_ok=True)
+                if lease_dir.is_dir() and not any(lease_dir.iterdir()):
+                    lease_dir.rmdir()
+                readers_root = build_dir / "readers"
+                if readers_root.is_dir() and not any(readers_root.iterdir()):
+                    readers_root.rmdir()
+                try:
+                    current = self.load(build_id, owner)
+                except BuildNotFound:
+                    current = None
+                if current is not None and current.revision != record.revision:
+                    old_workspace = build_dir / "revisions" / str(record.revision)
+                    if not self._revision_has_readers(build_dir, record.revision):
+                        shutil.rmtree(old_workspace, ignore_errors=True)
+
     def delete(self, build_id: str, owner: str) -> None:
         record = self.load(build_id, owner)
         shutil.rmtree(self._build_dir(record.build_id), ignore_errors=True)
@@ -165,8 +204,29 @@ class BuildStore:
                 expired = datetime.fromisoformat(metadata["expiresAt"]) <= now
             except (BuildNotFound, KeyError, TypeError, ValueError):
                 expired = True
-            if expired:
+            if expired and not self._has_active_readers(build_dir, now):
                 shutil.rmtree(build_dir, ignore_errors=True)
+
+    def _has_active_readers(self, build_dir: Path, now: datetime) -> bool:
+        readers_root = build_dir / "readers"
+        if not readers_root.is_dir():
+            return False
+        stale_after = max(self.ttl_seconds, 300)
+        active = False
+        for marker in readers_root.rglob("*"):
+            if not marker.is_file():
+                continue
+            age = now.timestamp() - marker.stat().st_mtime
+            if age > stale_after:
+                marker.unlink(missing_ok=True)
+            else:
+                active = True
+        return active
+
+    @staticmethod
+    def _revision_has_readers(build_dir: Path, revision: int) -> bool:
+        lease_dir = build_dir / "readers" / str(revision)
+        return lease_dir.is_dir() and any(path.is_file() for path in lease_dir.iterdir())
 
     @staticmethod
     @contextmanager
