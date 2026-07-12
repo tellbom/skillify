@@ -11,7 +11,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -39,9 +39,12 @@ from skillify.publish.publisher import AlreadyPublishedError, PublishNotConfigur
 from skillify.web import service
 from skillify.web.auth import require_keycloak_user
 from skillify.web.schemas import (
+    BuildPreviewOut,
+    BuildUpdateIn,
     CommentIn,
     CommentOut,
     EventIn,
+    GuidedBuildIn,
     InstallInfo,
     LeaderboardEntry,
     MyNamespaceOut,
@@ -59,6 +62,15 @@ from skillify.web.schemas import (
     VersionDiff,
     VersionInfo,
     YankOut,
+)
+from skillify.web.build_models import BuildNotFound, BuildRevisionConflict, InvalidBuildFile
+from skillify.web.build_preview import build_preview
+from skillify.web.build_service import (
+    create_guided_build,
+    delete_build_file,
+    get_build,
+    put_build_file,
+    update_build,
 )
 from skillify.web.upload import UnsafeUpload
 from skillify.web.upload_service import NamespaceOwnershipNotConfiguredError, UploadRejected, handle_upload
@@ -480,6 +492,119 @@ def report_event(namespace: str, name: str, payload: EventIn) -> None:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+
+
+def _build_owner(claims: dict) -> str:
+    return claims.get("preferred_username") or claims.get("sub") or "unknown"
+
+
+def _raise_build_http_error(exc: Exception) -> None:
+    if isinstance(exc, BuildNotFound):
+        raise HTTPException(status_code=404, detail="build not found") from exc
+    if isinstance(exc, BuildRevisionConflict):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "currentRevision": exc.current_revision},
+        ) from exc
+    if isinstance(exc, InvalidBuildFile):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
+
+
+@app.post("/api/skill-builds/guided", response_model=BuildPreviewOut)
+def guided_skill_build(
+    payload: GuidedBuildIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> BuildPreviewOut:
+    cfg = load_config()
+    record = create_guided_build(
+        cfg,
+        owner=_build_owner(claims),
+        manifest=payload.manifest,
+        skill_md=payload.skillMd,
+    )
+    return BuildPreviewOut(**build_preview(record))
+
+
+@app.get("/api/skill-builds/{build_id}", response_model=BuildPreviewOut)
+def skill_build_preview(
+    build_id: str,
+    claims: dict = Depends(require_keycloak_user),
+) -> BuildPreviewOut:
+    try:
+        record = get_build(load_config(), owner=_build_owner(claims), build_id=build_id)
+    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+        _raise_build_http_error(exc)
+    return BuildPreviewOut(**build_preview(record))
+
+
+@app.patch("/api/skill-builds/{build_id}", response_model=BuildPreviewOut)
+def patch_skill_build(
+    build_id: str,
+    payload: BuildUpdateIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> BuildPreviewOut:
+    try:
+        record = update_build(
+            load_config(),
+            owner=_build_owner(claims),
+            build_id=build_id,
+            expected_revision=payload.expectedRevision,
+            manifest=payload.manifest,
+            skill_md=payload.skillMd,
+        )
+    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+        _raise_build_http_error(exc)
+    return BuildPreviewOut(**build_preview(record))
+
+
+@app.post("/api/skill-builds/{build_id}/files", response_model=BuildPreviewOut)
+async def add_skill_build_file(
+    build_id: str,
+    path: str = Form(...),
+    expectedRevision: int = Form(...),
+    file: UploadFile = File(...),
+    claims: dict = Depends(require_keycloak_user),
+) -> BuildPreviewOut:
+    cfg = load_config()
+    content = await file.read(cfg.max_upload_bytes + 1)
+    if len(content) > cfg.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file exceeds the {cfg.max_upload_bytes} byte limit",
+        )
+    try:
+        record = put_build_file(
+            cfg,
+            owner=_build_owner(claims),
+            build_id=build_id,
+            expected_revision=expectedRevision,
+            path=path,
+            content=content,
+        )
+    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+        _raise_build_http_error(exc)
+    return BuildPreviewOut(**build_preview(record))
+
+
+@app.delete("/api/skill-builds/{build_id}/files", response_model=BuildPreviewOut)
+def remove_skill_build_file(
+    build_id: str,
+    path: str = Query(...),
+    expectedRevision: int = Query(...),
+    claims: dict = Depends(require_keycloak_user),
+) -> BuildPreviewOut:
+    try:
+        record = delete_build_file(
+            load_config(),
+            owner=_build_owner(claims),
+            build_id=build_id,
+            expected_revision=expectedRevision,
+            path=path,
+        )
+    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+        _raise_build_http_error(exc)
+    return BuildPreviewOut(**build_preview(record))
 
 
 @app.post("/api/skills/upload", response_model=UploadResponse)

@@ -5,11 +5,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from skillify.common.config import load_config
+from skillify.web.app import app
 from skillify.web.build_models import BuildNotFound, BuildRevisionConflict
 from skillify.web.build_preview import build_preview
 from skillify.web.build_store import BuildStore
+from tests.fake_forgejo import fake_forgejo  # noqa: F401
+from tests.fake_keycloak import fake_keycloak  # noqa: F401
+
+client = TestClient(app)
 
 
 VALID_MANIFEST = {
@@ -119,3 +125,124 @@ def test_external_preview_separates_missing_and_unconfirmed_fields(tmp_path: Pat
     assert "tags" in preview["missingFields"]
     assert preview["unconfirmedFields"] == ["description", "name"]
     assert preview["publishable"] is False
+
+
+def _configure_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_keycloak) -> str:
+    monkeypatch.setenv("SKILLIFY_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SKILLIFY_KEYCLOAK_REALM_URL", fake_keycloak.realm_url)
+    monkeypatch.setenv("SKILLIFY_KEYCLOAK_AUDIENCE", "skillify-web")
+    return fake_keycloak.mint_token(audience="skillify-web", subject="jane")
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_guided_build_can_be_partial_then_updated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure_api(monkeypatch, tmp_path, fake_keycloak)
+    created = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": {"name": "hello-skill"}, "skillMd": "# Draft"},
+        headers=_headers(token),
+    )
+
+    assert created.status_code == 200, created.text
+    preview = created.json()
+    assert preview["sourceType"] == "guided"
+    assert "namespace" in preview["missingFields"]
+    assert preview["publishable"] is False
+
+    updated = client.patch(
+        f"/api/skill-builds/{preview['buildId']}",
+        json={
+            "expectedRevision": preview["revision"],
+            "manifest": VALID_MANIFEST,
+            "skillMd": VALID_SKILL_MD,
+        },
+        headers=_headers(token),
+    )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["revision"] == preview["revision"] + 1
+    assert updated.json()["publishable"] is True
+
+
+def test_guided_update_rejects_stale_revision_and_hides_other_users_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    jane = _configure_api(monkeypatch, tmp_path, fake_keycloak)
+    bob = fake_keycloak.mint_token(audience="skillify-web", subject="bob")
+    preview = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": {}, "skillMd": ""},
+        headers=_headers(jane),
+    ).json()
+
+    first = client.patch(
+        f"/api/skill-builds/{preview['buildId']}",
+        json={"expectedRevision": 1, "manifest": {"name": "hello-skill"}},
+        headers=_headers(jane),
+    )
+    assert first.status_code == 200
+
+    stale = client.patch(
+        f"/api/skill-builds/{preview['buildId']}",
+        json={"expectedRevision": 1, "manifest": {"version": "1.0.0"}},
+        headers=_headers(jane),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["currentRevision"] == 2
+
+    hidden = client.get(
+        f"/api/skill-builds/{preview['buildId']}",
+        headers=_headers(bob),
+    )
+    assert hidden.status_code == 404
+
+
+def test_guided_file_mutation_is_revisioned_and_rejects_reserved_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure_api(monkeypatch, tmp_path, fake_keycloak)
+    preview = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": VALID_MANIFEST, "skillMd": VALID_SKILL_MD},
+        headers=_headers(token),
+    ).json()
+
+    added = client.post(
+        f"/api/skill-builds/{preview['buildId']}/files",
+        data={"path": "scripts/run.py", "expectedRevision": preview["revision"]},
+        files={"file": ("run.py", b"print('ok')\n", "text/x-python")},
+        headers=_headers(token),
+    )
+    assert added.status_code == 200, added.text
+    added_preview = added.json()
+    assert added_preview["revision"] == preview["revision"] + 1
+    assert any(item["path"] == "scripts/run.py" for item in added_preview["tree"])
+
+    rejected = client.post(
+        f"/api/skill-builds/{preview['buildId']}/files",
+        data={"path": "skill.yaml", "expectedRevision": added_preview["revision"]},
+        files={"file": ("skill.yaml", b"bad", "text/yaml")},
+        headers=_headers(token),
+    )
+    assert rejected.status_code == 400
+
+    traversal = client.post(
+        f"/api/skill-builds/{preview['buildId']}/files",
+        data={"path": "../escape.py", "expectedRevision": added_preview["revision"]},
+        files={"file": ("escape.py", b"bad", "text/x-python")},
+        headers=_headers(token),
+    )
+    assert traversal.status_code == 400
+
+    deleted = client.delete(
+        f"/api/skill-builds/{preview['buildId']}/files",
+        params={"path": "scripts/run.py", "expectedRevision": added_preview["revision"]},
+        headers=_headers(token),
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert not any(item["path"] == "scripts/run.py" for item in deleted.json()["tree"])

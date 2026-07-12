@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SkillSummary(BaseModel):
@@ -54,6 +55,45 @@ class UploadResponse(BaseModel):
     version: str
     releaseUrl: str
     indexError: str | None = None
+
+
+class GuidedBuildIn(BaseModel):
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    skillMd: str = ""
+
+
+class BuildUpdateIn(BaseModel):
+    expectedRevision: int
+    manifest: dict[str, Any] | None = None
+    skillMd: str | None = None
+
+
+class BuildTreeItem(BaseModel):
+    path: str
+    type: str
+    size: int | None = None
+
+
+class ValidationIssueOut(BaseModel):
+    path: str
+    message: str
+
+
+class BuildPreviewOut(BaseModel):
+    buildId: str
+    sourceType: str
+    revision: int
+    status: str
+    expiresAt: datetime
+    manifest: dict[str, Any]
+    manifestYaml: str
+    skillMd: str
+    tree: list[BuildTreeItem]
+    detectedFacts: dict[str, Any]
+    missingFields: list[str]
+    unconfirmedFields: list[str]
+    issues: list[ValidationIssueOut]
+    publishable: bool
 
 
 class CommentIn(BaseModel):
