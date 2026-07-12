@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 from skillify.common.config import SkillifyConfig
-from skillify.web.build_models import BuildRecord, InvalidBuildFile
+from skillify.web.build_models import BuildLimitExceeded, BuildRecord, InvalidBuildFile
 from skillify.web.build_store import BuildStore
 
 _RESERVED_BUILD_PATHS = {"skill.yaml", "skill.md"}
@@ -55,9 +55,14 @@ def create_guided_build(
 ) -> BuildRecord:
     store = store_for_config(cfg)
     record = store.create("" + owner, "guided", confirmed_fields=set(manifest))
-    _write_manifest(record.workspace, _manifest_with_defaults(manifest, guided=True))
-    (record.workspace / "SKILL.md").write_text(skill_md, encoding="utf-8")
-    return store.load(record.build_id, owner)
+    try:
+        _write_manifest(record.workspace, _manifest_with_defaults(manifest, guided=True))
+        (record.workspace / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        ensure_workspace_limits(record.workspace, cfg)
+        return store.load(record.build_id, owner)
+    except Exception:
+        store.delete(record.build_id, owner)
+        raise
 
 
 def get_build(cfg: SkillifyConfig, *, owner: str, build_id: str) -> BuildRecord:
@@ -95,6 +100,7 @@ def update_build(
                 metadata["confirmedFields"] = sorted(confirmed)
         if skill_md is not None:
             (workspace / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        ensure_workspace_limits(workspace, cfg)
 
     return store.mutate(build_id, owner, expected_revision, mutation)
 
@@ -113,6 +119,14 @@ def normalize_build_path(value: str) -> PurePosixPath:
 def _workspace_usage(workspace: Path) -> tuple[int, int]:
     files = [path for path in workspace.rglob("*") if path.is_file()]
     return len(files), sum(path.stat().st_size for path in files)
+
+
+def ensure_workspace_limits(workspace: Path, cfg: SkillifyConfig) -> None:
+    file_count, total_size = _workspace_usage(workspace)
+    if file_count > cfg.max_extracted_files:
+        raise BuildLimitExceeded(f"build exceeds the {cfg.max_extracted_files} file limit")
+    if total_size > cfg.max_extracted_bytes:
+        raise BuildLimitExceeded(f"build exceeds the {cfg.max_extracted_bytes} byte limit")
 
 
 def put_build_file(
@@ -134,9 +148,9 @@ def put_build_file(
         projected_count = file_count if target.is_file() else file_count + 1
         projected_size = total_size - current_size + len(content)
         if projected_count > cfg.max_extracted_files:
-            raise InvalidBuildFile(f"build exceeds the {cfg.max_extracted_files} file limit")
+            raise BuildLimitExceeded(f"build exceeds the {cfg.max_extracted_files} file limit")
         if projected_size > cfg.max_extracted_bytes:
-            raise InvalidBuildFile(f"build exceeds the {cfg.max_extracted_bytes} byte limit")
+            raise BuildLimitExceeded(f"build exceeds the {cfg.max_extracted_bytes} byte limit")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
 

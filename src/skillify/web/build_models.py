@@ -65,5 +65,23 @@ class BuildStateConflict(Exception):
     pass
 
 
+class BuildNotReady(Exception):
+    def __init__(
+        self,
+        *,
+        missing_fields: list[str],
+        unconfirmed_fields: list[str],
+        issues: list[dict[str, str]],
+    ) -> None:
+        self.missing_fields = missing_fields
+        self.unconfirmed_fields = unconfirmed_fields
+        self.issues = issues
+        super().__init__("build is not ready to publish")
+
+
 class InvalidBuildFile(Exception):
+    pass
+
+
+class BuildLimitExceeded(Exception):
     pass

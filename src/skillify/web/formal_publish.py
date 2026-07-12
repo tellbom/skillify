@@ -16,7 +16,7 @@ from skillify.index.publish_jobs import record_job_result
 from skillify.publish.git_source import push_skill_source
 from skillify.publish.publisher import PublishResult, publish_skill_dir
 from skillify.validator import ValidationIssue, validate_skill_dir
-from skillify.web.build_models import BuildRecord, BuildRevisionConflict
+from skillify.web.build_models import BuildNotReady, BuildRecord, BuildRevisionConflict
 from skillify.web.build_preview import build_preview
 from skillify.web.build_service import store_for_config
 from skillify.web.upload_service import NamespaceOwnershipNotConfiguredError, UploadRejected
@@ -121,9 +121,10 @@ def publish_build(
         raise BuildRevisionConflict(record.revision)
     preview = build_preview(record)
     if not preview["publishable"]:
-        raise UploadRejected(
-            [ValidationIssue(path=item["path"], message=item["message"]) for item in preview["issues"]]
-            or [ValidationIssue(path="build", message="build is not ready to publish")]
+        raise BuildNotReady(
+            missing_fields=preview["missingFields"],
+            unconfirmed_fields=preview["unconfirmedFields"],
+            issues=preview["issues"],
         )
     store.transition_status(
         build_id,

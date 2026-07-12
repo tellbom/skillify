@@ -34,6 +34,33 @@ def safe_extract_zip(
     max_extracted_bytes: int = 100 * 1024 * 1024,
     max_extracted_files: int = 5000,
 ) -> None:
+    try:
+        _extract_zip(
+            zip_path,
+            dest_dir,
+            max_extracted_bytes=max_extracted_bytes,
+            max_extracted_files=max_extracted_files,
+        )
+    except UnsafeUpload:
+        raise
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        RuntimeError,
+        ValueError,
+        FileExistsError,
+        NotADirectoryError,
+    ) as exc:
+        raise UnsafeUpload(f"invalid zip archive: {exc}") from exc
+
+
+def _extract_zip(
+    zip_path: Path,
+    dest_dir: Path,
+    *,
+    max_extracted_bytes: int = 100 * 1024 * 1024,
+    max_extracted_files: int = 5000,
+) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as zf:
         infos = [info for info in zf.infolist() if not info.is_dir()]

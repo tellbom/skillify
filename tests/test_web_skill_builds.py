@@ -75,10 +75,27 @@ def test_build_store_is_owner_bound_revisioned_and_expiring(tmp_path: Path) -> N
 def test_build_store_rejects_a_concurrent_operation_lock(tmp_path: Path) -> None:
     store = BuildStore(tmp_path, ttl_seconds=60)
     record = store.create("jane", "guided")
-    (record.workspace.parent / ".operation.lock").write_text("busy", encoding="utf-8")
+    (record.workspace.parents[1] / ".operation.lock").write_text("busy", encoding="utf-8")
 
     with pytest.raises(BuildStateConflict, match="another operation"):
         store.mutate(record.build_id, "jane", 1, lambda _workspace, _meta: None)
+
+
+def test_failed_mutation_preserves_revision_and_previewed_bytes(tmp_path: Path) -> None:
+    store = BuildStore(tmp_path, ttl_seconds=60)
+    record = store.create("jane", "guided")
+    (record.workspace / "SKILL.md").write_text("original", encoding="utf-8")
+
+    def fail_after_write(workspace: Path, _metadata: dict) -> None:
+        (workspace / "SKILL.md").write_text("changed", encoding="utf-8")
+        raise OSError("injected write failure")
+
+    with pytest.raises(OSError, match="injected"):
+        store.mutate(record.build_id, "jane", 1, fail_after_write)
+
+    unchanged = store.load(record.build_id, "jane")
+    assert unchanged.revision == 1
+    assert (unchanged.workspace / "SKILL.md").read_text(encoding="utf-8") == "original"
 
 
 def test_build_preview_reports_exact_native_content_and_validation(tmp_path: Path) -> None:
@@ -255,6 +272,34 @@ def test_guided_file_mutation_is_revisioned_and_rejects_reserved_paths(
     )
     assert deleted.status_code == 200, deleted.text
     assert not any(item["path"] == "scripts/run.py" for item in deleted.json()["tree"])
+
+
+def test_staged_content_limits_return_payload_too_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure_api(monkeypatch, tmp_path, fake_keycloak)
+    preview = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": VALID_MANIFEST, "skillMd": VALID_SKILL_MD},
+        headers=_headers(token),
+    ).json()
+    monkeypatch.setenv("SKILLIFY_MAX_EXTRACTED_BYTES", "1024")
+
+    oversized_file = client.post(
+        f"/api/skill-builds/{preview['buildId']}/files",
+        data={"path": "resources/large.bin", "expectedRevision": preview["revision"]},
+        files={"file": ("large.bin", b"x" * 2048, "application/octet-stream")},
+        headers=_headers(token),
+    )
+    assert oversized_file.status_code == 413
+
+    monkeypatch.setenv("SKILLIFY_HOME", str(tmp_path / "second-home"))
+    oversized_guided = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": {}, "skillMd": "x" * 2048},
+        headers=_headers(token),
+    )
+    assert oversized_guided.status_code == 413
 
 
 def test_guided_publish_requires_confirmation_and_current_revision(

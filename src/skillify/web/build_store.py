@@ -52,22 +52,29 @@ class BuildStore:
         self.cleanup_expired()
         now = _as_utc(self.clock())
         build_id = uuid.uuid4().hex
-        build_dir = self.root / build_id
-        workspace = build_dir / "workspace"
-        workspace.mkdir(parents=True, exist_ok=False)
-        metadata: dict[str, Any] = {
-            "buildId": build_id,
-            "owner": owner,
-            "sourceType": source_type,
-            "revision": 1,
-            "status": "needs_input",
-            "createdAt": now.isoformat(),
-            "expiresAt": (now + timedelta(seconds=self.ttl_seconds)).isoformat(),
-            "detectedFacts": detected_facts or {},
-            "confirmedFields": sorted(confirmed_fields or set()),
-        }
-        self._write_metadata(build_dir, metadata)
-        return self._record(build_dir, metadata)
+        final_build_dir = self.root / build_id
+        build_dir = self.root / f".{build_id}.tmp"
+        workspace = build_dir / "revisions" / "1"
+        try:
+            workspace.mkdir(parents=True, exist_ok=False)
+            metadata: dict[str, Any] = {
+                "buildId": build_id,
+                "owner": owner,
+                "sourceType": source_type,
+                "revision": 1,
+                "status": "needs_input",
+                "createdAt": now.isoformat(),
+                "expiresAt": (now + timedelta(seconds=self.ttl_seconds)).isoformat(),
+                "detectedFacts": detected_facts or {},
+                "confirmedFields": sorted(confirmed_fields or set()),
+            }
+            self._write_metadata(build_dir, metadata)
+            build_dir.replace(final_build_dir)
+            return self._record(final_build_dir, metadata)
+        except Exception:
+            shutil.rmtree(build_dir, ignore_errors=True)
+            shutil.rmtree(final_build_dir, ignore_errors=True)
+            raise
 
     def load(self, build_id: str, owner: str) -> BuildRecord:
         build_dir = self._build_dir(build_id)
@@ -88,7 +95,7 @@ class BuildStore:
         mutation: Mutation,
     ) -> BuildRecord:
         initial = self.load(build_id, owner)
-        build_dir = initial.workspace.parent
+        build_dir = self._build_dir(initial.build_id)
         with self._operation_lock(build_dir):
             record = self.load(build_id, owner)
             if record.revision != expected_revision:
@@ -96,9 +103,26 @@ class BuildStore:
             if record.status in {"publishing", "published"}:
                 raise BuildStateConflict(f"build is already {record.status}")
             metadata = self._read_metadata(build_dir)
-            mutation(record.workspace, metadata)
-            metadata["revision"] = record.revision + 1
-            self._write_metadata(build_dir, metadata)
+            next_revision = record.revision + 1
+            revisions_dir = build_dir / "revisions"
+            target = revisions_dir / str(next_revision)
+            temporary = revisions_dir / f".{next_revision}.{uuid.uuid4().hex}.tmp"
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(record.workspace, temporary)
+            try:
+                mutation(temporary, metadata)
+                temporary.replace(target)
+                metadata["revision"] = next_revision
+                try:
+                    self._write_metadata(build_dir, metadata)
+                except Exception:
+                    shutil.rmtree(target, ignore_errors=True)
+                    raise
+            finally:
+                shutil.rmtree(temporary, ignore_errors=True)
+            for old_revision in revisions_dir.iterdir():
+                if old_revision.is_dir() and old_revision != target:
+                    shutil.rmtree(old_revision, ignore_errors=True)
             return self._record(build_dir, metadata)
 
     def transition_status(
@@ -111,7 +135,7 @@ class BuildStore:
         status: str,
     ) -> BuildRecord:
         initial = self.load(build_id, owner)
-        build_dir = initial.workspace.parent
+        build_dir = self._build_dir(initial.build_id)
         with self._operation_lock(build_dir):
             record = self.load(build_id, owner)
             if record.revision != expected_revision:
@@ -125,7 +149,7 @@ class BuildStore:
 
     def delete(self, build_id: str, owner: str) -> None:
         record = self.load(build_id, owner)
-        shutil.rmtree(record.workspace.parent, ignore_errors=True)
+        shutil.rmtree(self._build_dir(record.build_id), ignore_errors=True)
 
     def cleanup_expired(self) -> None:
         if not self.root.is_dir():
@@ -133,6 +157,11 @@ class BuildStore:
         now = _as_utc(self.clock())
         for build_dir in self.root.iterdir():
             if not build_dir.is_dir():
+                continue
+            if build_dir.name.startswith("."):
+                age = now.timestamp() - build_dir.stat().st_mtime
+                if age > self.ttl_seconds:
+                    shutil.rmtree(build_dir, ignore_errors=True)
                 continue
             try:
                 metadata = self._read_metadata(build_dir)
@@ -194,7 +223,7 @@ class BuildStore:
             status=metadata["status"],
             created_at=datetime.fromisoformat(metadata["createdAt"]),
             expires_at=datetime.fromisoformat(metadata["expiresAt"]),
-            workspace=build_dir / "workspace",
+            workspace=build_dir / "revisions" / str(metadata["revision"]),
             detected_facts=dict(metadata.get("detectedFacts") or {}),
             confirmed_fields=set(metadata.get("confirmedFields") or []),
         )

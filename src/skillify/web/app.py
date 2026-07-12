@@ -70,6 +70,8 @@ from skillify.web.schemas import (
 )
 from skillify.web.build_models import (
     BuildNotFound,
+    BuildNotReady,
+    BuildLimitExceeded,
     BuildRevisionConflict,
     BuildStateConflict,
     InvalidBuildFile,
@@ -533,6 +535,8 @@ def _raise_build_http_error(exc: Exception) -> None:
         ) from exc
     if isinstance(exc, BuildStateConflict):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, BuildLimitExceeded):
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     if isinstance(exc, InvalidBuildFile):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
@@ -600,12 +604,15 @@ def guided_skill_build(
     claims: dict = Depends(require_keycloak_user),
 ) -> BuildPreviewOut:
     cfg = load_config()
-    record = create_guided_build(
-        cfg,
-        owner=_build_owner(claims),
-        manifest=payload.manifest,
-        skill_md=payload.skillMd,
-    )
+    try:
+        record = create_guided_build(
+            cfg,
+            owner=_build_owner(claims),
+            manifest=payload.manifest,
+            skill_md=payload.skillMd,
+        )
+    except BuildLimitExceeded as exc:
+        _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
 
@@ -616,7 +623,7 @@ def skill_build_preview(
 ) -> BuildPreviewOut:
     try:
         record = get_build(load_config(), owner=_build_owner(claims), build_id=build_id)
-    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -636,7 +643,7 @@ def patch_skill_build(
             manifest=payload.manifest,
             skill_md=payload.skillMd,
         )
-    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -665,7 +672,7 @@ async def add_skill_build_file(
             path=path,
             content=content,
         )
-    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -685,7 +692,7 @@ def remove_skill_build_file(
             expected_revision=expectedRevision,
             path=path,
         )
-    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -706,8 +713,18 @@ def confirm_skill_build_publish(
             build_id=build_id,
             expected_revision=payload.expectedRevision,
         )
-    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, BuildLimitExceeded, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
+    except BuildNotReady as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(exc),
+                "missingFields": exc.missing_fields,
+                "unconfirmedFields": exc.unconfirmed_fields,
+                "issues": exc.issues,
+            },
+        ) from exc
     except UploadRejected as exc:
         raise HTTPException(
             status_code=422,

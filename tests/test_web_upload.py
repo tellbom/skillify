@@ -86,6 +86,19 @@ def test_upload_rejects_non_zip(tmp_path: Path, monkeypatch, fake_forgejo, fake_
     assert resp.status_code == 400
 
 
+def test_upload_rejects_corrupt_zip_as_bad_request(
+    tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak
+) -> None:
+    _configure(monkeypatch, tmp_path, fake_forgejo, fake_keycloak)
+    token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("corrupt.zip", b"not a zip archive", "application/zip")},
+        headers=_authorization(token),
+    )
+    assert response.status_code == 400
+
+
 def test_upload_valid_skill_previews_then_confirmed_publish_releases(
     tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak
 ) -> None:

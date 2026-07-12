@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from fastapi.encoders import jsonable_encoder
 
 try:
     import tomllib
@@ -52,6 +53,28 @@ def _now() -> datetime:
 
 def _scan_root(cfg: SkillifyConfig) -> Path:
     return cfg.cache_dir / "skill-scans"
+
+
+def _cleanup_expired_scans(cfg: SkillifyConfig) -> None:
+    root = _scan_root(cfg)
+    if not root.is_dir():
+        return
+    now = _now()
+    for directory in root.iterdir():
+        if not directory.is_dir():
+            continue
+        if directory.name.startswith("."):
+            age = now.timestamp() - directory.stat().st_mtime
+            if age > cfg.build_ttl_seconds:
+                shutil.rmtree(directory, ignore_errors=True)
+            continue
+        try:
+            metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+            expired = datetime.fromisoformat(metadata["expiresAt"]) <= now
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            expired = True
+        if expired:
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def _scan_dir(cfg: SkillifyConfig, scan_id: str) -> Path:
@@ -103,7 +126,7 @@ def _frontmatter(skill_md: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
             issues.append(
                 {"path": f"SKILL.md:frontmatter.{field}", "message": "required and must be a non-empty string"}
             )
-    return parsed, issues
+    return jsonable_encoder(parsed), issues
 
 
 def _requirements(root: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -124,11 +147,28 @@ def _requirements(root: Path) -> tuple[list[str], list[dict[str, str]]]:
     if pyproject.is_file():
         try:
             parsed = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            declared = (parsed.get("project") or {}).get("dependencies") or []
-            if isinstance(declared, list):
-                requirements.extend(
-                    item for item in declared if isinstance(item, str) and item.strip()
+            project = parsed.get("project")
+            if project is not None and not isinstance(project, dict):
+                issues.append(
+                    {
+                        "path": "pyproject.toml:project",
+                        "message": "project must be a TOML table",
+                    }
                 )
+            elif isinstance(project, dict):
+                declared = project.get("dependencies")
+                if declared is not None and (
+                    not isinstance(declared, list)
+                    or not all(isinstance(item, str) and item.strip() for item in declared)
+                ):
+                    issues.append(
+                        {
+                            "path": "pyproject.toml:project.dependencies",
+                            "message": "dependencies must be an array of non-empty strings",
+                        }
+                    )
+                elif isinstance(declared, list):
+                    requirements.extend(declared)
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             issues.append(
                 {
@@ -147,8 +187,10 @@ def scan_external_zip(
     owner: str,
 ) -> dict[str, Any]:
     cfg.ensure_dirs()
+    _cleanup_expired_scans(cfg)
     scan_id = uuid.uuid4().hex
-    directory = _scan_root(cfg) / scan_id
+    final_directory = _scan_root(cfg) / scan_id
+    directory = _scan_root(cfg) / f".{scan_id}.tmp"
     extracted = directory / "extracted"
     directory.mkdir(parents=True, exist_ok=False)
     try:
@@ -187,9 +229,11 @@ def scan_external_zip(
             "candidates": candidates,
         }
         _write_json(directory / "metadata.json", metadata)
+        directory.replace(final_directory)
         return {"scanId": scan_id, "expiresAt": expires_at, "candidates": candidates}
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
+        shutil.rmtree(final_directory, ignore_errors=True)
         raise
 
 
@@ -200,6 +244,7 @@ def select_external_candidates(
     scan_id: str,
     candidate_ids: list[str],
 ) -> list[Any]:
+    _cleanup_expired_scans(cfg)
     if not candidate_ids:
         raise InvalidExternalScan("at least one candidateId is required")
     if len(candidate_ids) != len(set(candidate_ids)):

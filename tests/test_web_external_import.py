@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -112,6 +113,17 @@ def test_external_selection_creates_independent_unconfirmed_builds_without_guess
     assert alpha["unconfirmedFields"] == ["dependencies", "description", "name"]
     assert alpha["publishable"] is False
 
+    rejected_publish = client.post(
+        f"/api/skill-builds/{alpha['buildId']}/publish",
+        json={"expectedRevision": alpha["revision"], "confirmed": True},
+        headers=_headers(token),
+    )
+    assert rejected_publish.status_code == 422
+    readiness = rejected_publish.json()["detail"]
+    assert readiness["missingFields"] == alpha["missingFields"]
+    assert readiness["unconfirmedFields"] == alpha["unconfirmedFields"]
+    assert readiness["issues"] == alpha["issues"]
+
     # Invalid external names are preserved for explicit correction, never slugified.
     assert beta["manifest"]["name"] == "Beta Skill"
     assert any("name" in issue["path"] for issue in beta["issues"])
@@ -192,6 +204,18 @@ def test_external_scan_reports_malformed_frontmatter_and_rejects_no_skill_md(
     assert empty.status_code == 422
 
 
+def test_external_scan_rejects_corrupt_zip_as_bad_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    response = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("corrupt.zip", b"not a zip archive", "application/zip")},
+        headers=_headers(token),
+    )
+    assert response.status_code == 400
+
+
 def test_external_scan_selection_is_owner_bound_and_validates_candidate_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
 ) -> None:
@@ -218,6 +242,31 @@ def test_external_scan_selection_is_owner_bound_and_validates_candidate_ids(
     assert duplicate.status_code == 400
 
 
+def test_creating_external_scan_cleans_expired_scan_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    first = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("first.zip", _multi_skill_zip(), "application/zip")},
+        headers=_headers(token),
+    ).json()
+    first_dir = tmp_path / "home" / "cache" / "skill-scans" / first["scanId"]
+    metadata_path = first_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["expiresAt"] = "2000-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    second = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("second.zip", _multi_skill_zip(), "application/zip")},
+        headers=_headers(token),
+    )
+
+    assert second.status_code == 200, second.text
+    assert not first_dir.exists()
+
+
 def test_external_scan_reads_only_explicit_pyproject_project_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
 ) -> None:
@@ -242,3 +291,47 @@ def test_external_scan_reads_only_explicit_pyproject_project_dependencies(
     candidate = response.json()["candidates"][0]
     assert candidate["detectedPaths"] == ["pyproject.toml"]
     assert candidate["pythonRequirements"] == ["httpx>=0.27", "PyYAML>=6"]
+
+
+def test_external_scan_reports_unexpected_pyproject_metadata_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    archive = _zip(
+        {
+            "skill/SKILL.md": "---\nname: toml-skill\ndescription: TOML skill.\n---\n",
+            "skill/pyproject.toml": "project = 'unexpected-string'\n",
+        }
+    )
+    response = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("skill.zip", archive, "application/zip")},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    candidate = response.json()["candidates"][0]
+    assert candidate["pythonRequirements"] == []
+    assert candidate["issues"][0]["path"] == "pyproject.toml:project"
+
+
+def test_external_scan_serializes_explicit_frontmatter_dates_without_guessing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    archive = _zip(
+        {
+            "skill/SKILL.md": (
+                "---\nname: dated-skill\ndescription: Dated skill.\n"
+                "published: 2026-07-12\n---\n"
+            )
+        }
+    )
+    response = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("skill.zip", archive, "application/zip")},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["candidates"][0]["frontmatter"]["published"] == "2026-07-12"

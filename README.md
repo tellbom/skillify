@@ -500,6 +500,20 @@ Content-Type: application/json
 | `502` | Forgejo 调用失败 |
 | `503` | index 或发布配置缺失 |
 
+当 `confirmed=true` 但 build 尚未达到可发布状态时，`422` 的 `detail` 为结构化对象，前端
+应直接刷新补全/确认界面：
+
+```json
+{
+  "detail": {
+    "message": "build is not ready to publish",
+    "missingFields": ["namespace", "version", "permissions", "tags"],
+    "unconfirmedFields": ["name", "description", "dependencies"],
+    "issues": [{"path": "skill.yaml:$", "message": "'namespace' is a required property"}]
+  }
+}
+```
+
 revision 冲突的 `detail` 包含 `currentRevision`。前端收到 `409` 后应重新 GET 当前预览，
 不得自动用旧内容覆盖。正式发布同一 namespace/name/version 的重试会更新当前用户自己的
 发布任务；不同用户的记录和临时 build 相互隔离。
