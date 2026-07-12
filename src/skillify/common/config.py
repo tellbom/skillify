@@ -46,6 +46,7 @@ class SkillifyConfig:
     max_upload_bytes: int = 20 * 1024 * 1024  # 20 MiB raw .zip
     max_extracted_bytes: int = 100 * 1024 * 1024  # 100 MiB decompressed total
     max_extracted_files: int = 5000
+    build_ttl_seconds: int = 86400
     default_targets: list[str] = field(default_factory=lambda: ["claude"])
     home: Path = field(default_factory=skillify_home)
 
@@ -120,6 +121,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         max_upload_bytes=int(data.get("max_upload_bytes") or 20 * 1024 * 1024),
         max_extracted_bytes=int(data.get("max_extracted_bytes") or 100 * 1024 * 1024),
         max_extracted_files=int(data.get("max_extracted_files") or 5000),
+        build_ttl_seconds=int(data.get("build_ttl_seconds") or 86400),
         default_targets=data.get("default_targets") or ["claude"],
         home=home,
     )
@@ -133,6 +135,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         ("SKILLIFY_MAX_UPLOAD_BYTES", "max_upload_bytes"),
         ("SKILLIFY_MAX_EXTRACTED_BYTES", "max_extracted_bytes"),
         ("SKILLIFY_MAX_EXTRACTED_FILES", "max_extracted_files"),
+        ("SKILLIFY_BUILD_TTL_SECONDS", "build_ttl_seconds"),
     ):
         value = os.environ.get(env_var)
         if value:

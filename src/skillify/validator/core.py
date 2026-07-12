@@ -14,7 +14,12 @@ from skillify.validator.manifest import (
 from skillify.validator.skill_md import validate_skill_md
 
 
-def validate_skill_dir(skill_dir: str | Path, *, namespace_aware: bool = False) -> ValidationResult:
+def validate_skill_dir(
+    skill_dir: str | Path,
+    *,
+    namespace_aware: bool = False,
+    check_directory_name: bool = True,
+) -> ValidationResult:
     """Validate a single skill directory against the v1 standard format.
 
     If `namespace_aware`, `skill_dir` is expected to be `<root>/<namespace>/<name>`
@@ -33,7 +38,7 @@ def validate_skill_dir(skill_dir: str | Path, *, namespace_aware: bool = False) 
         expected_name = skill_dir.name
         expected_namespace = skill_dir.parent.name
     else:
-        expected_name = skill_dir.name
+        expected_name = skill_dir.name if check_directory_name else None
         expected_namespace = None
 
     validate_skill_md(skill_dir / "SKILL.md", result)
