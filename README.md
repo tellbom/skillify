@@ -88,6 +88,7 @@ $env:SKILLIFY_WEB_BASE_URL='http://127.0.0.1:8089'
 | `SKILLIFY_MAX_UPLOAD_BYTES` | 上传 zip 最大字节数，默认 20 MiB | 可选 |
 | `SKILLIFY_MAX_EXTRACTED_BYTES` | 解压后最大总字节数，默认 100 MiB | 可选 |
 | `SKILLIFY_MAX_EXTRACTED_FILES` | 解压后最大文件数，默认 5000 | 可选 |
+| `SKILLIFY_BUILD_TTL_SECONDS` | 创建、转换和确认所用临时 build/scan 有效期，默认 86400 秒 | 可选 |
 
 也可以在 `~/.skillify/config.yaml` 中使用对应的小写配置项；环境变量优先于配置文件。
 
@@ -223,19 +224,298 @@ docker compose ps
 
 排行榜 `window` 支持 `week`、`month`、`all`；时间窗口主要作用于安装事件统计。
 
-### 上传与个人工作台
+### Skill 创建、导入、预览与发布
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| POST | `/api/skills/upload` | 上传 Skill zip，校验后提交 Forgejo Git/Release 并写入索引 |
+| POST | `/api/skills/upload` | 上传 Skillify 标准 zip，生成 Native 预览，不立即发布 |
+| POST | `/api/skill-builds/guided` | 使用 manifest 字段和 `SKILL.md` 创建引导式 build |
+| GET | `/api/skill-builds/{build_id}` | 读取当前完整预览 |
+| PATCH | `/api/skill-builds/{build_id}` | 按 revision 更新 manifest 字段或 `SKILL.md` |
+| POST | `/api/skill-builds/{build_id}/files` | 上传脚本、资源或其他附属文件 |
+| DELETE | `/api/skill-builds/{build_id}/files` | 删除附属文件 |
+| POST | `/api/external-skill-scans` | 扫描外部 Agent Skill zip，列出全部 `SKILL.md` 候选 |
+| POST | `/api/external-skill-scans/{scan_id}/selections` | 选择一个或多个外部 Skill，并分别转换为 Native build |
+| POST | `/api/skill-builds/{build_id}/publish` | 确认指定 revision，并通过唯一正式发布链路发布 |
+> 兼容性变更：`POST /api/skills/upload` 已由“上传即发布”改为“上传并生成预览”。
+> 所有入口都必须在展示完整转换结果后调用统一的 `/publish` 接口，不能绕过确认直接发布。
+
+所有 build 和 scan 都属于当前 Keycloak 用户，不提供列表接口，也不是草稿箱。默认在创建
+24 小时后失效，且不保证跨服务重启恢复；缓存清理或到期后访问返回 `404`。不同用户访问
+同一个 ID 也返回 `404`，不泄露临时对象是否存在。
+
+#### 统一 Build 预览结构
+
+标准 zip、引导式创建和外部转换最终都返回相同的预览结构：
+
+```json
+{
+  "buildId": "4d514b2adf5d4f8aa22167a6a6a98100",
+  "sourceType": "guided",
+  "revision": 2,
+  "status": "ready",
+  "expiresAt": "2026-07-13T10:00:00Z",
+  "manifest": {
+    "manifestVersion": 1,
+    "namespace": "demo",
+    "name": "hello-skill",
+    "version": "1.0.0",
+    "description": "Say hello.",
+    "author": "jane",
+    "license": "MIT",
+    "runtime": "claude-agent-skill",
+    "targets": ["claude"],
+    "dependencies": {"python": [], "system": [], "skills": []},
+    "entrypoints": {},
+    "permissions": [],
+    "tags": ["example"],
+    "orchestration": {},
+    "reporting": {"enabled": false}
+  },
+  "manifestYaml": "manifestVersion: 1\nnamespace: demo\nname: hello-skill\nversion: 1.0.0\ndescription: Say hello.\nauthor: jane\nlicense: MIT\nruntime: claude-agent-skill\ntargets:\n- claude\ndependencies:\n  python: []\n  system: []\n  skills: []\nentrypoints: {}\npermissions: []\ntags:\n- example\norchestration: {}\nreporting:\n  enabled: false\n",
+  "skillMd": "---\nname: hello-skill\ndescription: Say hello.\n---\n\n# Hello\n",
+  "tree": [
+    {"path": "SKILL.md", "type": "file", "size": 72},
+    {"path": "scripts", "type": "directory", "size": null},
+    {"path": "scripts/run.py", "type": "file", "size": 18},
+    {"path": "skill.yaml", "type": "file", "size": 320}
+  ],
+  "detectedFacts": {},
+  "missingFields": [],
+  "unconfirmedFields": [],
+  "issues": [],
+  "publishable": true
+}
+```
+
+- `manifest` 是当前唯一的数据模型，即 `skill.yaml` manifest v1；不存在引导式或外部专用字段。
+- `manifestYaml` 是后端将要发布的完整 YAML 预览，不是第二份输入。
+- `tree` 是当前将要发布的完整目录树，路径统一使用相对 POSIX 格式。
+- `detectedFacts` 只用于说明外部文件中实际检测到的事实，不会隐式写入其他字段。
+- `missingFields` 表示仍需填写的字段；`unconfirmedFields` 表示外部来源已有明确值，但用户尚未确认。
+- `issues` 保持 `{path, message}` 结构，与现有 validator 一致。
+- 只有 `publishable=true` 才能正式发布。
+- 每次 PATCH、文件新增或删除都会增加 `revision`。前端必须始终使用最新响应覆盖本地状态。
+
+#### 入口一：Skillify 标准 zip
+
+请求为 `multipart/form-data`，字段名为 `file`：
+
+```http
+POST /api/skills/upload
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file=@skill.zip
+```
+
+zip 根目录或唯一一级包装目录中必须包含 `skill.yaml` 和 `SKILL.md`。接口复用现有上传
+大小、解压总大小、文件数、符号链接和路径穿越防护，并执行 Native 校验。成功时返回统一
+build 预览，此时不会占用 namespace、创建 Forgejo Release 或写入发布任务。
+
+前端流程：上传 zip → 展示 `manifestYaml`、`skillMd`、`tree` 和 `issues` → 用户确认 →
+调用统一发布接口。
+
+#### 入口二：引导式创建
+
+创建接口允许提交不完整内容，因此前端可以在分步骤表单中持续刷新预览：
+
+```http
+POST /api/skill-builds/guided
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "manifest": {
+    "namespace": "demo",
+    "name": "hello-skill",
+    "version": "1.0.0",
+    "description": "Say hello.",
+    "author": "jane",
+    "license": "MIT",
+    "runtime": "claude-agent-skill",
+    "targets": ["claude"],
+    "dependencies": {"python": [], "system": [], "skills": []},
+    "permissions": [],
+    "tags": ["example"]
+  },
+  "skillMd": "---\nname: hello-skill\ndescription: Say hello.\n---\n\n# Hello\n"
+}
+```
+
+表单字段必须直接使用 manifest v1 名称。Skill 类型选择写入 `runtime`，目标平台写入
+`targets`，不得在前端发明另一组最终再映射的字段。后端会补充确定性的结构默认值：
+`manifestVersion: 1`、空 `entrypoints`/`orchestration`、`reporting.enabled: false`，以及
+引导式创建的空依赖、权限和标签集合。
+
+更新接口按字段合并 `manifest`，并可同时替换完整 `SKILL.md`：
+
+```http
+PATCH /api/skill-builds/4d514b2adf5d4f8aa22167a6a6a98100
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "expectedRevision": 2,
+  "manifest": {"tags": ["example", "productivity"]},
+  "skillMd": "---\nname: hello-skill\ndescription: Say hello.\n---\n\n# Updated\n"
+}
+```
+
+上传附属文件：
+
+```http
+POST /api/skill-builds/{build_id}/files
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+path=scripts/run.py
+expectedRevision=3
+file=@run.py
+```
+
+删除附属文件：
+
+```http
+DELETE /api/skill-builds/{build_id}/files?path=scripts%2Frun.py&expectedRevision=4
+Authorization: Bearer <token>
+```
+
+`path` 必须是安全的相对 POSIX 路径。禁止绝对路径、`..`、反斜杠、盘符和路径穿越；
+`skill.yaml` 与 `SKILL.md` 是保留路径，只能通过结构化创建/PATCH 接口修改。文件和 build
+总大小继续受上传配置限制。
+
+前端建议步骤：选择 `runtime` → 填写 manifest 基础字段 → 编辑 `SKILL.md` → 上传可选
+脚本 → 填写并确认依赖/权限/标签 → 上传可选资源 → 展示完整预览 → 用户确认发布。
+
+#### 入口三：外部 Agent Skill zip
+
+扫描请求：
+
+```http
+POST /api/external-skill-scans
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file=@third-party-skills.zip
+```
+
+扫描器递归查找所有名称严格为 `SKILL.md` 的文件。没有候选返回 `422`；多个候选正常返回：
+
+```json
+{
+  "scanId": "8de4ba8d22884618823864f24bd4b414",
+  "expiresAt": "2026-07-13T10:00:00Z",
+  "candidates": [
+    {
+      "candidateId": "fbf35cf51e8c4321ae93e837298d2c33",
+      "rootPath": "skills/alpha",
+      "frontmatter": {"name": "alpha", "description": "Alpha skill."},
+      "detectedPaths": ["requirements.txt", "scripts"],
+      "pythonRequirements": ["requests>=2.31"],
+      "issues": []
+    }
+  ]
+}
+```
+
+选择一个或多个候选：
+
+```http
+POST /api/external-skill-scans/8de4ba8d22884618823864f24bd4b414/selections
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "candidateIds": [
+    "fbf35cf51e8c4321ae93e837298d2c33",
+    "23f049110f864432aa6e9234d26818be"
+  ]
+}
+```
+
+响应为 `{"builds": [BuildPreview, ...]}`。每个候选创建独立 build，可分别补充、确认和
+发布；重复或不属于该 scan 的 candidate ID 返回 `400`。
+
+外部转换严格执行“不猜测”规则：
+
+- 只读取合法 `SKILL.md` frontmatter 中明确声明的 `name`、`description`。
+- 只读取 `requirements.txt` 和 `pyproject.toml` 的 `project.dependencies` 中明确声明的
+  Python 依赖，不执行构建后端或外部代码。
+- 只报告 `scripts`、`assets`、`references`、`resources`、`examples`、
+  `requirements.txt`、`pyproject.toml` 和 `package.json` 是否存在。
+- 不从 zip 名、目录名、仓库名或脚本内容生成 namespace/name，不自动 slugify 非法名称。
+- 不推断 version、author、license、runtime、targets、permissions 或 tags。
+- 不把 `package.json` 依赖映射成 Python、system 或 Skill 依赖，也不扫描脚本猜测权限。
+
+外部 build 发布前，用户必须通过 PATCH 明确提交或确认以下字段：
+`namespace`、`name`、`version`、`description`、`author`、`license`、`runtime`、
+`targets`、`dependencies`、`permissions`、`tags`。即使后三项为空，也必须显式提交空对象或
+空数组。检测值存在但尚未由用户提交时出现在 `unconfirmedFields`；完全不存在时出现在
+`missingFields`。用户提交后，后端生成 Skillify Native `skill.yaml`，前端必须再次展示
+完整 manifest 和目录树，再进行最终确认。
+
+Git 地址导入本次未实现；后续可以增加新的 source adapter，但仍必须输出同一 Native
+build 并走相同确认发布接口。
+
+#### 统一最终确认与发布
+
+```http
+POST /api/skill-builds/{build_id}/publish
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"expectedRevision": 5, "confirmed": true}
+```
+
+成功响应：
+
+```json
+{
+  "buildId": "4d514b2adf5d4f8aa22167a6a6a98100",
+  "revision": 5,
+  "namespace": "demo",
+  "name": "hello-skill",
+  "version": "1.0.0",
+  "releaseUrl": "http://forgejo/demo/hello-skill/releases/tag/v1.0.0",
+  "indexError": null
+}
+```
+
+该接口按顺序检查用户归属、有效期、`confirmed=true`、最新 revision、转换字段确认状态和
+完整目录校验，然后原子标记发布状态。正式发布统一执行 namespace 所有权校验、可选 Git
+源码提交、打包、checksum、Forgejo Release、索引和发布任务记录。成功发布的 build 不再
+允许修改或重复确认；发布失败会恢复为可重试状态，前端可使用同一 build/revision 重试。
+
+常见错误：
+
+| HTTP | 场景 |
+| --- | --- |
+| `400` | 非 zip、危险文件路径、非法或重复 candidate ID、zip 安全检查失败 |
+| `401` | 缺少或无效 Keycloak Bearer token |
+| `404` | build/scan 不存在、已过期或属于其他用户 |
+| `409` | revision 已过期、build 正在/已经发布、版本已存在 |
+| `413` | 原始上传或附属文件超过配置限制 |
+| `422` | Native 校验失败、没有 `SKILL.md` 候选、字段未补齐/未确认、`confirmed` 非 true |
+| `502` | Forgejo 调用失败 |
+| `503` | index 或发布配置缺失 |
+
+revision 冲突的 `detail` 包含 `currentRevision`。前端收到 `409` 后应重新 GET 当前预览，
+不得自动用旧内容覆盖。正式发布同一 namespace/name/version 的重试会更新当前用户自己的
+发布任务；不同用户的记录和临时 build 相互隔离。
+
+本次只实现后端，`web/` 现有上传页面尚未迁移到 preview/confirm 契约。前端需要按本节
+三个入口的时序改造，不能继续把 `/api/skills/upload` 的成功响应当作已发布结果。
+
+### 个人工作台
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
 | GET | `/api/my/skills` | 当前用户名下的最新 Skill |
 | GET | `/api/my/namespaces` | 当前用户拥有的 namespace |
 | GET | `/api/my/publish-jobs?status=failed|all` | 当前用户的发布结果和失败原因 |
 | GET | `/api/my/usage` | Skill 数量、安装总数和逐 Skill 使用量 |
 | GET | `/api/my/subscriptions` | 当前用户订阅的 Skill 及最新版本 |
-
-上传文件必须是 `.zip`，根目录或唯一子目录中需要包含 `skill.yaml` 和 `SKILL.md`。
-同一用户重试相同 namespace/name/version 会更新自己的发布任务；不同用户的记录相互隔离。
 
 ## Webhook API
 
@@ -261,7 +541,7 @@ Forgejo 配置建议：
 | 版本中心 | 查看版本时间线、Release notes、切换历史版本、diff、yank/unyank |
 | 评论区 | 发布评论、回复、查看软删除占位、删除本人有权限的评论 |
 | 排行榜 | 按安装量、评分或最近发布排序，并切换周/月/全部时间窗口 |
-| 上传 Skill | 上传 zip，展示校验错误、发布结果和 Forgejo Release 地址 |
+| 创建/导入 Skill | 前端待接入本节 preview/confirm API；支持标准 zip、引导式创建和外部转换 |
 | 我的 Skill | 查看本人 Skill、namespace、使用统计、发布结果和失败重试入口 |
 | RBAC 管理 | 管理管理员、用户组、规则、API 映射和项目授权 |
 
