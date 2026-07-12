@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from skillify.web.app import app
+from tests.fake_forgejo import fake_forgejo  # noqa: F401
 from tests.fake_keycloak import fake_keycloak  # noqa: F401
 
 client = TestClient(app)
@@ -117,9 +118,12 @@ def test_external_selection_creates_independent_unconfirmed_builds_without_guess
 
 
 def test_external_build_becomes_publishable_only_after_complete_explicit_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_forgejo, fake_keycloak
 ) -> None:
     token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    monkeypatch.setenv("SKILLIFY_FORGEJO_URL", f"http://127.0.0.1:{fake_forgejo.server_port}")
+    monkeypatch.setenv("SKILLIFY_FORGEJO_TOKEN", "tok")
+    monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", f"sqlite:///{(tmp_path / 'index.db').as_posix()}")
     scan = client.post(
         "/api/external-skill-scans",
         files={"file": ("skill.zip", _multi_skill_zip(), "application/zip")},
@@ -154,6 +158,16 @@ def test_external_build_becomes_publishable_only_after_complete_explicit_confirm
     assert updated.json()["missingFields"] == []
     assert updated.json()["unconfirmedFields"] == []
     assert updated.json()["publishable"] is True
+
+    published = client.post(
+        f"/api/skill-builds/{selected['buildId']}/publish",
+        json={"expectedRevision": updated.json()["revision"], "confirmed": True},
+        headers=_headers(token),
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["namespace"] == "demo"
+    assert published.json()["name"] == "alpha"
+    assert published.json()["version"] == "1.0.0"
 
 
 def test_external_scan_reports_malformed_frontmatter_and_rejects_no_skill_md(

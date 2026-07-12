@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from skillify.common.config import load_config
 from skillify.web.app import app
-from skillify.web.build_models import BuildNotFound, BuildRevisionConflict
+from skillify.web.build_models import BuildNotFound, BuildRevisionConflict, BuildStateConflict
 from skillify.web.build_preview import build_preview
 from skillify.web.build_store import BuildStore
 from tests.fake_forgejo import fake_forgejo  # noqa: F401
@@ -70,6 +70,15 @@ def test_build_store_is_owner_bound_revisioned_and_expiring(tmp_path: Path) -> N
     with pytest.raises(BuildNotFound):
         store.load(record.build_id, "jane")
     assert not record.workspace.parent.exists()
+
+
+def test_build_store_rejects_a_concurrent_operation_lock(tmp_path: Path) -> None:
+    store = BuildStore(tmp_path, ttl_seconds=60)
+    record = store.create("jane", "guided")
+    (record.workspace.parent / ".operation.lock").write_text("busy", encoding="utf-8")
+
+    with pytest.raises(BuildStateConflict, match="another operation"):
+        store.mutate(record.build_id, "jane", 1, lambda _workspace, _meta: None)
 
 
 def test_build_preview_reports_exact_native_content_and_validation(tmp_path: Path) -> None:
@@ -246,3 +255,60 @@ def test_guided_file_mutation_is_revisioned_and_rejects_reserved_paths(
     )
     assert deleted.status_code == 200, deleted.text
     assert not any(item["path"] == "scripts/run.py" for item in deleted.json()["tree"])
+
+
+def test_guided_publish_requires_confirmation_and_current_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_forgejo, fake_keycloak
+) -> None:
+    token = _configure_api(monkeypatch, tmp_path, fake_keycloak)
+    monkeypatch.setenv("SKILLIFY_FORGEJO_URL", f"http://127.0.0.1:{fake_forgejo.server_port}")
+    monkeypatch.setenv("SKILLIFY_FORGEJO_TOKEN", "tok")
+    monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", f"sqlite:///{(tmp_path / 'index.db').as_posix()}")
+    preview = client.post(
+        "/api/skill-builds/guided",
+        json={"manifest": VALID_MANIFEST, "skillMd": VALID_SKILL_MD},
+        headers=_headers(token),
+    ).json()
+
+    unconfirmed = client.post(
+        f"/api/skill-builds/{preview['buildId']}/publish",
+        json={"expectedRevision": preview["revision"], "confirmed": False},
+        headers=_headers(token),
+    )
+    assert unconfirmed.status_code == 422
+
+    changed = client.patch(
+        f"/api/skill-builds/{preview['buildId']}",
+        json={"expectedRevision": preview["revision"], "manifest": {"tags": ["demo"]}},
+        headers=_headers(token),
+    ).json()
+    stale = client.post(
+        f"/api/skill-builds/{preview['buildId']}/publish",
+        json={"expectedRevision": preview["revision"], "confirmed": True},
+        headers=_headers(token),
+    )
+    assert stale.status_code == 409
+
+    published = client.post(
+        f"/api/skill-builds/{preview['buildId']}/publish",
+        json={"expectedRevision": changed["revision"], "confirmed": True},
+        headers=_headers(token),
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["buildId"] == preview["buildId"]
+    assert published.json()["revision"] == changed["revision"]
+    assert published.json()["releaseUrl"]
+
+    duplicate = client.post(
+        f"/api/skill-builds/{preview['buildId']}/publish",
+        json={"expectedRevision": changed["revision"], "confirmed": True},
+        headers=_headers(token),
+    )
+    assert duplicate.status_code == 409
+
+    mutation_after_publish = client.patch(
+        f"/api/skill-builds/{preview['buildId']}",
+        json={"expectedRevision": changed["revision"], "manifest": {"tags": ["changed"]}},
+        headers=_headers(token),
+    )
+    assert mutation_after_publish.status_code == 409

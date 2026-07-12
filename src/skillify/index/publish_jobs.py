@@ -1,6 +1,6 @@
 """C-2 — visibility into web-upload publish attempts (`skill_publish_jobs`).
 
-`upload_service.py::handle_upload` records one row per (namespace, name, version) publish
+`formal_publish.py::publish_workspace` records one row per (namespace, name, version) publish
 attempt here, so a user can see (and be prompted to retry) their own failed uploads without
 Skillify having to scan every Forgejo repo across every namespace for stranded draft
 releases (see `publisher.py`'s A-2 draft-resume mechanism for why a stranded draft can exist

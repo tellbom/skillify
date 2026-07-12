@@ -57,6 +57,16 @@ class UploadResponse(BaseModel):
     indexError: str | None = None
 
 
+class PublishBuildIn(BaseModel):
+    expectedRevision: int
+    confirmed: bool
+
+
+class PublishBuildOut(UploadResponse):
+    buildId: str
+    revision: int
+
+
 class GuidedBuildIn(BaseModel):
     manifest: dict[str, Any] = Field(default_factory=dict)
     skillMd: str = ""

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +16,7 @@ from skillify.web.build_models import (
     BuildRecord,
     BuildRevisionConflict,
     BuildSourceType,
+    BuildStateConflict,
 )
 
 Clock = Callable[[], datetime]
@@ -84,15 +87,45 @@ class BuildStore:
         expected_revision: int,
         mutation: Mutation,
     ) -> BuildRecord:
+        initial = self.load(build_id, owner)
+        build_dir = initial.workspace.parent
+        with self._operation_lock(build_dir):
+            record = self.load(build_id, owner)
+            if record.revision != expected_revision:
+                raise BuildRevisionConflict(record.revision)
+            if record.status in {"publishing", "published"}:
+                raise BuildStateConflict(f"build is already {record.status}")
+            metadata = self._read_metadata(build_dir)
+            mutation(record.workspace, metadata)
+            metadata["revision"] = record.revision + 1
+            self._write_metadata(build_dir, metadata)
+            return self._record(build_dir, metadata)
+
+    def transition_status(
+        self,
+        build_id: str,
+        owner: str,
+        expected_revision: int,
+        *,
+        allowed: set[str],
+        status: str,
+    ) -> BuildRecord:
+        initial = self.load(build_id, owner)
+        build_dir = initial.workspace.parent
+        with self._operation_lock(build_dir):
+            record = self.load(build_id, owner)
+            if record.revision != expected_revision:
+                raise BuildRevisionConflict(record.revision)
+            if record.status not in allowed:
+                raise BuildStateConflict(f"build is already {record.status}")
+            metadata = self._read_metadata(build_dir)
+            metadata["status"] = status
+            self._write_metadata(build_dir, metadata)
+            return self._record(build_dir, metadata)
+
+    def delete(self, build_id: str, owner: str) -> None:
         record = self.load(build_id, owner)
-        if record.revision != expected_revision:
-            raise BuildRevisionConflict(record.revision)
-        build_dir = record.workspace.parent
-        metadata = self._read_metadata(build_dir)
-        mutation(record.workspace, metadata)
-        metadata["revision"] = record.revision + 1
-        self._write_metadata(build_dir, metadata)
-        return self._record(build_dir, metadata)
+        shutil.rmtree(record.workspace.parent, ignore_errors=True)
 
     def cleanup_expired(self) -> None:
         if not self.root.is_dir():
@@ -108,6 +141,21 @@ class BuildStore:
                 expired = True
             if expired:
                 shutil.rmtree(build_dir, ignore_errors=True)
+
+    @staticmethod
+    @contextmanager
+    def _operation_lock(build_dir: Path):
+        lock_path = build_dir / ".operation.lock"
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise BuildStateConflict("another operation is already changing this build") from exc
+        try:
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            yield
+        finally:
+            os.close(descriptor)
+            lock_path.unlink(missing_ok=True)
 
     def _build_dir(self, build_id: str) -> Path:
         try:

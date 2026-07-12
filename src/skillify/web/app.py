@@ -53,6 +53,8 @@ from skillify.web.schemas import (
     MyNamespaceOut,
     MySubscriptionOut,
     MyUsageStats,
+    PublishBuildIn,
+    PublishBuildOut,
     PublishJobOut,
     RatingIn,
     RatingOut,
@@ -66,7 +68,12 @@ from skillify.web.schemas import (
     VersionInfo,
     YankOut,
 )
-from skillify.web.build_models import BuildNotFound, BuildRevisionConflict, InvalidBuildFile
+from skillify.web.build_models import (
+    BuildNotFound,
+    BuildRevisionConflict,
+    BuildStateConflict,
+    InvalidBuildFile,
+)
 from skillify.web.build_preview import build_preview
 from skillify.web.build_service import (
     create_guided_build,
@@ -82,15 +89,23 @@ from skillify.web.external_import import (
     scan_external_zip,
     select_external_candidates,
 )
+from skillify.web.formal_publish import publish_build
 from skillify.web.upload import UnsafeUpload
-from skillify.web.upload_service import NamespaceOwnershipNotConfiguredError, UploadRejected, handle_upload
+from skillify.web.upload_service import (
+    NamespaceOwnershipNotConfiguredError,
+    UploadRejected,
+    create_native_zip_build,
+)
 
 app = FastAPI(title="skillify-web", description="Community site backend (T3.1)")
 
 # Dev-friendly default; an intranet deployment should restrict this to the actual frontend
 # origin(s) via SKILLIFY_WEB_CORS_ORIGINS (comma-separated) — see run().
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["*"],
 )
 
 
@@ -516,6 +531,8 @@ def _raise_build_http_error(exc: Exception) -> None:
             status_code=409,
             detail={"message": str(exc), "currentRevision": exc.current_revision},
         ) from exc
+    if isinstance(exc, BuildStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, InvalidBuildFile):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
@@ -599,7 +616,7 @@ def skill_build_preview(
 ) -> BuildPreviewOut:
     try:
         record = get_build(load_config(), owner=_build_owner(claims), build_id=build_id)
-    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -619,7 +636,7 @@ def patch_skill_build(
             manifest=payload.manifest,
             skill_md=payload.skillMd,
         )
-    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -648,7 +665,7 @@ async def add_skill_build_file(
             path=path,
             content=content,
         )
-    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
@@ -668,20 +685,64 @@ def remove_skill_build_file(
             expected_revision=expectedRevision,
             path=path,
         )
-    except (BuildNotFound, BuildRevisionConflict, InvalidBuildFile) as exc:
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
         _raise_build_http_error(exc)
     return BuildPreviewOut(**build_preview(record))
 
 
-@app.post("/api/skills/upload", response_model=UploadResponse)
+@app.post("/api/skill-builds/{build_id}/publish", response_model=PublishBuildOut)
+def confirm_skill_build_publish(
+    build_id: str,
+    payload: PublishBuildIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> PublishBuildOut:
+    if payload.confirmed is not True:
+        raise HTTPException(status_code=422, detail="confirmed must be true")
+    cfg = load_config()
+    try:
+        result, record = publish_build(
+            cfg,
+            owner=_build_owner(claims),
+            build_id=build_id,
+            expected_revision=payload.expectedRevision,
+        )
+    except (BuildNotFound, BuildRevisionConflict, BuildStateConflict, InvalidBuildFile) as exc:
+        _raise_build_http_error(exc)
+    except UploadRejected as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=[{"path": issue.path, "message": issue.message} for issue in exc.issues],
+        ) from exc
+    except NamespaceOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except NamespaceOwnershipNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except PublishNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AlreadyPublishedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PackagingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ForgejoError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    pack_result = result.pack_result
+    return PublishBuildOut(
+        buildId=record.build_id,
+        revision=record.revision,
+        namespace=pack_result.namespace,
+        name=pack_result.name,
+        version=pack_result.version,
+        releaseUrl=result.release_html_url,
+        indexError=result.index_error,
+    )
+
+
+@app.post("/api/skills/upload", response_model=BuildPreviewOut)
 async def upload_skill(
     file: UploadFile = File(...), claims: dict = Depends(require_keycloak_user)
-) -> UploadResponse:
-    """T4.2: browser upload of a skill package (.zip of a skill dir). Protected by
-    Keycloak bearer auth (M4a); publishes under the backend's own Forgejo service-account
-    token, attributing the uploader's Keycloak identity in the Release notes (see
-    upload_service.handle_upload's docstring / TASKS.md M4 for why this isn't a per-user
-    Forgejo token)."""
+) -> BuildPreviewOut:
+    """Safely stage a standard Skillify zip and return its complete Native preview."""
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="upload must be a .zip of the skill directory")
 
@@ -707,10 +768,13 @@ async def upload_skill(
                 )
             out.write(chunk)
 
-    uploader = claims.get("preferred_username") or claims.get("sub") or "unknown"
-
     try:
-        result = handle_upload(zip_path, cfg, uploader=uploader, work_dir=work_dir)
+        record = create_native_zip_build(
+            zip_path,
+            cfg,
+            uploader=_build_owner(claims),
+            work_dir=work_dir,
+        )
     except UploadRejected as exc:
         raise HTTPException(
             status_code=422,
@@ -718,27 +782,10 @@ async def upload_skill(
         ) from exc
     except UnsafeUpload as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except NamespaceOwnershipError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except NamespaceOwnershipNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except PublishNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except AlreadyPublishedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except PackagingError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ForgejoError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
-    pack_result = result.pack_result
-    return UploadResponse(
-        namespace=pack_result.namespace,
-        name=pack_result.name,
-        version=pack_result.version,
-        releaseUrl=result.release_html_url,
-        indexError=result.index_error,
-    )
+    return BuildPreviewOut(**build_preview(record))
 
 
 @app.get("/api/my/skills", response_model=list[SkillSummary])
@@ -777,14 +824,9 @@ def my_publish_jobs(
     status: str = Query(default="failed", description="failed | all"),
     claims: dict = Depends(require_keycloak_user),
 ) -> list[PublishJobOut]:
-    """C-2 — visibility into the caller's own web-upload publish attempts, most notably the
-    failed ones (`skill_publish_jobs`, written by `upload_service.handle_upload`). There is
-    no dedicated retry endpoint: retrying means re-submitting the same zip to
-    `POST /api/skills/upload` — Task 3's draft-resume mechanism in `publish_skill_dir` makes
-    that safe to redo (it skips assets already uploaded to the stranded draft release
-    rather than duplicating them). The web upload path keeps no server-side copy of the
-    extracted source after a failure (`work_dir` is always cleaned up), so "re-upload the
-    zip" is the only realistic resumption unit here."""
+    """C-2: caller-owned formal publication outcomes. A failed temporary build returns to
+    its ready state and can retry the same revision through the confirmed publish endpoint;
+    publisher draft recovery still skips assets already uploaded to Forgejo."""
     if status not in ("failed", "all"):
         raise HTTPException(status_code=400, detail="status must be 'failed' or 'all'")
     username = claims.get("preferred_username") or claims.get("sub") or "unknown"

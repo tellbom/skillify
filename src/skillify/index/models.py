@@ -156,8 +156,8 @@ class SkillPublishJob(Base):
     Keycloak `preferred_username`/`sub`). This is the data source for "my failed
     publishes": scanning every Forgejo repo for stranded draft releases across every
     namespace is not feasible (see `publisher.py`'s A-2 draft-resume mechanism for why a
-    stranded draft can exist at all), so instead the web-upload path (`upload_service.py`)
-    writes one row per attempt here.
+    stranded draft can exist at all), so instead the formal web publish path
+    (`formal_publish.py`) writes one row per attempt here.
 
     `UniqueConstraint(namespace, name, version, initiator)`: a retry of the same version by
     the same user updates that user's row in place. Attempts by different users remain

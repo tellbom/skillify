@@ -44,6 +44,28 @@ def _configure(monkeypatch, tmp_path: Path, fake_forgejo, fake_keycloak) -> None
     monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", f"sqlite:///{(tmp_path / 'index.db').as_posix()}")
 
 
+def _authorization(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _publish_preview(preview: dict, token: str):
+    return client.post(
+        f"/api/skill-builds/{preview['buildId']}/publish",
+        json={"expectedRevision": preview["revision"], "confirmed": True},
+        headers=_authorization(token),
+    )
+
+
+def _upload_and_publish(zip_bytes: bytes, token: str):
+    preview_response = client.post(
+        "/api/skills/upload",
+        files={"file": ("upload.zip", zip_bytes, "application/zip")},
+        headers=_authorization(token),
+    )
+    assert preview_response.status_code == 200, preview_response.text
+    return _publish_preview(preview_response.json(), token)
+
+
 def test_upload_requires_auth(tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak) -> None:
     _configure(monkeypatch, tmp_path, fake_forgejo, fake_keycloak)
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
@@ -64,7 +86,9 @@ def test_upload_rejects_non_zip(tmp_path: Path, monkeypatch, fake_forgejo, fake_
     assert resp.status_code == 400
 
 
-def test_upload_valid_skill_publishes(tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak) -> None:
+def test_upload_valid_skill_previews_then_confirmed_publish_releases(
+    tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak
+) -> None:
     _configure(monkeypatch, tmp_path, fake_forgejo, fake_keycloak)
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
@@ -75,13 +99,22 @@ def test_upload_valid_skill_publishes(tmp_path: Path, monkeypatch, fake_forgejo,
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["namespace"] == "excel"
-    assert body["name"] == "pivot-analysis"
-    assert body["version"] == "0.1.0"
-    assert body["releaseUrl"]
-
+    preview = resp.json()
+    assert preview["sourceType"] == "native_zip"
+    assert preview["manifest"]["namespace"] == "excel"
+    assert preview["manifest"]["name"] == "pivot-analysis"
+    assert preview["manifest"]["version"] == "0.1.0"
+    assert preview["publishable"] is True
     verify_client = ForgejoClient(f"http://127.0.0.1:{fake_forgejo.server_port}", "tok")
+    assert verify_client.get_release_by_tag("excel", "pivot-analysis", "v0.1.0") is None
+
+    published = _publish_preview(preview, token)
+    assert published.status_code == 200, published.text
+    assert published.json()["namespace"] == "excel"
+    assert published.json()["name"] == "pivot-analysis"
+    assert published.json()["version"] == "0.1.0"
+    assert published.json()["releaseUrl"]
+
     release = verify_client.get_release_by_tag("excel", "pivot-analysis", "v0.1.0")
     assert release is not None
     assert "excel-pivot-analysis-0.1.0.tar.gz" in {a.name for a in release.assets}
@@ -108,18 +141,10 @@ def test_upload_duplicate_version_conflicts(tmp_path: Path, monkeypatch, fake_fo
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
 
-    first = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    first = _upload_and_publish(zip_bytes, token)
     assert first.status_code == 200, first.text
 
-    second = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    second = _upload_and_publish(zip_bytes, token)
     assert second.status_code == 409
 
 
@@ -132,20 +157,12 @@ def test_upload_rejects_namespace_owned_by_another_user(tmp_path: Path, monkeypa
     bob = fake_keycloak.mint_token(audience="skillify-web", subject="bob")
 
     jane_zip = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
-    first = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", jane_zip, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    first = _upload_and_publish(jane_zip, jane)
     assert first.status_code == 200, first.text
 
     bobs_manifest = _VALID_MANIFEST.replace("name: pivot-analysis", "name: another-skill")
     bob_zip = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": bobs_manifest.encode()})
-    second = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", bob_zip, "application/zip")},
-        headers={"Authorization": f"Bearer {bob}"},
-    )
+    second = _upload_and_publish(bob_zip, bob)
     assert second.status_code == 403
 
 
@@ -154,34 +171,28 @@ def test_upload_same_user_can_republish_own_namespace(tmp_path: Path, monkeypatc
     jane = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
 
     first_zip = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
-    first = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", first_zip, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    first = _upload_and_publish(first_zip, jane)
     assert first.status_code == 200, first.text
 
     second_manifest = _VALID_MANIFEST.replace("name: pivot-analysis", "name: another-skill")
     second_zip = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": second_manifest.encode()})
-    second = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", second_zip, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    second = _upload_and_publish(second_zip, jane)
     assert second.status_code == 200, second.text
 
 
-def test_upload_rejects_when_index_not_configured(tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak) -> None:
+def test_publish_rejects_when_index_not_configured(tmp_path: Path, monkeypatch, fake_forgejo, fake_keycloak) -> None:
     _configure(monkeypatch, tmp_path, fake_forgejo, fake_keycloak)
     monkeypatch.delenv("SKILLIFY_INDEX_DB_URL", raising=False)
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
 
-    resp = client.post(
+    preview = client.post(
         "/api/skills/upload",
         files={"file": ("upload.zip", zip_bytes, "application/zip")},
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert preview.status_code == 200, preview.text
+    resp = _publish_preview(preview.json(), token)
     assert resp.status_code == 503
 
 
@@ -268,14 +279,14 @@ def test_upload_rejects_path_traversal_via_manifest_name(tmp_path: Path, monkeyp
     resp = client.post(
         "/api/skills/upload",
         files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=_authorization(token),
     )
     assert resp.status_code == 422
     issues = resp.json()["detail"]
     assert any("name" in issue["path"] for issue in issues)
 
 
-# --- C-2: publish job recording (upload_service.py + skill_publish_jobs) --------------
+# --- C-2: formal publish job recording ------------------------------------------------
 
 
 def _index_db_url(tmp_path: Path) -> str:
@@ -287,11 +298,7 @@ def test_upload_success_records_succeeded_job(tmp_path: Path, monkeypatch, fake_
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
 
-    resp = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    resp = _upload_and_publish(zip_bytes, token)
     assert resp.status_code == 200, resp.text
 
     engine = make_engine(_index_db_url(tmp_path))
@@ -317,18 +324,10 @@ def test_upload_failure_records_failed_job_and_still_raises_original_error(
     token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
 
-    first = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    first = _upload_and_publish(zip_bytes, token)
     assert first.status_code == 200, first.text
 
-    second = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    second = _upload_and_publish(zip_bytes, token)
     assert second.status_code == 409  # original error behavior unchanged
 
     engine = make_engine(_index_db_url(tmp_path))
@@ -402,11 +401,7 @@ def test_my_skills_and_namespaces_and_jobs_reflect_uploads(
     manifest = _VALID_MANIFEST.replace("author: Jane Doe", "author: jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": manifest.encode()})
 
-    upload = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    upload = _upload_and_publish(zip_bytes, jane)
     assert upload.status_code == 200, upload.text
 
     my_skills_resp = client.get("/api/my/skills", headers={"Authorization": f"Bearer {jane}"})
@@ -449,19 +444,11 @@ def test_my_publish_jobs_default_shows_failed_only(tmp_path: Path, monkeypatch, 
     jane = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": _VALID_MANIFEST.encode()})
 
-    first = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    first = _upload_and_publish(zip_bytes, jane)
     assert first.status_code == 200, first.text
 
     # Re-upload the same version -> AlreadyPublishedError -> failed job, same row updated.
-    second = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    second = _upload_and_publish(zip_bytes, jane)
     assert second.status_code == 409
 
     failed_resp = client.get("/api/my/publish-jobs", headers={"Authorization": f"Bearer {jane}"})
@@ -490,11 +477,7 @@ def test_my_usage_requires_auth_and_reflects_installs(tmp_path: Path, monkeypatc
     jane = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
     manifest = _VALID_MANIFEST.replace("author: Jane Doe", "author: jane")
     zip_bytes = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), "skill.yaml": manifest.encode()})
-    upload = client.post(
-        "/api/skills/upload",
-        files={"file": ("upload.zip", zip_bytes, "application/zip")},
-        headers={"Authorization": f"Bearer {jane}"},
-    )
+    upload = _upload_and_publish(zip_bytes, jane)
     assert upload.status_code == 200, upload.text
 
     usage_resp = client.get("/api/my/usage", headers={"Authorization": f"Bearer {jane}"})
