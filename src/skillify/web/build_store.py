@@ -120,9 +120,6 @@ class BuildStore:
                     raise
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
-            for old_revision in revisions_dir.iterdir():
-                if old_revision.is_dir() and old_revision != target:
-                    shutil.rmtree(old_revision, ignore_errors=True)
             return self._record(build_dir, metadata)
 
     def transition_status(

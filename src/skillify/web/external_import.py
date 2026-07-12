@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -74,7 +76,31 @@ def _cleanup_expired_scans(cfg: SkillifyConfig) -> None:
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             expired = True
         if expired:
-            shutil.rmtree(directory, ignore_errors=True)
+            lock_path = directory / ".selection.lock"
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except (FileExistsError, FileNotFoundError):
+                continue
+            else:
+                os.close(descriptor)
+                shutil.rmtree(directory, ignore_errors=True)
+
+
+@contextmanager
+def _scan_selection_lease(directory: Path):
+    lock_path = directory / ".selection.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileNotFoundError as exc:
+        raise ExternalScanNotFound("external scan not found") from exc
+    except FileExistsError as exc:
+        raise InvalidExternalScan("external scan is already being selected") from exc
+    try:
+        os.write(descriptor, str(os.getpid()).encode("ascii"))
+        yield
+    finally:
+        os.close(descriptor)
+        lock_path.unlink(missing_ok=True)
 
 
 def _scan_dir(cfg: SkillifyConfig, scan_id: str) -> Path:
@@ -104,7 +130,6 @@ def _load_scan(cfg: SkillifyConfig, scan_id: str, owner: str) -> tuple[Path, dic
     except (KeyError, TypeError, ValueError) as exc:
         raise ExternalScanNotFound("external scan not found") from exc
     if expired:
-        shutil.rmtree(directory, ignore_errors=True)
         raise ExternalScanNotFound("external scan not found")
     return directory, metadata
 
@@ -250,44 +275,54 @@ def select_external_candidates(
     if len(candidate_ids) != len(set(candidate_ids)):
         raise InvalidExternalScan("candidateIds must not contain duplicates")
 
-    directory, metadata = _load_scan(cfg, scan_id, owner)
-    by_id = {item["candidateId"]: item for item in metadata.get("candidates") or []}
-    if any(candidate_id not in by_id for candidate_id in candidate_ids):
-        raise InvalidExternalScan("candidateId does not belong to this scan")
+    directory = _scan_dir(cfg, scan_id)
+    with _scan_selection_lease(directory):
+        directory, metadata = _load_scan(cfg, scan_id, owner)
+        by_id = {item["candidateId"]: item for item in metadata.get("candidates") or []}
+        if any(candidate_id not in by_id for candidate_id in candidate_ids):
+            raise InvalidExternalScan("candidateId does not belong to this scan")
 
-    store: BuildStore = store_for_config(cfg)
-    records = []
-    for candidate_id in candidate_ids:
-        candidate = by_id[candidate_id]
-        facts = {
-            "rootPath": candidate["rootPath"],
-            "frontmatter": candidate["frontmatter"],
-            "detectedPaths": candidate["detectedPaths"],
-            "pythonRequirements": candidate["pythonRequirements"],
-        }
-        record = store.create(owner, "external", detected_facts=facts)
-        source = directory / "extracted" / Path(candidate["rootPath"])
-        shutil.copytree(source, record.workspace, dirs_exist_ok=True)
+        store: BuildStore = store_for_config(cfg)
+        records = []
+        try:
+            for candidate_id in candidate_ids:
+                candidate = by_id[candidate_id]
+                facts = {
+                    "rootPath": candidate["rootPath"],
+                    "frontmatter": candidate["frontmatter"],
+                    "detectedPaths": candidate["detectedPaths"],
+                    "pythonRequirements": candidate["pythonRequirements"],
+                }
+                record = store.create(owner, "external", detected_facts=facts)
+                records.append(record)
+                source = directory / "extracted" / Path(candidate["rootPath"])
+                shutil.copytree(source, record.workspace, dirs_exist_ok=True)
 
-        manifest: dict[str, Any] = {
-            "manifestVersion": 1,
-            "entrypoints": {},
-            "orchestration": {},
-            "reporting": {"enabled": False},
-        }
-        for field in ("name", "description"):
-            value = candidate["frontmatter"].get(field)
-            if value is not None:
-                manifest[field] = value
-        if candidate["pythonRequirements"]:
-            manifest["dependencies"] = {
-                "python": candidate["pythonRequirements"],
-                "system": [],
-                "skills": [],
-            }
-        (record.workspace / "skill.yaml").write_text(
-            yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-        records.append(store.load(record.build_id, owner))
-    return records
+                manifest: dict[str, Any] = {
+                    "manifestVersion": 1,
+                    "entrypoints": {},
+                    "orchestration": {},
+                    "reporting": {"enabled": False},
+                }
+                for field in ("name", "description"):
+                    value = candidate["frontmatter"].get(field)
+                    if value is not None:
+                        manifest[field] = value
+                if candidate["pythonRequirements"]:
+                    manifest["dependencies"] = {
+                        "python": candidate["pythonRequirements"],
+                        "system": [],
+                        "skills": [],
+                    }
+                (record.workspace / "skill.yaml").write_text(
+                    yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+                    encoding="utf-8",
+                )
+            return [store.load(record.build_id, owner) for record in records]
+        except Exception:
+            for record in records:
+                try:
+                    store.delete(record.build_id, owner)
+                except Exception:
+                    pass
+            raise

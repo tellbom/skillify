@@ -98,6 +98,26 @@ def test_failed_mutation_preserves_revision_and_previewed_bytes(tmp_path: Path) 
     assert (unchanged.workspace / "SKILL.md").read_text(encoding="utf-8") == "original"
 
 
+def test_successful_mutation_retains_immutable_prior_revision_for_readers(tmp_path: Path) -> None:
+    store = BuildStore(tmp_path, ttl_seconds=60)
+    original = store.create("jane", "guided")
+    (original.workspace / "SKILL.md").write_text("revision one", encoding="utf-8")
+
+    updated = store.mutate(
+        original.build_id,
+        "jane",
+        1,
+        lambda workspace, _metadata: (workspace / "SKILL.md").write_text(
+            "revision two", encoding="utf-8"
+        ),
+    )
+
+    assert updated.revision == 2
+    assert (updated.workspace / "SKILL.md").read_text(encoding="utf-8") == "revision two"
+    assert original.workspace.is_dir()
+    assert (original.workspace / "SKILL.md").read_text(encoding="utf-8") == "revision one"
+
+
 def test_build_preview_reports_exact_native_content_and_validation(tmp_path: Path) -> None:
     now = datetime(2026, 7, 12, tzinfo=timezone.utc)
     store = BuildStore(tmp_path, ttl_seconds=60, clock=lambda: now)

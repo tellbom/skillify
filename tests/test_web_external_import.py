@@ -267,6 +267,43 @@ def test_creating_external_scan_cleans_expired_scan_directories(
     assert not first_dir.exists()
 
 
+def test_external_selection_lease_prevents_expiry_cleanup_during_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
+) -> None:
+    import skillify.web.external_import as external_import
+    from skillify.common.config import load_config
+
+    token = _configure(monkeypatch, tmp_path, fake_keycloak)
+    scan = client.post(
+        "/api/external-skill-scans",
+        files={"file": ("skills.zip", _multi_skill_zip(), "application/zip")},
+        headers=_headers(token),
+    ).json()
+    scan_dir = tmp_path / "home" / "cache" / "skill-scans" / scan["scanId"]
+    real_copytree = external_import.shutil.copytree
+    cleanup_attempted = []
+
+    def copytree_while_expiring(source, destination, *args, **kwargs):
+        metadata_path = scan_dir / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["expiresAt"] = "2000-01-01T00:00:00+00:00"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        external_import._cleanup_expired_scans(load_config())
+        cleanup_attempted.append(True)
+        assert scan_dir.is_dir()
+        return real_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(external_import.shutil, "copytree", copytree_while_expiring)
+    selected = client.post(
+        f"/api/external-skill-scans/{scan['scanId']}/selections",
+        json={"candidateIds": [scan["candidates"][0]["candidateId"]]},
+        headers=_headers(token),
+    )
+
+    assert selected.status_code == 200, selected.text
+    assert cleanup_attempted
+
+
 def test_external_scan_reads_only_explicit_pyproject_project_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_keycloak
 ) -> None:
