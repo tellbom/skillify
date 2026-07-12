@@ -96,6 +96,29 @@ class BuildPreviewOut(BaseModel):
     publishable: bool
 
 
+class ExternalCandidateOut(BaseModel):
+    candidateId: str
+    rootPath: str
+    frontmatter: dict[str, Any]
+    detectedPaths: list[str]
+    pythonRequirements: list[str]
+    issues: list[ValidationIssueOut]
+
+
+class ExternalScanOut(BaseModel):
+    scanId: str
+    expiresAt: datetime
+    candidates: list[ExternalCandidateOut]
+
+
+class ExternalSelectionIn(BaseModel):
+    candidateIds: list[str]
+
+
+class ExternalSelectionOut(BaseModel):
+    builds: list[BuildPreviewOut]
+
+
 class CommentIn(BaseModel):
     body: str
     parentId: int | None = None

@@ -44,6 +44,9 @@ from skillify.web.schemas import (
     CommentIn,
     CommentOut,
     EventIn,
+    ExternalScanOut,
+    ExternalSelectionIn,
+    ExternalSelectionOut,
     GuidedBuildIn,
     InstallInfo,
     LeaderboardEntry,
@@ -71,6 +74,13 @@ from skillify.web.build_service import (
     get_build,
     put_build_file,
     update_build,
+)
+from skillify.web.external_import import (
+    ExternalScanNotFound,
+    InvalidExternalScan,
+    NoSkillCandidates,
+    scan_external_zip,
+    select_external_candidates,
 )
 from skillify.web.upload import UnsafeUpload
 from skillify.web.upload_service import NamespaceOwnershipNotConfiguredError, UploadRejected, handle_upload
@@ -509,6 +519,62 @@ def _raise_build_http_error(exc: Exception) -> None:
     if isinstance(exc, InvalidBuildFile):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
+
+
+@app.post("/api/external-skill-scans", response_model=ExternalScanOut)
+async def external_skill_scan(
+    file: UploadFile = File(...),
+    claims: dict = Depends(require_keycloak_user),
+) -> ExternalScanOut:
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="upload must be a .zip archive")
+    cfg = load_config()
+    cfg.ensure_dirs()
+    work_dir = cfg.cache_dir / "external-upload" / uuid.uuid4().hex
+    work_dir.mkdir(parents=True, exist_ok=False)
+    zip_path = work_dir / "upload.zip"
+    total = 0
+    try:
+        with zip_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > cfg.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"upload exceeds the {cfg.max_upload_bytes} byte limit",
+                    )
+                output.write(chunk)
+        result = scan_external_zip(zip_path, cfg, owner=_build_owner(claims))
+    except NoSkillCandidates as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except UnsafeUpload as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    return ExternalScanOut(**result)
+
+
+@app.post(
+    "/api/external-skill-scans/{scan_id}/selections",
+    response_model=ExternalSelectionOut,
+)
+def external_skill_selection(
+    scan_id: str,
+    payload: ExternalSelectionIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> ExternalSelectionOut:
+    try:
+        records = select_external_candidates(
+            load_config(),
+            owner=_build_owner(claims),
+            scan_id=scan_id,
+            candidate_ids=payload.candidateIds,
+        )
+    except ExternalScanNotFound as exc:
+        raise HTTPException(status_code=404, detail="external scan not found") from exc
+    except InvalidExternalScan as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ExternalSelectionOut(builds=[BuildPreviewOut(**build_preview(record)) for record in records])
 
 
 @app.post("/api/skill-builds/guided", response_model=BuildPreviewOut)
