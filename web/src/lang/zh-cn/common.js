@@ -3,4 +3,5 @@ export default {
   loading: '加载中…',
   backToSkills: '← 返回技能列表',
   tagline: '内部技能目录',
+  retry: '重试',
 }

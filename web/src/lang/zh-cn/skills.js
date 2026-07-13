@@ -11,6 +11,13 @@ export default {
   allVersions: '全部版本：',
   noReadme: '暂无 README。',
   noSkillMd: '暂无 SKILL.md。',
+  errorTitle: '加载技能列表失败',
+  emptyTitle: '目录为空',
+  emptyBody: '暂无已发布的技能。',
+  noResultsTitle: '没有匹配的技能',
+  noResultsBody: '试试调整筛选条件。',
+  clearAllFilters: '清除全部筛选',
+  updatedRelative: '{days} 更新',
   filters: {
     namespacePlaceholder: '按命名空间筛选…',
     authorPlaceholder: '按作者筛选…',
