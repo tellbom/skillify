@@ -16,4 +16,10 @@ def run_list(*, console: Console) -> None:
         return
     for lock in locks:
         targets = ", ".join(lock.targets) if lock.targets else "(none)"
-        console.print(f"{lock.identifier}@{lock.version}  targets=[{targets}]  {cfg.skills_dir / lock.namespace / lock.name}")
+        # Target brackets are data, not Rich markup. Without this, Rich consumes
+        # ``[claude, opencode]`` as a style tag and the target list appears blank.
+        console.print(
+            f"{lock.identifier}@{lock.version}  targets=[{targets}]  "
+            f"{cfg.skills_dir / lock.namespace / lock.name}",
+            markup=False,
+        )

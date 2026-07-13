@@ -10,4 +10,6 @@
 8. DIsql UTF-8 脚本读取及退出码不可靠：部署转换临时副本并检查输出。
 9. DM8 初始化 SQL 不可重复执行：尚未改造成迁移/幂等脚本。
 10. 工作机到新增端口受上游网络 ACL 拒绝；目标服务器本机及容器网络真实链路正常，需网络管理员放行后再做外部浏览器验收。
+11. OpenCode 1.17.18 在银河麒麟 V10 SP1 停在自身 `init` 阶段，未进入 provider 请求；直接 DeepSeek OpenAI API 已验证正常。
+12. OpenCode 要求全局 Skill 目录名等于 frontmatter `name`，因此无法同时用目录名编码 namespace；不同 namespace 的同名 Skill 存在投影冲突风险。
 
