@@ -7,6 +7,7 @@ import {
   normalizePage,
   paginationState,
   resolveFilterChange,
+  activeFilterChips,
   SORT_OPTIONS,
   DEFAULT_SORT,
   DEFAULT_PAGE_SIZE,
@@ -161,6 +162,36 @@ describe('resolveFilterChange (C-4 single-watcher reload consolidation)', () => 
     const prev = ['', 'ns', '', '', 'updated', 1]
     const next = ['', 'ns2', '', '', 'installs', 1]
     expect(resolveFilterChange(prev, next)).toEqual({ action: 'resetImmediate' })
+  })
+})
+
+describe('activeFilterChips', () => {
+  it('returns one chip per non-empty scalar filter', () => {
+    const chips = activeFilterChips({ query: 'excel', namespace: 'ns', author: 'alice', tagsInput: '' })
+    expect(chips).toEqual([
+      { type: 'query', label: 'excel', value: 'excel' },
+      { type: 'namespace', label: 'ns', value: 'ns' },
+      { type: 'author', label: 'alice', value: 'alice' },
+    ])
+  })
+
+  it('explodes tagsInput into one chip per tag', () => {
+    const chips = activeFilterChips({ tagsInput: 'ai, cli' })
+    expect(chips).toEqual([
+      { type: 'tag', label: 'ai', value: 'ai' },
+      { type: 'tag', label: 'cli', value: 'cli' },
+    ])
+  })
+
+  it('trims whitespace and omits blank filters', () => {
+    expect(activeFilterChips({ query: '  ', namespace: '  ns  ' })).toEqual([
+      { type: 'namespace', label: 'ns', value: 'ns' },
+    ])
+  })
+
+  it('returns an empty array when nothing is active', () => {
+    expect(activeFilterChips({})).toEqual([])
+    expect(activeFilterChips()).toEqual([])
   })
 })
 

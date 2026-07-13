@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { buildCommentTree, canDeleteComment } from '../src/lib/comments.js'
+import { buildCommentTree, canDeleteComment, avatarColorFor } from '../src/lib/comments.js'
 import {
   getComments,
   postComment,
@@ -86,6 +86,22 @@ describe('canDeleteComment', () => {
 
   it('is false for already-deleted comments even if authored by the current user', () => {
     expect(canDeleteComment({ author: 'alice', deleted: true }, 'alice')).toBe(false)
+  })
+})
+
+describe('avatarColorFor', () => {
+  it('is deterministic for the same username', () => {
+    expect(avatarColorFor('alice')).toBe(avatarColorFor('alice'))
+  })
+
+  it('returns a color even for an empty/missing name', () => {
+    expect(typeof avatarColorFor('')).toBe('string')
+    expect(typeof avatarColorFor(undefined)).toBe('string')
+  })
+
+  it('tends to differ across different usernames', () => {
+    const colors = new Set(['alice', 'bob', 'carol', 'dave', 'erin'].map(avatarColorFor))
+    expect(colors.size).toBeGreaterThan(1)
   })
 })
 

@@ -57,6 +57,25 @@ export function buildCommentTree(comments) {
   return roots
 }
 
+// Fixed palette lifted from the prototype's avatar-gradient circles, cycled by a deterministic
+// hash of the username so the same author always renders the same color across reloads.
+const AVATAR_PALETTE = ['#80CBC4', '#E0A458', '#5FB88E', '#E5807A', '#9575CD', '#4FC3F7']
+
+/**
+ * Deterministic avatar color for a comment author's initials circle: a simple string hash picks
+ * a fixed palette entry, so re-renders (and other users viewing the same thread) always agree.
+ * @param {string} name
+ */
+export function avatarColorFor(name) {
+  const str = name || ''
+  let hash = 0
+  for (let i = 0; i < str.length; i += 1) {
+    hash = (hash * 31 + str.charCodeAt(i)) | 0
+  }
+  const index = Math.abs(hash) % AVATAR_PALETTE.length
+  return AVATAR_PALETTE[index]
+}
+
 /**
  * True when the current user is allowed to see a delete button for a comment: the comment's
  * author matches the logged-in username (per task-7 brief — namespace-owner deletes are also

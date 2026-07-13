@@ -86,6 +86,24 @@ export function resolveFilterChange(prev, next) {
 }
 
 /**
+ * Derive the active-filter chip row shown above the results list (home page redesign). Each chip
+ * is independently removable; a multi-tag `tagsInput` explodes into one chip per tag so a single
+ * tag can be removed without clearing the others.
+ * @param {{query?: string, namespace?: string, author?: string, tagsInput?: string}} state
+ * @returns {Array<{type: 'query'|'namespace'|'author'|'tag', label: string, value: string}>}
+ */
+export function activeFilterChips({ query, namespace, author, tagsInput } = {}) {
+  const chips = []
+  if (query?.trim()) chips.push({ type: 'query', label: query.trim(), value: query.trim() })
+  if (namespace?.trim()) chips.push({ type: 'namespace', label: namespace.trim(), value: namespace.trim() })
+  if (author?.trim()) chips.push({ type: 'author', label: author.trim(), value: author.trim() })
+  for (const tag of splitTagsInput(tagsInput)) {
+    chips.push({ type: 'tag', label: tag, value: tag })
+  }
+  return chips
+}
+
+/**
  * Derive pagination display state from a SearchResult ({items, total, page, pageSize}).
  * `totalPages` is at least 1 even when total is 0, so a "page 1 of 1" UI never divides by zero.
  * @param {{total?: number, page?: number, pageSize?: number}} result
