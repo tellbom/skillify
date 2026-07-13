@@ -30,8 +30,17 @@ async function request(path, { params, method = 'GET', body, json, auth = false 
     const payload = await resp.json().catch(() => ({}))
     const detail = Array.isArray(payload.detail)
       ? payload.detail.map((d) => `${d.path}: ${d.message}`).join('; ')
-      : payload.detail
-    throw new Error(detail || `${resp.status} ${resp.statusText}`)
+      : typeof payload.detail === 'object' && payload.detail !== null
+        ? payload.detail.message || JSON.stringify(payload.detail)
+        : payload.detail
+    const err = new Error(detail || `${resp.status} ${resp.statusText}`)
+    // Skill-build flows (preview/confirm) need the raw structured detail — 409 revision
+    // conflicts carry `currentRevision`, 422 publish-not-ready carries `missingFields` /
+    // `unconfirmedFields` / `issues`. Attached alongside `message` so every existing caller
+    // that only reads `err.message` keeps working unchanged.
+    err.status = resp.status
+    err.detail = payload.detail
+    throw err
   }
   return resp.json()
 }
@@ -74,10 +83,67 @@ export function getInstallInfo(namespace, name) {
   return request(`/skills/${namespace}/${name}/install`)
 }
 
+// Compatibility note: this used to return the *published* result directly. The backend now
+// stages the zip into a temporary BuildPreview instead (namespace/Release/index are NOT
+// touched yet) — callers must show the preview and call publishSkillBuild() after explicit
+// user confirmation, never treat this response as "published".
 export function uploadSkill(file) {
   const formData = new FormData()
   formData.append('file', file)
   return request('/skills/upload', { method: 'POST', body: formData, auth: true })
+}
+
+export function createGuidedBuild(manifest, skillMd) {
+  return request('/skill-builds/guided', { method: 'POST', json: { manifest, skillMd }, auth: true })
+}
+
+export function getSkillBuild(buildId) {
+  return request(`/skill-builds/${buildId}`, { auth: true })
+}
+
+export function patchSkillBuild(buildId, { expectedRevision, manifest, skillMd }) {
+  const payload = { expectedRevision }
+  if (manifest !== undefined) payload.manifest = manifest
+  if (skillMd !== undefined) payload.skillMd = skillMd
+  return request(`/skill-builds/${buildId}`, { method: 'PATCH', json: payload, auth: true })
+}
+
+export function addSkillBuildFile(buildId, { path, expectedRevision, file }) {
+  const formData = new FormData()
+  formData.append('path', path)
+  formData.append('expectedRevision', String(expectedRevision))
+  formData.append('file', file)
+  return request(`/skill-builds/${buildId}/files`, { method: 'POST', body: formData, auth: true })
+}
+
+export function deleteSkillBuildFile(buildId, { path, expectedRevision }) {
+  return request(`/skill-builds/${buildId}/files`, {
+    method: 'DELETE',
+    params: { path, expectedRevision },
+    auth: true,
+  })
+}
+
+export function publishSkillBuild(buildId, { expectedRevision, confirmed }) {
+  return request(`/skill-builds/${buildId}/publish`, {
+    method: 'POST',
+    json: { expectedRevision, confirmed },
+    auth: true,
+  })
+}
+
+export function scanExternalSkill(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request('/external-skill-scans', { method: 'POST', body: formData, auth: true })
+}
+
+export function selectExternalCandidates(scanId, candidateIds) {
+  return request(`/external-skill-scans/${scanId}/selections`, {
+    method: 'POST',
+    json: { candidateIds },
+    auth: true,
+  })
 }
 
 export function getComments(namespace, name) {
