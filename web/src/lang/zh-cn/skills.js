@@ -1,4 +1,6 @@
 export default {
+  title: '技能中心',
+  subtitle: '发现、安装并复用组织内的 Agent Skill',
   searchPlaceholder: '按名称或描述搜索技能…',
   noSkillsFound: '未找到技能。',
   byAuthor: '作者：{author}',
