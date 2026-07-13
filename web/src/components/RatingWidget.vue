@@ -16,6 +16,7 @@ const { t } = useI18n()
 const auth = useAuthStore()
 const submitting = ref(false)
 const error = ref(null)
+const hoverValue = ref(0)
 
 async function rate(score) {
   submitting.value = true
@@ -34,16 +35,20 @@ async function rate(score) {
 <template>
   <div class="rating">
     <span class="summary">
-      {{ ratingAverage !== null ? ratingAverage.toFixed(1) : t('comment-rating.unrated') }} ★
+      <span class="score">{{ ratingAverage !== null ? ratingAverage.toFixed(1) : t('comment-rating.unrated') }}</span>
+      <span class="star-icon">★</span>
       <span class="count">({{ ratingCount }})</span>
     </span>
-    <span v-if="auth.isAuthenticated" class="stars">
+    <span v-if="auth.isAuthenticated" class="stars" @mouseleave="hoverValue = 0">
       <button
         v-for="n in 5"
         :key="n"
         type="button"
+        class="star-btn"
+        :class="{ filled: (hoverValue || 0) >= n }"
         :disabled="submitting"
         :title="t('comment-rating.rateThisSkill')"
+        @mouseenter="hoverValue = n"
         @click="rate(n)"
       >
         ★
@@ -58,22 +63,48 @@ async function rate(score) {
 .rating {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  font-size: 0.85rem;
+  gap: 10px;
+  font-size: 13.5px;
 }
-.summary { color: #ccc; }
-.count { color: #888; }
-.hint { color: #888; }
-.error { color: #e06c75; }
-.stars button {
+.summary {
+  color: #c9c9c9;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.star-icon {
+  color: #e0a458;
+}
+.count {
+  color: #6e6e6e;
+  font-size: 12px;
+}
+.hint {
+  color: #6e6e6e;
+  font-size: 12.5px;
+}
+.error {
+  color: #e5807a;
+  font-size: 12px;
+}
+.stars {
+  display: inline-flex;
+  gap: 2px;
+}
+.star-btn {
   background: none;
   border: none;
-  color: #555;
+  color: #3a3a3a;
   cursor: pointer;
-  font-size: 1rem;
-  padding: 0 0.1rem;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 1px;
+  transition: color 0.1s;
 }
-.stars button:hover {
-  color: #ffca28;
+.star-btn.filled {
+  color: #e0a458;
+}
+.star-btn:disabled {
+  cursor: default;
 }
 </style>

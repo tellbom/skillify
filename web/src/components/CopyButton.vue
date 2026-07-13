@@ -20,20 +20,31 @@ async function copy() {
 </script>
 
 <template>
-  <button class="copy-btn" type="button" @click="copy">{{ copied ? t('comment-rating.copied') : displayLabel }}</button>
+  <button class="copy-btn" :class="{ copied }" type="button" @click="copy">
+    {{ copied ? `✓ ${t('comment-rating.copied')}` : displayLabel }}
+  </button>
 </template>
 
 <style scoped>
 .copy-btn {
-  font-size: 0.85rem;
-  padding: 0.25rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid #444;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid #2c2c2c;
   background: #1c1c1c;
-  color: inherit;
+  color: #c9c9c9;
   cursor: pointer;
+  transition: all 0.13s;
+  white-space: nowrap;
 }
 .copy-btn:hover {
-  border-color: #666;
+  border-color: #80cbc4;
+  color: #80cbc4;
+}
+.copy-btn.copied {
+  border-color: #5fb88e;
+  color: #5fb88e;
+  background: rgba(95, 184, 142, 0.1);
 }
 </style>

@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getComments, postComment, deleteComment } from '../lib/api.js'
-import { buildCommentTree, canDeleteComment } from '../lib/comments.js'
+import { buildCommentTree, canDeleteComment, avatarColorFor } from '../lib/comments.js'
 import { useAuthStore } from '../stores/auth.js'
 import { formatDateTime } from '../lib/datetime.js'
 
@@ -109,43 +109,70 @@ onMounted(load)
 
 <template>
   <section class="comments">
-    <h3>{{ t('comment-rating.commentsTitle') }}</h3>
+    <div class="comments-head">
+      <h2 class="comments-title">{{ t('comment-rating.commentsTitle') }}</h2>
+      <span v-if="!loading && !error" class="comments-count">{{ tree.length }}</span>
+    </div>
+
+    <div class="comment-form">
+      <textarea v-model="draft" :placeholder="t('comment-rating.addCommentPlaceholder')" />
+      <div class="form-row">
+        <button type="button" class="submit-btn" :disabled="!draft.trim() || posting" @click="submit">
+          {{ posting ? t('comment-rating.posting') : t('comment-rating.postComment') }}
+        </button>
+        <span v-if="postError" class="error">{{ postError }}</span>
+      </div>
+    </div>
+    <p v-if="!auth.isAuthenticated" class="hint">{{ t('comment-rating.loginToComment') }}</p>
 
     <p v-if="loading" class="hint">{{ t('common.loading') }}</p>
     <p v-else-if="error" class="error">{{ t('errors.loadFailed', { error }) }}</p>
-    <p v-else-if="tree.length === 0" class="hint">{{ t('comment-rating.noComments') }}</p>
+    <div v-else-if="tree.length === 0" class="empty-box">{{ t('comment-rating.noComments') }}</div>
 
-    <ul v-else class="comment-list">
-      <li v-for="c in tree" :key="c.id" class="comment-thread">
-        <div class="comment" :class="{ deleted: c.deleted }">
-          <span class="comment-author">{{ c.author }}</span>
-          <span class="comment-time">{{ formatDateTime(c.createdAt) }}</span>
-          <p class="comment-body">{{ c.body }}</p>
-          <div class="comment-actions">
-            <button v-if="auth.isAuthenticated && !c.deleted" type="button" class="link-button" @click="toggleReply(c.id)">
-              {{ replyingTo === c.id ? t('comment-rating.cancelReply') : t('comment-rating.reply') }}
-            </button>
-            <button v-if="canDelete(c)" type="button" class="link-button danger" :disabled="deleteBusy === c.id" @click="removeComment(c.id)">
-              {{ deleteBusy === c.id ? t('comment-rating.deleting') : t('comment-rating.delete') }}
-            </button>
-          </div>
+    <div v-else class="comment-list">
+      <template v-for="c in tree" :key="c.id">
+        <div class="comment-row">
+          <div v-if="c.deleted" class="deleted-placeholder">{{ t('comment-rating.deletedPlaceholder') }}</div>
+          <template v-else>
+            <div class="comment-meta">
+              <div class="avatar" :style="{ background: avatarColorFor(c.author) }">{{ c.author.slice(0, 2).toUpperCase() }}</div>
+              <span class="comment-author">{{ c.author }}</span>
+              <span class="comment-time">{{ formatDateTime(c.createdAt) }}</span>
+            </div>
+            <p class="comment-body">{{ c.body }}</p>
+            <div class="comment-actions">
+              <button v-if="auth.isAuthenticated" type="button" class="link-button" @click="toggleReply(c.id)">
+                {{ replyingTo === c.id ? t('comment-rating.cancelReply') : t('comment-rating.reply') }}
+              </button>
+              <button v-if="canDelete(c)" type="button" class="link-button danger" :disabled="deleteBusy === c.id" @click="removeComment(c.id)">
+                {{ deleteBusy === c.id ? t('comment-rating.deleting') : t('comment-rating.delete') }}
+              </button>
+            </div>
 
-          <div v-if="replyingTo === c.id" class="reply-form">
-            <textarea v-model="replyDraft" rows="2" :placeholder="t('comment-rating.replyPlaceholder')" />
-            <button type="button" :disabled="!replyDraft.trim() || replying" @click="submitReply(c.id)">
-              {{ replying ? t('comment-rating.posting') : t('comment-rating.postReply') }}
-            </button>
-            <p v-if="replyError" class="error">{{ replyError }}</p>
-          </div>
+            <div v-if="replyingTo === c.id" class="reply-form">
+              <textarea v-model="replyDraft" :placeholder="t('comment-rating.replyPlaceholder')" />
+              <div class="form-row">
+                <button type="button" class="submit-btn submit-btn-sm" :disabled="!replyDraft.trim() || replying" @click="submitReply(c.id)">
+                  {{ replying ? t('comment-rating.posting') : t('comment-rating.postReply') }}
+                </button>
+                <button type="button" class="link-button" @click="toggleReply(c.id)">{{ t('comment-rating.cancelReply') }}</button>
+                <span v-if="replyError" class="error">{{ replyError }}</span>
+              </div>
+            </div>
+          </template>
         </div>
 
-        <ul v-if="c.replies.length" class="reply-list">
-          <li v-for="r in c.replies" :key="r.id" class="comment reply" :class="{ deleted: r.deleted }">
-            <span class="comment-author">{{ r.author }}</span>
-            <span class="comment-time">{{ formatDateTime(r.createdAt) }}</span>
+        <div v-for="r in c.replies" :key="r.id" class="comment-row reply-row">
+          <div v-if="r.deleted" class="deleted-placeholder">{{ t('comment-rating.deletedPlaceholder') }}</div>
+          <template v-else>
+            <div class="comment-meta">
+              <div class="avatar" :style="{ background: avatarColorFor(r.author) }">{{ r.author.slice(0, 2).toUpperCase() }}</div>
+              <span class="comment-author">{{ r.author }}</span>
+              <span class="comment-time">{{ formatDateTime(r.createdAt) }}</span>
+            </div>
             <p class="comment-body">{{ r.body }}</p>
             <div class="comment-actions">
-              <button v-if="auth.isAuthenticated && !r.deleted" type="button" class="link-button" @click="toggleReply(r.id)">
+              <button v-if="auth.isAuthenticated" type="button" class="link-button" @click="toggleReply(r.id)">
                 {{ replyingTo === r.id ? t('comment-rating.cancelReply') : t('comment-rating.reply') }}
               </button>
               <button v-if="canDelete(r)" type="button" class="link-button danger" :disabled="deleteBusy === r.id" @click="removeComment(r.id)">
@@ -154,150 +181,196 @@ onMounted(load)
             </div>
 
             <div v-if="replyingTo === r.id" class="reply-form">
-              <textarea v-model="replyDraft" rows="2" :placeholder="t('comment-rating.replyPlaceholder')" />
-              <button type="button" :disabled="!replyDraft.trim() || replying" @click="submitReply(r.id)">
-                {{ replying ? t('comment-rating.posting') : t('comment-rating.postReply') }}
-              </button>
-              <p v-if="replyError" class="error">{{ replyError }}</p>
+              <textarea v-model="replyDraft" :placeholder="t('comment-rating.replyPlaceholder')" />
+              <div class="form-row">
+                <button type="button" class="submit-btn submit-btn-sm" :disabled="!replyDraft.trim() || replying" @click="submitReply(r.id)">
+                  {{ replying ? t('comment-rating.posting') : t('comment-rating.postReply') }}
+                </button>
+                <button type="button" class="link-button" @click="toggleReply(r.id)">{{ t('comment-rating.cancelReply') }}</button>
+                <span v-if="replyError" class="error">{{ replyError }}</span>
+              </div>
             </div>
-          </li>
-        </ul>
-      </li>
-    </ul>
+          </template>
+        </div>
+      </template>
+    </div>
 
     <p v-if="deleteError" class="error">{{ t('comment-rating.deleteFailed', { error: deleteError }) }}</p>
-
-    <div v-if="auth.isAuthenticated" class="comment-form">
-      <textarea v-model="draft" rows="3" :placeholder="t('comment-rating.addCommentPlaceholder')" />
-      <button type="button" :disabled="!draft.trim() || posting" @click="submit">
-        {{ posting ? t('comment-rating.posting') : t('comment-rating.postComment') }}
-      </button>
-      <p v-if="postError" class="error">{{ postError }}</p>
-    </div>
-    <p v-else class="hint">{{ t('comment-rating.loginToComment') }}</p>
   </section>
 </template>
 
 <style scoped>
 .comments {
-  margin-top: 2rem;
-  border-top: 1px solid #333;
-  padding-top: 1.5rem;
+  margin-top: 28px;
+  border-top: 1px solid #232323;
+  padding-top: 20px;
 }
-.hint { color: #888; }
-.error { color: #e06c75; }
-.comment-list {
-  list-style: none;
-  padding: 0;
+.comments-head {
   display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
-  margin-bottom: 1rem;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 16px;
 }
-.comment-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.comment {
-  border: 1px solid #2a2a2a;
-  border-radius: 6px;
-  padding: 0.6rem 0.8rem;
-}
-.comment.deleted {
-  opacity: 0.6;
-}
-.reply-list {
-  list-style: none;
+.comments-title {
+  font-size: 16px;
+  font-weight: 650;
   margin: 0;
-  padding-left: 1.5rem;
+  color: #ededed;
+}
+.comments-count {
+  font-size: 13px;
+  color: #6e6e6e;
+}
+.hint {
+  color: #9f9f9f;
+  font-size: 13.5px;
+}
+.error {
+  color: #e5807a;
+  font-size: 12.5px;
+}
+.empty-box {
+  border: 1px dashed #2c2c2c;
+  border-radius: 10px;
+  padding: 36px 20px;
+  text-align: center;
+  color: #6e6e6e;
+  font-size: 13.5px;
+}
+
+.comment-form {
+  margin-bottom: 22px;
+}
+.comment-form textarea,
+.reply-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1c1c1c;
+  border: 1px solid #2c2c2c;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #e5e5e5;
+  font-size: 13.5px;
+  font-family: inherit;
+  outline: none;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 82px;
+}
+.comment-form textarea:focus,
+.reply-form textarea:focus {
+  border-color: #80cbc4;
+}
+.reply-form textarea {
+  min-height: 60px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.submit-btn {
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  background: #80cbc4;
+  color: #0f1615;
+}
+.submit-btn:disabled {
+  cursor: not-allowed;
+  background: #232323;
+  color: #6e6e6e;
+}
+.submit-btn-sm {
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+
+.comment-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  border-left: 2px solid #2a2a2a;
+}
+.comment-row {
+  padding: 14px 0;
+  border-top: 1px solid #1e1e1e;
+}
+.reply-row {
+  margin-left: 33px;
+  padding-left: 16px;
+  border-left: 1px solid #232323;
+}
+.deleted-placeholder {
+  padding: 12px 0;
+  font-size: 13px;
+  color: #6e6e6e;
+  font-style: italic;
+}
+.comment-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 6px;
+}
+.avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #0f1615;
+  flex: none;
 }
 .comment-author {
+  font-size: 13px;
   font-weight: 600;
-  margin-right: 0.5rem;
+  color: #e5e5e5;
 }
 .comment-time {
-  color: #888;
-  font-size: 0.8rem;
+  font-size: 11.5px;
+  color: #6e6e6e;
 }
 .comment-body {
-  margin: 0.3rem 0 0;
+  font-size: 13.5px;
+  color: #c9c9c9;
+  line-height: 1.6;
+  margin: 0 0 8px 33px;
   white-space: pre-wrap;
 }
 .comment-actions {
   display: flex;
-  gap: 0.8rem;
-  margin-top: 0.4rem;
+  align-items: center;
+  gap: 14px;
+  margin-left: 33px;
 }
 .link-button {
   background: none;
   border: none;
-  color: #80cbc4;
+  color: #9f9f9f;
   cursor: pointer;
   padding: 0;
-  font-size: 0.8rem;
+  font-size: 12px;
+}
+.link-button:hover {
+  color: #80cbc4;
 }
 .link-button:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.link-button.danger {
-  color: #e06c75;
+.link-button.danger:hover {
+  color: #e5807a;
 }
 .reply-form {
-  margin-top: 0.5rem;
-}
-.reply-form textarea {
-  width: 100%;
-  box-sizing: border-box;
-  background: #1c1c1c;
-  color: inherit;
-  border: 1px solid #444;
-  border-radius: 6px;
-  padding: 0.5rem;
-  font-family: inherit;
-  resize: vertical;
-}
-.reply-form button {
-  margin-top: 0.4rem;
-  padding: 0.3rem 0.8rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #1c1c1c;
-  color: inherit;
-  cursor: pointer;
-  font-size: 0.8rem;
-}
-.reply-form button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.comment-form textarea {
-  width: 100%;
-  box-sizing: border-box;
-  background: #1c1c1c;
-  color: inherit;
-  border: 1px solid #444;
-  border-radius: 6px;
-  padding: 0.5rem;
-  font-family: inherit;
-  resize: vertical;
-}
-.comment-form button {
-  margin-top: 0.5rem;
-  padding: 0.4rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #1c1c1c;
-  color: inherit;
-  cursor: pointer;
-}
-.comment-form button:disabled {
-  opacity: 0.5;
-  cursor: default;
+  margin: 12px 0 4px 33px;
 }
 </style>
