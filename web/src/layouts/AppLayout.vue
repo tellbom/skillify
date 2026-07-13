@@ -53,7 +53,7 @@ function handleLogout() {
 
 <style scoped>
 .app-shell {
-  max-width: 960px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 0 1.5rem;
 }
