@@ -377,6 +377,9 @@ def select_external_candidates(
         by_id = {item["candidateId"]: item for item in metadata.get("candidates") or []}
         if any(candidate_id not in by_id for candidate_id in candidate_ids):
             raise InvalidExternalScan("candidateId does not belong to this scan")
+        already_selected = set(metadata.get("selectedCandidateIds") or [])
+        if already_selected.intersection(candidate_ids):
+            raise InvalidExternalScan("candidateId has already been selected")
 
         store: BuildStore = store_for_config(cfg)
         records = []
@@ -416,7 +419,10 @@ def select_external_candidates(
                     yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
                     encoding="utf-8",
                 )
-            return [store.load(record.build_id, owner) for record in records]
+            selected = [store.load(record.build_id, owner) for record in records]
+            metadata["selectedCandidateIds"] = sorted(already_selected.union(candidate_ids))
+            _write_json(directory / "metadata.json", metadata)
+            return selected
         except Exception:
             for record in records:
                 try:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, false, func, select
 from sqlalchemy.orm import Session
 
 from skillify.index.events import install_counts
@@ -40,7 +40,9 @@ def _latest_ids_subquery(*, include_yanked: bool) -> Select:
     (newest non-yanked version wins; an all-yanked skill drops out entirely)."""
     base = select(SkillIndexEntry)
     if not include_yanked:
-        base = base.where(SkillIndexEntry.yanked.is_(False))
+        # DM8's SQLAlchemy dialect renders ``is_(False)`` as ``IS 0``, which DM8
+        # rejects. Equality against SQLAlchemy's false literal compiles to ``= 0``.
+        base = base.where(SkillIndexEntry.yanked == false())
     filtered = base.subquery()
     return select(func.max(filtered.c.id)).group_by(filtered.c.namespace, filtered.c.name)
 

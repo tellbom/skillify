@@ -8,7 +8,7 @@ RUN mkdir -p /data && chown devpi:devpi /data
 USER devpi
 WORKDIR /data
 
-RUN devpi-server --serverdir=/data --init
+RUN devpi-init --serverdir=/data
 
 EXPOSE 3141
 

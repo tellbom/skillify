@@ -6,14 +6,32 @@ separate from Forgejo's PostgreSQL database.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class JSONText(TypeDecorator[Any]):
+    """JSON encoded as text, matching the DM8 CLOB schema fact source."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> str | None:
+        return None if value is None else json.dumps(value, ensure_ascii=False)
+
+    def process_result_value(self, value: Any, dialect: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return json.loads(value)
 
 
 class SkillIndexEntry(Base):
@@ -30,7 +48,7 @@ class SkillIndexEntry(Base):
     # 05-c4-search-indexes.sql for the DM8-side equivalent, since DM8 doesn't pick up
     # SQLAlchemy's `Base.metadata.create_all` the way SQLite/Postgres do in this project).
     author: Mapped[str] = mapped_column(String(255), default="", index=True)
-    tags: Mapped[list] = mapped_column(JSON, default=list)
+    tags: Mapped[list] = mapped_column(JSONText(), default=list)
     checksum: Mapped[str] = mapped_column(String(64))
     release_url: Mapped[str] = mapped_column(String(1024), default="")
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -38,7 +56,7 @@ class SkillIndexEntry(Base):
     # future orchestrator can query it without re-fetching the artifact from Forgejo. Not
     # interpreted/validated beyond "must be a JSON object" (already enforced at manifest
     # validation time, T0.2) — no orchestration engine is implemented here.
-    orchestration: Mapped[dict] = mapped_column(JSON, default=dict)
+    orchestration: Mapped[dict] = mapped_column(JSONText(), default=dict)
     # C-1 (version center): a yanked version stays installable if explicitly requested
     # (by tag/version) but drops out of "latest" resolution (list_latest/search/leaderboard)
     # — crates.io-style semantics. Unlike SkillEvent.success this is NOT nullable/tri-state:
