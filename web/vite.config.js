@@ -15,12 +15,14 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      host: env.VITE_DEV_HOST || '127.0.0.1',
+      port: Number(env.VITE_DEV_PORT) || 5173,
       proxy: {
         // Dev convenience: `skillctl` community backend (T3.1, skillify-web) defaults to
         // :8089. Frontend calls relative `/api/...` (see src/lib/api.js); this proxies that
         // through in dev so no CORS config is needed (backend also sets permissive CORS).
         '/api': {
-          target: 'http://127.0.0.1:8089',
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8089',
           changeOrigin: true,
         },
         // M4: dev-only proxy to the external Rbac.Api, avoiding CORS while VITE_RBAC_BASE_URL

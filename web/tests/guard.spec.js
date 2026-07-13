@@ -39,7 +39,12 @@ vi.mock('../src/router/dynamicRoutes.js', () => ({
       name: 'skills',
       component: { template: '<div>skills</div>' },
     })
-    return { registeredRouteNames: ['skills'], navTree: [], authNode: [] }
+    router.addRoute('layout', {
+      path: 'skills/:namespace/:name',
+      name: 'skill-detail',
+      component: { template: '<div>detail</div>' },
+    })
+    return { registeredRouteNames: ['skills', 'skill-detail'], navTree: [], authNode: [] }
   },
 }))
 
@@ -63,7 +68,7 @@ describe('installAuthGuard', () => {
         {
           path: '/:pathMatch(.*)*',
           name: 'catchAll',
-          redirect: '/404',
+          component: { template: '<div>not found</div>' },
         },
       ],
     })
@@ -73,5 +78,23 @@ describe('installAuthGuard', () => {
     await router.isReady()
 
     expect(router.currentRoute.value.name).toBe('skills')
+  })
+
+  it('re-resolves a refreshed dynamic deep-link after RBAC routes are registered', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/404', name: 'notFound', component: { template: '<div>404</div>' } },
+        { path: '/', name: 'layout', component: { template: '<router-view />' } },
+        { path: '/:pathMatch(.*)*', name: 'catchAll', component: { template: '<div>not found</div>' } },
+      ],
+    })
+    installAuthGuard(router)
+
+    await router.push('/skills/example/demo')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('skill-detail')
+    expect(router.currentRoute.value.params).toMatchObject({ namespace: 'example', name: 'demo' })
   })
 })

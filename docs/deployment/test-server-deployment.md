@@ -13,11 +13,15 @@
 启动/检查命令：
 
 ```sh
-cd /opt/skillify-test/app/infra
-docker compose -f docker-compose.yml -f compose.test-server.yml up -d --build
-docker compose -f docker-compose.yml -f compose.test-server.yml ps
-docker compose -f docker-compose.yml -f compose.test-server.yml logs --tail=100
+cd /opt/skillify-test
+./start-test-server-docker.sh
 ```
+
+The test server must be started with Docker CLI in dependency order. Do not use
+`docker compose up` on this CentOS 7 host: recreating the database without the
+server-specific PostgreSQL 12 image makes its existing data directory incompatible.
+Keycloak, Rbac.Api and Skillify all use the `master` realm and its `skillify-web`
+public client.
 
 全栈 `restart` 后 6 个服务恢复；API 与 webhook `/healthz` 均为 200，devpi volume 中测试包仍可安装。
 

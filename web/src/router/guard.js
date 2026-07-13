@@ -1,5 +1,5 @@
 import { isKeycloakConfigured } from '../lib/keycloak.js'
-import { bootstrapSession, login } from '../lib/authBootstrap.js'
+import { bootstrapSession } from '../lib/authBootstrap.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useMenuStore } from '../stores/menu.js'
 import { generateRoutes } from './dynamicRoutes.js'
@@ -49,14 +49,18 @@ export function installAuthGuard(router) {
     }
 
     if (!auth.isAuthenticated) {
-      // Full-page redirect to Keycloak; this SPA navigation never completes.
-      await login().catch(() => {})
-      return false
+      // Keep the initial SPA navigation finite. Awaiting Keycloak's full-page redirect here
+      // prevents router.isReady() from resolving and leaves the page blank if the browser or
+      // identity provider blocks that redirect. The login page starts it from a user action.
+      return { name: 'login', query: { redirect: to.fullPath } }
     }
 
     // Authenticated + already bootstrapped, but the target still doesn't match a registered
     // route → genuine 404.
     if (!menu.hasRoutes) {
+      return { name: 'notFound' }
+    }
+    if (to.name === 'catchAll') {
       return { name: 'notFound' }
     }
     return true

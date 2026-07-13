@@ -2,21 +2,34 @@
 // Framework-level login landing (static route /login). Reached when the RBAC client hits a
 // 401, or as an explicit login entry point. The auth guard normally redirects unauthenticated
 // users straight to Keycloak, so this page is mostly a fallback surface + error display.
+import { onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { login } from '../lib/authBootstrap.js'
 import { isKeycloakConfigured } from '../lib/keycloak.js'
 import { useMenuStore } from '../stores/menu.js'
 
 const { t } = useI18n()
 const menu = useMenuStore()
+const route = useRoute()
+const router = useRouter()
+const LOGIN_REDIRECT_KEY = 'skillify.login.redirect'
 
 async function handleLogin() {
   try {
+    if (typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')) {
+      sessionStorage.setItem(LOGIN_REDIRECT_KEY, route.query.redirect)
+    }
     await login()
+    const redirect = sessionStorage.getItem(LOGIN_REDIRECT_KEY) || '/'
+    sessionStorage.removeItem(LOGIN_REDIRECT_KEY)
+    await router.replace(redirect)
   } catch (err) {
     menu.setError(err.message)
   }
 }
+
+onMounted(handleLogin)
 </script>
 
 <template>
@@ -24,14 +37,7 @@ async function handleLogin() {
     <h1>Skillify</h1>
     <p class="tagline">{{ t('common.tagline') }}</p>
     <p v-if="menu.bootstrapError" class="error">{{ menu.bootstrapError }}</p>
-    <button
-      v-if="isKeycloakConfigured()"
-      type="button"
-      class="login-btn"
-      @click="handleLogin"
-    >
-      {{ t('auth-pages.loginWithKeycloak') }}
-    </button>
+    <p v-if="isKeycloakConfigured() && !menu.bootstrapError" class="tagline">正在跳转到统一认证平台…</p>
     <p v-else class="error">
       {{ t('errors.keycloakNotConfigured') }}
     </p>
@@ -55,15 +61,5 @@ async function handleLogin() {
   border-radius: 4px;
   padding: 0.75rem 1rem;
   font-size: 0.9rem;
-}
-.login-btn {
-  margin-top: 1.5rem;
-  padding: 0.6rem 1.4rem;
-  border: 1px solid #80cbc4;
-  border-radius: 4px;
-  background: none;
-  color: #80cbc4;
-  cursor: pointer;
-  font-size: 1rem;
 }
 </style>

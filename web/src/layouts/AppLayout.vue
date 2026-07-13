@@ -25,9 +25,17 @@ function handleLogout() {
       <router-link to="/" class="brand">Skillify</router-link>
       <span class="tagline">{{ t('common.tagline') }}</span>
       <nav class="nav-links">
-        <router-link v-for="item in menu.navTree" :key="item.name" :to="item.path">
-          {{ item.title }}
-        </router-link>
+        <template v-for="item in menu.navTree" :key="item.name">
+          <div v-if="item.children.length" class="nav-group">
+            <span class="nav-group-title">{{ item.title }}</span>
+            <div class="nav-group-menu">
+              <router-link v-for="child in item.children" :key="child.name" :to="child.path">
+                {{ child.title }}
+              </router-link>
+            </div>
+          </div>
+          <router-link v-else :to="item.path">{{ item.title }}</router-link>
+        </template>
       </nav>
       <div class="auth-area">
         <template v-if="auth.isAuthenticated">
@@ -75,6 +83,33 @@ function handleLogout() {
   color: #80cbc4;
   text-decoration: none;
   font-size: 0.9rem;
+}
+.nav-group {
+  position: relative;
+}
+.nav-group-title {
+  color: #80cbc4;
+  cursor: default;
+  font-size: 0.9rem;
+}
+.nav-group-menu {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  min-width: 9rem;
+  padding: 0.5rem;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1c1c1c;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+}
+.nav-group:hover .nav-group-menu,
+.nav-group:focus-within .nav-group-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 .auth-area {
   margin-left: auto;

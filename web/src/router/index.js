@@ -40,7 +40,10 @@ const router = createRouter({
     {
       path: '/:pathMatch(.*)*',
       name: 'catchAll',
-      redirect: '/404',
+      // Keep the original deep-link intact until the auth guard has fetched the RBAC menu
+      // and registered dynamic routes. A static redirect here loses the original URL and
+      // turns every full-page refresh of a dynamic route into /404.
+      component: () => import('../views/error/NotFound.vue'),
     },
   ],
 })
