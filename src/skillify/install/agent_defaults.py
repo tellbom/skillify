@@ -2,9 +2,8 @@
 
 These are best-effort defaults for each target's skills-directory convention:
 - claude: `~/.claude/skills/<dir>/SKILL.md` matches Anthropic's published Agent Skills layout.
-- opencode: not verified against opencode's actual docs/source from this environment (opencode
-  isn't installed on this dev machine) — flagged here and in spec/skill-manifest-v1.md's
-  companion notes as a placeholder to confirm before opencode support is relied on for real.
+- opencode: `~/.config/opencode/skills/<dir>/SKILL.md` is OpenCode's documented global
+  Agent Skills location.
 - project: PLAN.md §2 names "project=项目本地 .skills" — relative to the current working
   directory the projection command is run from.
 
@@ -25,9 +24,10 @@ DEFAULT_RULES: dict[str, dict] = {
     },
     "opencode": {
         "agent": "opencode",
-        "targetDirTemplate": "~/.opencode/skills/{namespace}__{name}",
+        # OpenCode requires the containing directory to exactly match SKILL.md's
+        # frontmatter name, so the namespace cannot be encoded in this path.
+        "targetDirTemplate": "~/.config/opencode/skills/{name}",
         "linkMode": "auto",
-        "unverified": True,  # see module docstring
     },
     "project": {
         "agent": "project",
@@ -45,7 +45,7 @@ RESERVED_UNIMPLEMENTED_AGENTS = {"codex", "aider"}  # PLAN.md §2: "预留 codex
 # machine-wide agent install, so it's never auto-selected; it must be requested explicitly.
 AGENT_PRESENCE_MARKERS: dict[str, Path] = {
     "claude": Path.home() / ".claude",
-    "opencode": Path.home() / ".opencode",
+    "opencode": Path.home() / ".config" / "opencode",
 }
 
 
