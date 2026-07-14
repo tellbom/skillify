@@ -14,7 +14,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from skillify.index.db import init_db, make_engine, session_scope
+from skillify.index.events import record_event
 from skillify.index.ingest import ReleaseEvent, upsert_release
+from skillify.index.ratings import upsert_rating
+from skillify.index.star import add_star
 from skillify.publish.forgejo_client import ForgejoClient
 from skillify.web.app import app
 from tests.fake_forgejo import fake_forgejo  # noqa: F401
@@ -99,6 +102,59 @@ def test_list_skills(monkeypatch, tmp_path: Path, index_db_url: str, fake_keyclo
     assert body["total"] == 2
     assert body["page"] == 1
     assert body["pageSize"] == 20
+
+
+def test_list_and_search_skills_include_community_metrics(
+    monkeypatch, tmp_path: Path, index_db_url: str, fake_keycloak
+) -> None:
+    monkeypatch.setenv("SKILLIFY_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", index_db_url)
+    _configure_keycloak(monkeypatch, fake_keycloak)
+
+    with session_scope(make_engine(index_db_url)) as session:
+        for _ in range(3):
+            record_event(
+                session, namespace="excel", name="pivot-analysis", version="0.1.0",
+                event_type="install", occurred_at=datetime.now(timezone.utc),
+            )
+        upsert_rating(
+            session, namespace="excel", name="pivot-analysis", author="jane", score=5,
+            created_at=datetime.now(timezone.utc),
+        )
+        upsert_rating(
+            session, namespace="excel", name="pivot-analysis", author="bob", score=3,
+            created_at=datetime.now(timezone.utc),
+        )
+        add_star(
+            session, namespace="excel", name="pivot-analysis", author="jane",
+            created_at=datetime.now(timezone.utc),
+        )
+        add_star(
+            session, namespace="excel", name="pivot-analysis", author="bob",
+            created_at=datetime.now(timezone.utc),
+        )
+
+    headers = _auth_headers(fake_keycloak)
+    list_resp = client.get(
+        "/api/skills", params={"sort": "updated", "page": 1}, headers=headers,
+    )
+    assert list_resp.status_code == 200
+    listed = {item["name"]: item for item in list_resp.json()["items"]}
+    pivot = listed["pivot-analysis"]
+    assert pivot["installCount"] == 3
+    assert pivot["ratingAverage"] == 4.0
+    assert pivot["ratingCount"] == 2
+    assert pivot["starCount"] == 2
+
+    empty_metrics = listed["word-frequency"]
+    assert empty_metrics["installCount"] == 0
+    assert empty_metrics["ratingAverage"] is None
+    assert empty_metrics["ratingCount"] == 0
+    assert empty_metrics["starCount"] == 0
+
+    search_resp = client.get("/api/search", params={"q": "pivot"}, headers=headers)
+    assert search_resp.status_code == 200
+    assert search_resp.json()["items"][0]["starCount"] == 2
 
 
 def test_search_skills(monkeypatch, tmp_path: Path, index_db_url: str, fake_keycloak) -> None:

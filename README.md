@@ -200,6 +200,37 @@ docker compose ps
 - `sort`：`updated`、`installs` 或 `rating`。
 - `page`：从 1 开始；`pageSize`：1 至 100。
 
+`GET /api/skills` 与 `GET /api/search` 共用分页响应结构。每个 `items` 条目直接包含
+列表卡片所需的安装、评分和收藏聚合数据，前端无需再逐条请求 Skill 详情：
+
+```json
+{
+  "items": [
+    {
+      "namespace": "demo",
+      "name": "hello-skill",
+      "version": "1.0.0",
+      "description": "Say hello.",
+      "author": "jane",
+      "tags": ["example"],
+      "publishedAt": "2026-07-13T10:00:00Z",
+      "installCount": 12,
+      "ratingAverage": 4.5,
+      "ratingCount": 2,
+      "starCount": 6
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20
+}
+```
+
+- `installCount`：累计成功上报的 `install` 事件数，是平台安装量，不是 Forgejo 资源文件的原始下载次数。
+- `ratingAverage`：当前平均评分；尚无人评分时为 `null`。
+- `ratingCount`：参与评分的用户数。
+- `starCount`：收藏（star）用户数；当前模型中的 star 表示收藏，不是独立的“点赞”模型。
+
 ### 版本中心
 
 | 方法 | 路径 | 用途 |

@@ -16,6 +16,10 @@ class SkillSummary(BaseModel):
     author: str
     tags: list[str]
     publishedAt: datetime
+    installCount: int
+    ratingAverage: float | None
+    ratingCount: int
+    starCount: int
 
 
 class SkillDetail(SkillSummary):

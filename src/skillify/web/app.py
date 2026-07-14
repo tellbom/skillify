@@ -826,13 +826,7 @@ def my_skills(claims: dict = Depends(require_keycloak_user)) -> list[SkillSummar
     session = _session()
     try:
         entries = list_my_skills(session, username)
-        return [
-            SkillSummary(
-                namespace=e.namespace, name=e.name, version=e.version, description=e.description,
-                author=e.author, tags=e.tags, publishedAt=e.published_at,
-            )
-            for e in entries
-        ]
+        return service.summaries_from_entries(session, entries)
     finally:
         session.close()
 

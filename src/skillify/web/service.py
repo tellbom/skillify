@@ -39,7 +39,27 @@ def agent_prompt(namespace: str, name: str, cfg: SkillifyConfig | None = None) -
     )
 
 
-def _summary_from_entry(entry: SkillIndexEntry) -> SkillSummary:
+def summaries_from_entries(session: Session, entries: list[SkillIndexEntry]) -> list[SkillSummary]:
+    """Enrich a page of index entries with community metrics using three batch queries.
+
+    Keeping this aggregation here avoids an N+1 detail request/query pattern on catalog,
+    search, and personal-workspace listing pages.
+    """
+    installs = install_counts(session)
+    ratings = rating_stats(session)
+    stars = star_counts(session)
+    return [_summary_from_entry(entry, installs=installs, ratings=ratings, stars=stars) for entry in entries]
+
+
+def _summary_from_entry(
+    entry: SkillIndexEntry,
+    *,
+    installs: dict[tuple[str, str], int],
+    ratings: dict[tuple[str, str], tuple[float, int]],
+    stars: dict[tuple[str, str], int],
+) -> SkillSummary:
+    key = (entry.namespace, entry.name)
+    rating_average, rating_count = ratings.get(key, (None, 0))
     return SkillSummary(
         namespace=entry.namespace,
         name=entry.name,
@@ -48,6 +68,10 @@ def _summary_from_entry(entry: SkillIndexEntry) -> SkillSummary:
         author=entry.author,
         tags=entry.tags,
         publishedAt=entry.published_at,
+        installCount=installs.get(key, 0),
+        ratingAverage=rating_average,
+        ratingCount=rating_count,
+        starCount=stars.get(key, 0),
     )
 
 
@@ -70,7 +94,7 @@ def list_skills(
     entries, total = search(
         session, query, namespace=namespace, author=author, tags=tags, sort=sort, page=page, page_size=page_size
     )
-    return [_summary_from_entry(e) for e in entries], total
+    return summaries_from_entries(session, entries), total
 
 
 def get_skill_detail(
