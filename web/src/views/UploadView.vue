@@ -2,12 +2,14 @@
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '../stores/auth.js'
 import { uploadSkill, createGuidedBuild, scanExternalSkill, selectExternalCandidates } from '../lib/api.js'
 import BuildWorkspace from '../components/skillBuilds/BuildWorkspace.vue'
 import ExternalCandidateList from '../components/skillBuilds/ExternalCandidateList.vue'
 
 const { t } = useI18n()
 const route = useRoute()
+const auth = useAuthStore()
 
 // C-2 "retry a failed publish" deep link (MySkillsView.vue -> here): carries just the
 // namespace/name/version as a hint, never the file itself — the user must still re-select the
@@ -80,7 +82,7 @@ async function startGuided() {
   guidedStarting.value = true
   guidedError.value = ''
   try {
-    const build = await createGuidedBuild({}, '')
+    const build = await createGuidedBuild({ author: auth.rbacInfo?.username || '' }, '')
     activeBuildId.value = build.buildId
   } catch (err) {
     guidedError.value = err.message

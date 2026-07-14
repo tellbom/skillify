@@ -1,3 +1,11 @@
+<!--
+ * @Author: fzq
+ * @Date: 2026-07-14 20:43:15
+ * @LastEditors: fzq
+ * @LastEditTime: 2026-07-14 21:31:35
+ * @Description: 
+ * @FilePath: \skillify\web\src\layouts\AppLayout.vue
+-->
 <script setup>
 // Shared shell for authenticated Skillify business pages. Navigation remains fully driven by
 // the backend menu tree; the visual components only render routes already granted to the user.
@@ -22,7 +30,7 @@ function handleLogout() {
   <div class="app-shell">
     <AppHeader
       :nav-items="menu.navTree"
-      :username="auth.username"
+      :username="`${auth.rbacInfo.username}`"
       :is-authenticated="auth.isAuthenticated"
       :current-path="route.path"
       @logout="handleLogout"

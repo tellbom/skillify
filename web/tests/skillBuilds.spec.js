@@ -5,6 +5,9 @@ import {
   TARGET_OPTIONS,
   emptyManifestDraft,
   manifestDraftFrom,
+  emptySkillMdDraft,
+  parseSkillMd,
+  composeSkillMd,
   isReservedBuildPath,
   isSafeRelativePath,
   dedupeList,
@@ -66,6 +69,90 @@ describe('manifestDraftFrom', () => {
     draft.dependencies.python.push('flask')
     expect(source.tags).toEqual(['a'])
     expect(source.dependencies.python).toEqual(['requests'])
+  })
+
+  it('defaults only an empty author from the current RBAC username', () => {
+    expect(manifestDraftFrom({}, '196045').author).toBe('196045')
+    expect(manifestDraftFrom({ author: { name: '' } }, '196045').author).toBe('196045')
+    expect(manifestDraftFrom({ author: 'original' }, '196045').author).toBe('original')
+    expect(manifestDraftFrom({ author: { name: 'external' } }, '196045').author).toEqual({ name: 'external' })
+  })
+})
+
+describe('structured SKILL.md helpers', () => {
+  it('returns a complete empty form draft', () => {
+    expect(emptySkillMdDraft()).toEqual({
+      title: '',
+      overview: '',
+      inputs: '',
+      steps: '',
+      outputs: '',
+      notes: '',
+      examples: '',
+      extra: '',
+      extraFrontmatter: '',
+    })
+  })
+
+  it('parses common bilingual sections and preserves unknown content', () => {
+    const source = `---
+name: imported-skill
+description: Imported description
+allowed-tools: Read, Bash
+---
+
+# Imported Skill
+
+Use this skill for imported work.
+
+## Inputs
+
+A CSV file.
+
+## 操作步骤
+
+1. Read the file.
+
+## Custom Policy
+
+Keep this custom section.`
+
+    const draft = parseSkillMd(source, { name: 'fallback' })
+
+    expect(draft.title).toBe('Imported Skill')
+    expect(draft.overview).toBe('Use this skill for imported work.')
+    expect(draft.inputs).toBe('A CSV file.')
+    expect(draft.steps).toBe('1. Read the file.')
+    expect(draft.extra).toBe('## Custom Policy\n\nKeep this custom section.')
+    expect(draft.extraFrontmatter).toBe('allowed-tools: Read, Bash')
+  })
+
+  it('composes valid frontmatter and all non-empty structured sections', () => {
+    const draft = {
+      ...emptySkillMdDraft(),
+      title: 'CSV Cleaner',
+      overview: 'Use when data needs cleaning.',
+      steps: '1. Inspect input.\n2. Clean rows.',
+      notes: 'Do not overwrite the source.',
+      extra: '## Custom Policy\n\nKeep audit logs.',
+      extraFrontmatter: 'allowed-tools: Read, Bash',
+    }
+
+    const result = composeSkillMd(draft, { name: 'csv-cleaner', description: 'Clean: CSV "safely"' })
+
+    expect(result).toContain('name: "csv-cleaner"')
+    expect(result).toContain('description: "Clean: CSV \\"safely\\""')
+    expect(result).toContain('allowed-tools: Read, Bash')
+    expect(result).toContain('# CSV Cleaner')
+    expect(result).toContain('## 操作步骤\n\n1. Inspect input.')
+    expect(result).toContain('## 注意事项\n\nDo not overwrite the source.')
+    expect(result).toContain('## Custom Policy\n\nKeep audit logs.')
+  })
+
+  it('falls back to preserving malformed raw content as additional content', () => {
+    const draft = parseSkillMd('plain content without headings', { name: 'fallback-name' })
+    expect(draft.title).toBe('fallback-name')
+    expect(draft.overview).toBe('plain content without headings')
   })
 })
 

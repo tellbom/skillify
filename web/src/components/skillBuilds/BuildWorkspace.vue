@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '../../stores/auth.js'
 import {
   getSkillBuild,
   patchSkillBuild,
@@ -8,11 +9,17 @@ import {
   deleteSkillBuildFile,
   publishSkillBuild,
 } from '../../lib/api.js'
-import { manifestDraftFrom } from '../../lib/skillBuilds.js'
+import {
+  composeSkillMd,
+  emptySkillMdDraft,
+  manifestDraftFrom,
+  parseSkillMd,
+} from '../../lib/skillBuilds.js'
 import { formatDateTime } from '../../lib/datetime.js'
 import ManifestForm from './ManifestForm.vue'
 import BuildFileTree from './BuildFileTree.vue'
 import BuildPreviewPanel from './BuildPreviewPanel.vue'
+import SkillMdForm from './SkillMdForm.vue'
 
 const props = defineProps({
   buildId: { type: String, required: true },
@@ -20,6 +27,7 @@ const props = defineProps({
 const emit = defineEmits(['expired'])
 
 const { t } = useI18n()
+const auth = useAuthStore()
 
 const build = ref(null)
 const loading = ref(true)
@@ -27,6 +35,7 @@ const loadError = ref('')
 
 const manifestDraft = ref(manifestDraftFrom(undefined))
 const skillMdDraft = ref('')
+const skillMdFields = ref(emptySkillMdDraft())
 const savingManifest = ref(false)
 const saveError = ref('')
 
@@ -68,8 +77,9 @@ const statusLabel = computed(() => (build.value ? t(STATUS_KEYS[build.value.stat
 
 function applyBuild(data) {
   build.value = data
-  manifestDraft.value = manifestDraftFrom(data.manifest)
+  manifestDraft.value = manifestDraftFrom(data.manifest, auth.rbacInfo?.username || '')
   skillMdDraft.value = data.skillMd || ''
+  skillMdFields.value = parseSkillMd(skillMdDraft.value, manifestDraft.value)
   if (!stepInitialized.value) {
     currentStep.value = data.sourceType === 'native_zip' ? 6 : 1
     stepInitialized.value = true
@@ -121,6 +131,7 @@ async function saveChanges() {
   saveError.value = ''
   conflictNotice.value = false
   try {
+    skillMdDraft.value = composeSkillMd(skillMdFields.value, manifestDraft.value)
     const data = await patchSkillBuild(props.buildId, {
       expectedRevision: build.value.revision,
       manifest: manifestDraft.value,
@@ -273,9 +284,9 @@ async function publish() {
           <div v-else-if="currentStep === 3" class="skill-md-step">
             <div class="section-intro">
               <h3>技能说明（SKILL.md）</h3>
-              <p>SKILL.md 是技能的核心：它描述 Agent 在什么情况下使用该技能、如何操作、执行顺序、注意事项与输出要求。</p>
+              <p>按业务含义填写各项内容即可，系统会自动生成符合规范的 YAML frontmatter 与 Markdown 章节。</p>
             </div>
-            <textarea v-model="skillMdDraft" class="skill-md-editor" :placeholder="t('upload.workspace.skillMdPlaceholder')" />
+            <SkillMdForm v-model="skillMdFields" />
           </div>
 
           <div v-else-if="currentStep === 4" class="files-step">
@@ -367,8 +378,6 @@ async function publish() {
 .section-intro { margin-bottom: 20px; }
 .section-intro h3 { margin: 0 0 4px; color: #ededed; font-size: 15px; font-weight: 650; }
 .section-intro p { margin: 0; color: #9f9f9f; font-size: 12.5px; line-height: 1.6; }
-.skill-md-editor { box-sizing: border-box; width: 100%; min-height: 390px; padding: 14px 16px; border: 1px solid #2c2c2c; border-radius: 9px; color: #d8d8d8; background: #141414; font: 12.5px/1.65 ui-monospace, Menlo, monospace; resize: vertical; outline: none; }
-.skill-md-editor:focus { border-color: rgb(128 203 196 / 45%); }
 .inline-error { margin: 10px 0 0; font-size: 12px; }
 
 .step-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; padding-top: 20px; border-top: 1px solid #292929; }

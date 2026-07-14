@@ -32,7 +32,7 @@ function isGroupActive(item) {
         <router-link to="/" class="brand" aria-label="Skillify 首页">
           Skill<span class="brand-accent">ify</span>
         </router-link>
-        <span class="tagline">内部技能目录</span>
+        <span class="tagline">开放性社区</span>
       </div>
 
       <nav class="nav-links" aria-label="主导航">
