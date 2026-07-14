@@ -10,7 +10,7 @@ import {
   splitTagsInput,
   SORT_OPTIONS,
 } from '../lib/search.js'
-import { formatRelativeDays } from '../lib/format.js'
+import { formatCount, formatRating, formatRelativeDays } from '../lib/format.js'
 
 const { t } = useI18n()
 const skills = ref([])
@@ -226,9 +226,15 @@ onMounted(load)
             </div>
             <div class="row-side">
               <div class="row-stats">
-                <span title="安装量">↓ —</span>
-                <span title="评分" class="rating">★ —</span>
-                <span title="收藏">☆ —</span>
+                <span title="平台累计安装次数">↓ {{ formatCount(skill.installCount) }}</span>
+                <span
+                  class="rating"
+                  :title="skill.ratingAverage == null ? '暂无评分' : `${formatCount(skill.ratingCount)} 人评分`"
+                >
+                  ★ {{ formatRating(skill.ratingAverage) }}
+                  <small v-if="skill.ratingAverage != null" class="rating-count">({{ formatCount(skill.ratingCount) }})</small>
+                </span>
+                <span title="收藏人数">☆ {{ formatCount(skill.starCount) }}</span>
               </div>
               <span class="row-updated">{{ t('skills.updatedRelative', { days: formatRelativeDays(skill.publishedAt) }) }}</span>
             </div>
@@ -704,6 +710,10 @@ onMounted(load)
 }
 .row-stats .rating {
   color: #e0a458;
+}
+.rating-count {
+  color: #777;
+  font-size: 10.5px;
 }
 .row-updated {
   font-size: 11.5px;

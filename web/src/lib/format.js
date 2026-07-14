@@ -16,6 +16,15 @@ export function formatCount(n) {
 }
 
 /**
+ * Keep rating displays aligned while preserving the API's `null` = no ratings semantics.
+ * @param {number|null|undefined} value
+ */
+export function formatRating(value) {
+  if (value == null) return '—'
+  return Number(value).toFixed(1)
+}
+
+/**
  * Relative day-count label for a date (prototype's `_daysText`): "今天" for today, "昨天" for
  * yesterday, otherwise "N 天前". `now` is injectable for deterministic tests instead of relying
  * on the implicit system clock.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatCount, formatRelativeDays } from '../src/lib/format.js'
+import { formatCount, formatRating, formatRelativeDays } from '../src/lib/format.js'
 
 describe('formatCount', () => {
   it('shows values under 1000 as-is', () => {
@@ -17,6 +17,18 @@ describe('formatCount', () => {
   it('treats missing/non-numeric input as 0', () => {
     expect(formatCount(undefined)).toBe('0')
     expect(formatCount(null)).toBe('0')
+  })
+})
+
+describe('formatRating', () => {
+  it('shows an em dash when no rating exists', () => {
+    expect(formatRating(null)).toBe('—')
+    expect(formatRating(undefined)).toBe('—')
+  })
+
+  it('shows an average rating with one decimal place', () => {
+    expect(formatRating(4.5)).toBe('4.5')
+    expect(formatRating(4)).toBe('4.0')
   })
 })
 
