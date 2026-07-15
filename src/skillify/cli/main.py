@@ -28,6 +28,10 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+from skillify.cli.agent_cmd import agent_app
+
+app.add_typer(agent_app, name="agent")
+
 console = Console()
 err_console = Console(stderr=True)
 

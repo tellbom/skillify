@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -15,6 +15,110 @@ def skillify_home() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".skillify"
+
+
+@dataclass(frozen=True)
+class AgentPaths:
+    config_dir: Path
+    state_dir: Path
+    cache_dir: Path
+    log_dir: Path
+
+    @property
+    def config_path(self) -> Path:
+        return self.config_dir / "config.yaml"
+
+    @property
+    def runtime_path(self) -> Path:
+        return self.state_dir / "runtime.json"
+
+    @property
+    def log_path(self) -> Path:
+        return self.log_dir / "agent.log"
+
+
+@dataclass(frozen=True)
+class AgentLocalConfig:
+    provider: str = "opencode"
+    allowed_workspaces: tuple[str, ...] = ()
+    model_endpoint: str | None = None
+    model_provider: str | None = None
+    model_name: str | None = None
+    allowed_model_hosts: tuple[str, ...] = ()
+    credential_env_names: tuple[str, ...] = ()
+    opencode_manifest_path: str | None = None
+    opencode_artifact_root: str | None = None
+
+
+def load_agent_paths(
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> AgentPaths:
+    env = os.environ if environ is None else environ
+    user_home = Path.home() if home is None else home
+    config_home = Path(env.get("XDG_CONFIG_HOME", user_home / ".config"))
+    state_home = Path(env.get("XDG_STATE_HOME", user_home / ".local" / "state"))
+    cache_home = Path(env.get("XDG_CACHE_HOME", user_home / ".cache"))
+    return AgentPaths(
+        config_dir=Path(env.get("SKILLIFY_AGENT_CONFIG_DIR", config_home / "skillify" / "agent")),
+        state_dir=Path(env.get("SKILLIFY_AGENT_STATE_DIR", state_home / "skillify" / "agent")),
+        cache_dir=Path(env.get("SKILLIFY_AGENT_CACHE_DIR", cache_home / "skillify" / "agent")),
+        log_dir=Path(env.get("SKILLIFY_AGENT_LOG_DIR", state_home / "skillify" / "agent" / "log")),
+    )
+
+
+def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
+    data: dict[str, Any] = {}
+    if paths.config_path.is_file():
+        loaded = yaml.safe_load(paths.config_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("agent config must be a mapping")
+        data = dict(loaded)
+    scalar_overrides = {
+        "SKILLIFY_AGENT_MODEL_ENDPOINT": "model_endpoint",
+        "SKILLIFY_AGENT_MODEL_PROVIDER": "model_provider",
+        "SKILLIFY_AGENT_MODEL_NAME": "model_name",
+        "SKILLIFY_OPENCODE_MANIFEST_PATH": "opencode_manifest_path",
+        "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
+    }
+    for env_name, key in scalar_overrides.items():
+        if env_name in os.environ:
+            data[key] = os.environ[env_name]
+    for env_name, key in {
+        "SKILLIFY_AGENT_ALLOWED_MODEL_HOSTS": "allowed_model_hosts",
+        "SKILLIFY_AGENT_CREDENTIAL_ENV_NAMES": "credential_env_names",
+    }.items():
+        if env_name in os.environ:
+            data[key] = [value.strip() for value in os.environ[env_name].split(",") if value.strip()]
+    config = AgentLocalConfig(
+        provider=str(data.get("provider", "opencode")),
+        allowed_workspaces=tuple(data.get("allowed_workspaces", ())),
+        model_endpoint=data.get("model_endpoint"),
+        model_provider=data.get("model_provider"),
+        model_name=data.get("model_name"),
+        allowed_model_hosts=tuple(data.get("allowed_model_hosts", ())),
+        credential_env_names=tuple(data.get("credential_env_names", ())),
+        opencode_manifest_path=data.get("opencode_manifest_path"),
+        opencode_artifact_root=data.get("opencode_artifact_root"),
+    )
+    if config.provider != "opencode":
+        raise ValueError("provider must be opencode")
+    if any(not Path(value).is_absolute() for value in config.allowed_workspaces):
+        raise ValueError("allowed workspaces must be absolute")
+    if len(set(config.allowed_workspaces)) != len(config.allowed_workspaces):
+        raise ValueError("allowed workspaces must be unique")
+    sequence_fields = (config.allowed_model_hosts, config.credential_env_names)
+    if any(not isinstance(item, str) for sequence in sequence_fields for item in sequence):
+        raise ValueError("model host and credential names must be strings")
+    return config
+
+
+def save_agent_local_config(paths: AgentPaths, config: AgentLocalConfig) -> None:
+    paths.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = paths.config_path.with_suffix(".yaml.tmp")
+    temporary.write_text(yaml.safe_dump(asdict(config), sort_keys=False), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(paths.config_path)
 
 
 @dataclass
