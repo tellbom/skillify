@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
+import signal
 import sys
-from dataclasses import replace
+import time
+import uuid
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any
@@ -11,8 +17,12 @@ from typing import Any
 import typer
 import yaml
 
+from skillify.agent.events import EventType, TaskState
+from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
+from skillify.agent.providers.opencode import OpenCodeError, OpenCodeProvider, ProviderCrashed, ProviderTimeout
 from skillify.common.config import (
     AgentLocalConfig,
+    AgentPaths,
     load_agent_local_config,
     load_agent_paths,
     save_agent_local_config,
@@ -61,6 +71,107 @@ class AgentCommandFailure(Exception):
         self.message = message
 
 
+@dataclass(frozen=True)
+class AgentRuntimeState:
+    schema_version: int
+    owner_uid: int
+    pid: int
+    pgid: int
+    process_start_token: str
+    executable: str
+    workspace_hash: str
+    task_id: str
+    session_id: str
+    provider_version: str
+    started_at: str
+    state: str
+
+
+def write_runtime_state(paths: AgentPaths, state: AgentRuntimeState) -> None:
+    paths.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = paths.runtime_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(asdict(state), sort_keys=True), encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, paths.runtime_path)
+
+
+def read_runtime_state(paths: AgentPaths) -> AgentRuntimeState | None:
+    try:
+        try:
+            runtime_text = paths.runtime_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        data = json.loads(runtime_text)
+        if not isinstance(data, dict): raise ValueError("runtime state must be an object")
+        state = AgentRuntimeState(**data)
+        integer_fields = (state.schema_version, state.owner_uid, state.pid, state.pgid)
+        string_fields = (
+            state.process_start_token, state.executable, state.workspace_hash, state.task_id,
+            state.session_id, state.provider_version, state.started_at, state.state,
+        )
+        if any(type(value) is not int for value in integer_fields):
+            raise ValueError("runtime integer fields are invalid")
+        if any(not isinstance(value, str) or not value for value in string_fields):
+            raise ValueError("runtime string fields are invalid")
+        if state.schema_version != 1 or state.pid <= 0 or state.pgid <= 0:
+            raise ValueError("runtime identity fields are invalid")
+        return state
+    except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid") from exc
+
+
+def validate_owned_process(state: AgentRuntimeState, inspector) -> bool:
+    return (state.schema_version == 1 and state.owner_uid == os.getuid() and
+            inspector.is_alive(state.pid) and inspector.pgid(state.pid) == state.pgid and
+            inspector.start_token(state.pid) == state.process_start_token and
+            Path(inspector.executable(state.pid)).name == Path(state.executable).name)
+
+
+def stop_owned_process(paths: AgentPaths, inspector, killpg=os.killpg) -> bool:
+    state = read_runtime_state(paths)
+    if state is None: return True
+    if not validate_owned_process(state, inspector):
+        paths.runtime_path.unlink(missing_ok=True)
+        return False
+    # Revalidate immediately before signaling to close the PID-reuse window.
+    if not validate_owned_process(state, inspector):
+        paths.runtime_path.unlink(missing_ok=True)
+        return False
+    killpg(state.pgid, signal.SIGTERM)
+    if not inspector.wait_exited(state.pid, 5.0):
+        killpg(state.pgid, signal.SIGKILL)
+        if not inspector.wait_exited(state.pid, 1.0):
+            return False
+    paths.runtime_path.unlink(missing_ok=True)
+    return True
+
+
+def append_agent_log(paths: AgentPaths, event: str, **fields: str) -> None:
+    allowed = {key: value for key, value in fields.items() if key in {
+        "task_id", "session_id", "provider_version", "state", "reason_code"
+    }}
+    paths.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with paths.log_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"event": event, **allowed}, sort_keys=True) + "\n")
+    paths.log_path.chmod(0o600)
+
+
+class LinuxProcessInspector:
+    def is_alive(self, pid: int) -> bool:
+        return Path(f"/proc/{pid}").is_dir()
+    def pgid(self, pid: int) -> int:
+        return os.getpgid(pid)
+    def start_token(self, pid: int) -> str:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    def executable(self, pid: int) -> str:
+        return os.readlink(f"/proc/{pid}/exe")
+    def wait_exited(self, pid: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.is_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self.is_alive(pid)
+
+
 def _emit(*, ok: bool, code: AgentErrorCode, message: str, data: dict[str, Any], output: str) -> None:
     payload = {"ok": ok, "code": code.value, "message": message, "data": data}
     if output == "json":
@@ -102,10 +213,99 @@ def _read_prompt(path: str) -> str:
     return text
 
 
-def _run_local_task(workspace: Path, prompt: str) -> str:
-    if shutil.which("opencode") is None:
-        raise AgentCommandFailure(AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed")
-    raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider adapter is not installed")
+def _build_provider() -> OpenCodeProvider:
+    return OpenCodeProvider()
+
+
+def _runtime_config(config: AgentLocalConfig) -> ModelRuntimeConfig:
+    if not all((config.model_endpoint, config.model_provider, config.model_name,
+                config.allowed_model_hosts, config.credential_env_names)):
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is incomplete")
+    try:
+        return ModelRuntimeConfig(
+            provider=config.model_provider,
+            endpoint=config.model_endpoint,
+            model=config.model_name,
+            allowed_endpoint_hosts=config.allowed_model_hosts,
+            credential_env_names=config.credential_env_names,
+        )
+    except ValueError as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is invalid") from exc
+
+
+class _TerminationRequested(Exception):
+    pass
+
+
+def _raise_termination(signum, frame) -> None:
+    raise _TerminationRequested()
+
+
+def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
+                    config: AgentLocalConfig) -> str:
+    provider = _build_provider(); handle = None; session = None
+    terminal = "failed"; task_id = uuid.uuid4().hex
+    previous_sigterm = None; sigterm_installed = False; stop_error = None
+    try:
+        runtime = _runtime_config(config)
+    except AgentCommandFailure:
+        runtime_fields = (
+            config.model_endpoint, config.model_provider, config.model_name,
+            config.allowed_model_hosts, config.credential_env_names,
+        )
+        if not all(runtime_fields) and not provider.probe().available:
+            raise AgentCommandFailure(AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed")
+        raise
+    config_dir = paths.cache_dir / "opencode" / hashlib.sha256(str(workspace).encode()).hexdigest()
+    start_spec = ProviderStartSpec(
+        workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
+        runtime=runtime,
+    )
+    try:
+        append_agent_log(paths, "run.start", task_id=task_id, state="starting")
+        handle = provider.start(start_spec)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _raise_termination)
+        sigterm_installed = True
+        session = provider.create_session(handle, TaskSpec(task_id=task_id, prompt=prompt))
+        owned = provider.ownership(handle)
+        write_runtime_state(paths, AgentRuntimeState(
+            schema_version=1, owner_uid=os.getuid(), pid=owned["pid"], pgid=owned["pgid"],
+            process_start_token=owned["start_token"], executable=owned["executable"],
+            workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
+            task_id=task_id, session_id=session.session_id, provider_version=handle.provider_version,
+            started_at=datetime.now(timezone.utc).isoformat(), state="running",
+        ))
+        for event in provider.stream_events(handle, session):
+            reason = event.details.get("reason_code")
+            append_agent_log(paths, "provider.event", task_id=event.task_id,
+                             session_id=event.session_id, provider_version=event.provider_version,
+                             state=event.state.value, reason_code=str(reason) if reason else "")
+            if event.type is EventType.TASK_FINISHED: terminal = event.state.value
+            elif event.type is EventType.TASK_BLOCKED: terminal = "blocked"
+        return terminal
+    except (KeyboardInterrupt, _TerminationRequested):
+        terminal = "cancelled"; return terminal
+    except Exception as exc:
+        append_agent_log(paths, "run.error", task_id=task_id, state="failed", reason_code=type(exc).__name__)
+        raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider execution failed") from exc
+    finally:
+        if handle is not None and session is not None:
+            try: provider.cancel(handle, session)
+            except Exception: append_agent_log(paths, "abort.error", task_id=task_id, state=terminal, reason_code="ABORT_FAILED")
+        if handle is not None:
+            try:
+                provider.stop(handle)
+            except Exception as exc:
+                stop_error = exc
+                append_agent_log(paths, "stop.error", task_id=task_id, state=terminal, reason_code="STOP_UNCONFIRMED")
+        if handle is None or stop_error is None:
+            paths.runtime_path.unlink(missing_ok=True)
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
+        if stop_error is not None:
+            raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed") from stop_error
 
 
 @agent_app.command()
@@ -186,9 +386,9 @@ def run(
 ) -> None:
     """Run an endpoint-agent task locally."""
     try:
-        _, config = _config()
+        paths, config = _config()
         resolved = _workspace(workspace, config)
-        result = _run_local_task(resolved, _read_prompt(prompt_file))
+        result = _run_local_task(resolved, _read_prompt(prompt_file), paths, config)
         if result != "succeeded":
             raise AgentCommandFailure(AgentErrorCode.TASK_FAILED, "task failed")
         _emit(
@@ -206,35 +406,32 @@ def run(
 def status(output: str = typer.Option("text", "--format")) -> None:
     """Show local endpoint-agent state."""
     try:
-        paths, _ = _config()
-        try:
-            runtime_text = paths.runtime_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        paths, _ = _config(); state = read_runtime_state(paths)
+        if state is None:
             data = {"state": "stopped"}
+        elif validate_owned_process(state, LinuxProcessInspector()):
+            data = {"state": state.state, "task_id": state.task_id, "session_id": state.session_id}
         else:
-            data = json.loads(runtime_text)
-        if (
-            not isinstance(data, dict)
-            or not isinstance(data.get("state"), str)
-            or not data["state"].strip()
-        ):
-            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid")
+            paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
         _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)
     except AgentCommandFailure as exc:
         _fail(exc, output)
-    except (json.JSONDecodeError, KeyError, OSError):
+    except OSError:
         _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid"), output)
 
 
 @agent_app.command()
 def stop(output: str = typer.Option("text", "--format")) -> None:
     """Stop the owned local provider process."""
-    paths = load_agent_paths()
     try:
-        paths.runtime_path.unlink(missing_ok=True)
+        paths = load_agent_paths()
+        if not stop_owned_process(paths, LinuxProcessInspector()):
+            raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed")
+        _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
+    except AgentCommandFailure as exc:
+        _fail(exc, output)
     except OSError:
         _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid"), output)
-    _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
 
 
 @agent_app.command()

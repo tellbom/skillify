@@ -220,12 +220,12 @@ def test_error_codes_10_through_14_have_stable_json_envelopes(
             monkeypatch.setattr(
                 agent_cmd,
                 "_run_local_task",
-                lambda workspace, prompt: (_ for _ in ()).throw(
+                lambda workspace, prompt, paths, config: (_ for _ in ()).throw(
                     AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider start failed")
                 ),
             )
         if case == "task":
-            monkeypatch.setattr(agent_cmd, "_run_local_task", lambda workspace, prompt: "failed")
+            monkeypatch.setattr(agent_cmd, "_run_local_task", lambda workspace, prompt, paths, config: "failed")
         args = ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"]
     result = runner.invoke(agent_app, args, input="inspect\n", env=env)
     assert result.exit_code == expected_exit
@@ -305,4 +305,108 @@ def test_stop_maps_runtime_unlink_oserror_to_config_invalid(tmp_path: Path) -> N
     (tmp_path / "state/runtime.json").mkdir(parents=True)
 
     result = runner.invoke(agent_app, ["stop", "--format", "json"], env=env)
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_invalid_runtime_endpoint_maps_to_config_invalid(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"; workspace.mkdir(); env = _env(tmp_path)
+    initialized = runner.invoke(agent_app, [
+        "init", "--workspace", str(workspace),
+        "--model-endpoint", "https://unapproved.example/v1",
+        "--model-provider", "internal", "--model", "code-1",
+        "--allowed-model-host", "model.intranet.example",
+        "--credential-env", "MODEL_KEY", "--format", "json",
+    ], env=env)
+    assert initialized.exit_code == 0
+    result = runner.invoke(
+        agent_app, ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"],
+        input="inspect\n", env=env,
+    )
+    assert result.exit_code == 10
+    assert _json(result) == {
+        "ok": False, "code": "AGENT_CONFIG_INVALID",
+        "message": "model runtime config is invalid", "data": {},
+    }
+
+
+@pytest.mark.parametrize("changes", [
+    {"model_endpoint": None},
+    {"model_endpoint": "ftp://model.intranet.example/v1"},
+    {"allowed_model_hosts": ()},
+    {"allowed_model_hosts": ("other.intranet.example",)},
+    {"credential_env_names": ()},
+    {"credential_env_names": ("bad-name",)},
+])
+def test_all_invalid_or_missing_runtime_fields_map_to_config_invalid(changes) -> None:
+    from dataclasses import replace
+    from skillify.cli.agent_cmd import AgentCommandFailure, _runtime_config
+    from skillify.common.config import AgentLocalConfig
+    base = AgentLocalConfig(
+        model_endpoint="https://model.intranet.example/v1", model_provider="internal",
+        model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    with pytest.raises(AgentCommandFailure) as captured:
+        _runtime_config(replace(base, **changes))
+    assert captured.value.code is AgentErrorCode.CONFIG_INVALID
+
+
+def test_malformed_missing_and_wrong_type_runtime_json_have_stable_envelopes(tmp_path: Path) -> None:
+    env = _env(tmp_path); runtime = tmp_path / "state/runtime.json"; runtime.parent.mkdir()
+    complete = {
+        "schema_version": 1, "owner_uid": 1000, "pid": 4242, "pgid": 4242,
+        "process_start_token": "start", "executable": "opencode", "workspace_hash": "hash",
+        "task_id": "task", "session_id": "session", "provider_version": "1.15.11",
+        "started_at": "2026-07-16T00:00:00+00:00", "state": "running",
+    }
+    payloads = ["{", "{}", json.dumps({**complete, "pid": "4242"})]
+    for command in ("status", "stop"):
+        for payload in payloads:
+            runtime.write_text(payload, encoding="utf-8")
+            result = runner.invoke(agent_app, [command, "--format", "json"], env=env)
+            assert result.exit_code == 10
+            assert _json(result) == {
+                "ok": False, "code": "AGENT_CONFIG_INVALID",
+                "message": "runtime state is invalid", "data": {},
+            }
+
+
+def test_stop_unconfirmed_returns_provider_failed_envelope(tmp_path: Path, monkeypatch) -> None:
+    from skillify.cli import agent_cmd
+    env = _env(tmp_path)
+    monkeypatch.setattr(agent_cmd, "stop_owned_process", lambda paths, inspector: False)
+    result = runner.invoke(agent_app, ["stop", "--format", "json"], env=env)
+    assert result.exit_code == 13
+    assert _json(result) == {
+        "ok": False, "code": "AGENT_PROVIDER_FAILED",
+        "message": "provider stop was not confirmed", "data": {},
+    }
+
+
+def test_status_maps_process_inspection_oserror_to_config_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = agent_cmd.AgentRuntimeState(
+        1, __import__("os").getuid(), 4242, 4242, "start", "opencode",
+        "workspace", "task", "session", "1.15.11", "time", "running",
+    )
+    monkeypatch.setattr(agent_cmd, "read_runtime_state", lambda paths: state)
+    monkeypatch.setattr(
+        agent_cmd,
+        "validate_owned_process",
+        lambda state, inspector: (_ for _ in ()).throw(PermissionError("private path")),
+    )
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=_env(tmp_path))
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_stop_maps_owned_state_oserror_to_config_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent_cmd,
+        "stop_owned_process",
+        lambda paths, inspector: (_ for _ in ()).throw(PermissionError("private path")),
+    )
+    result = runner.invoke(agent_app, ["stop", "--format", "json"], env=_env(tmp_path))
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
