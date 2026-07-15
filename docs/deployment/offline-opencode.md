@@ -102,6 +102,13 @@ the release pipeline replaces it with reviewed wheel bytes and a freshly
 computed checksum. Never interpret the placeholder checksum as approval of a
 wheel and never invent or copy a digest from another artifact.
 
+When the offline manifest is configured, doctor exposes this state separately as
+the `skillctl-approval` check. It is an `advisory` check for the already-running
+skillctl/OpenCode environment, so the pending placeholder does not fail runtime doctor
+when every required runtime check passes. It remains a hard, fail-closed gate for
+package installation: `installable: false` must never authorize staging or installing
+skillctl bytes.
+
 OpenCode must bind `127.0.0.1` only. Firewall policy must deny endpoint inbound
 access and permit only the approved outbound model/MCP destinations.
 

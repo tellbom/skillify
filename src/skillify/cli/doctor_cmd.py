@@ -37,6 +37,7 @@ class CheckResult:
     ok: bool
     detail: str
     hint: str = ""
+    required: bool = True
 
 
 def _check_python() -> CheckResult:
@@ -160,7 +161,10 @@ def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
                                  platform_detector: Callable[[], tuple[str, str, str, str]],
                                  version_runner: Callable[[list[str]], str]) -> list[CheckResult]:
     return [
-        CheckResult(check.name, check.ok, check.detail, check.hint)
+        CheckResult(
+            check.name, check.ok, check.detail, check.hint,
+            check.classification == "required",
+        )
         for check in check_opencode_distribution(
             manifest_path=manifest_path,
             artifact_root=artifact_root,
@@ -218,16 +222,17 @@ def run_doctor(
 
     all_ok = True
     for check in checks:
-        mark = "[green]OK[/green]" if check.ok else "[red]FAIL[/red]"
+        mark = ("[green]OK[/green]" if check.ok else
+                "[red]FAIL[/red]" if check.required else "[yellow]WARN[/yellow]")
         console.print(f"{mark} {check.name}: {check.detail}")
-        if not check.ok:
+        if not check.ok and check.required:
             all_ok = False
-            if check.hint:
-                console.print(f"     [yellow]-> {check.hint}[/yellow]")
+        if not check.ok and check.hint:
+            console.print(f"     [yellow]-> {check.hint}[/yellow]")
 
     console.print()
     if all_ok:
-        console.print("[green]doctor: all checks passed[/green]")
+        console.print("[green]doctor: all required checks passed[/green]")
     else:
         console.print("[red]doctor: one or more checks failed[/red]")
     return all_ok

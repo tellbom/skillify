@@ -504,7 +504,8 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
         else:
             platform_ok = True
             platform_detail = f"{os_name}/{arch}/{libc}/{cpu}"
-        checks.append({"name": "platform", "ok": platform_ok, "detail": platform_detail})
+        checks.append({"name": "platform", "ok": platform_ok, "detail": platform_detail,
+                       "classification": "required"})
         opencode_ok = False
         opencode_detail = "not installed"
         if executable is not None:
@@ -515,10 +516,11 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
             else:
                 opencode_ok = actual_version == "1.15.11"
                 opencode_detail = actual_version if opencode_ok else "unsupported version"
-        checks.append({"name": "opencode", "ok": opencode_ok, "detail": opencode_detail})
+        checks.append({"name": "opencode", "ok": opencode_ok, "detail": opencode_detail,
+                       "classification": "required"})
         git_path = shutil.which("git")
         checks.append({"name": "git", "ok": git_path is not None,
-                       "detail": git_path or "not installed"})
+                       "detail": git_path or "not installed", "classification": "required"})
         try:
             _runtime_config(config)
         except AgentCommandFailure:
@@ -527,17 +529,22 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
         else:
             model_ok = True
             model_detail = "configured; reachability requires test-env"
-        checks.append({"name": "model-endpoint", "ok": model_ok, "detail": model_detail})
+        checks.append({"name": "model-endpoint", "ok": model_ok, "detail": model_detail,
+                       "classification": "required"})
         cache_ok = paths.cache_dir.is_dir() and os.access(paths.cache_dir, os.R_OK | os.W_OK)
         checks.append({"name": "skill-cache", "ok": cache_ok,
-                       "detail": str(paths.cache_dir) if cache_ok else "not initialized or inaccessible"})
-        checks.append({"name": "mcp", "ok": False, "detail": "not configured; runtime check requires test-env"})
+                       "detail": str(paths.cache_dir) if cache_ok else "not initialized or inaccessible",
+                       "classification": "required"})
+        checks.append({"name": "mcp", "ok": False,
+                       "detail": "not configured; runtime check requires test-env",
+                       "classification": "advisory"})
         workspaces = [Path(value) for value in config.allowed_workspaces]
         workspace_ok = bool(workspaces) and all(
             value.is_dir() and os.access(value, os.R_OK | os.W_OK) for value in workspaces
         )
         checks.append({"name": "workspace", "ok": workspace_ok,
-                       "detail": "configured and writable" if workspace_ok else "not configured or inaccessible"})
+                       "detail": "configured and writable" if workspace_ok else "not configured or inaccessible",
+                       "classification": "required"})
         data: dict[str, Any] = {"opencode": executable, "checks": checks}
         if distribution_paths is not None:
             manifest_path, artifact_root = distribution_paths
@@ -548,7 +555,7 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
                 version_runner=opencode_version,
             )
             data["distribution"] = [asdict(check) for check in checks]
-            if not all(check.ok for check in checks):
+            if not all(check.ok for check in checks if check.classification == "required"):
                 _emit(
                     ok=False,
                     code=AgentErrorCode.PROVIDER_UNAVAILABLE,
@@ -557,11 +564,12 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
                     output=output,
                 )
                 raise typer.Exit(int(AgentExit.PROVIDER_UNAVAILABLE))
-        # Model, cache, MCP, and workspace readiness are reported truthfully but
-        # are deployment-specific admission gates rather than binary prerequisites.
-        required_ok = platform_ok and opencode_ok and git_path is not None
+        required_ok = all(
+            bool(check["ok"]) for check in data["checks"]
+            if check["classification"] == "required"
+        )
         _emit(ok=required_ok, code=(AgentErrorCode.OK if required_ok else AgentErrorCode.PROVIDER_UNAVAILABLE),
-              message=("local prerequisites available" if required_ok else "local prerequisites unavailable"),
+              message=("local prerequisites available" if required_ok else "required local prerequisites unavailable"),
               data=data, output=output)
         if not required_ok:
             raise typer.Exit(int(AgentExit.PROVIDER_UNAVAILABLE))

@@ -248,7 +248,17 @@ def test_logs_drop_records_that_smuggle_secrets_through_allowed_fields(tmp_path,
 
 
 def test_doctor_reports_complete_truthful_check_set(tmp_path, monkeypatch):
-    workspace, env = _registered(tmp_path)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    env = _env(tmp_path)
+    initialized = runner.invoke(agent_app, [
+        "init", "--workspace", str(workspace),
+        "--model-endpoint", "https://model.intranet.example/v1",
+        "--model-provider", "internal", "--model", "code-1",
+        "--allowed-model-host", "model.intranet.example",
+        "--credential-env", "MODEL_KEY", "--format", "json",
+    ], env=env)
+    assert initialized.exit_code == 0
     cache = tmp_path / "cache"
     cache.mkdir()
     monkeypatch.setattr(agent_cmd.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -256,12 +266,110 @@ def test_doctor_reports_complete_truthful_check_set(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_cmd, "detect_opencode_platform", lambda: ("linux", "x86_64", "glibc", "baseline"))
     result = runner.invoke(agent_app, ["doctor", "--format", "json"], env=env)
     payload = json.loads(result.stdout)
+    assert result.exit_code == 0
+    assert {key: payload[key] for key in ("ok", "code", "message")} == {
+        "ok": True, "code": "OK", "message": "local prerequisites available",
+    }
     assert [item["name"] for item in payload["data"]["checks"]] == [
         "platform", "opencode", "git", "model-endpoint", "skill-cache", "mcp", "workspace",
     ]
+    assert [item["classification"] for item in payload["data"]["checks"]] == [
+        "required", "required", "required", "required", "required", "advisory", "required",
+    ]
+    assert all(item["ok"] for item in payload["data"]["checks"] if item["classification"] == "required")
     mcp = next(item for item in payload["data"]["checks"] if item["name"] == "mcp")
     assert mcp["ok"] is False
     assert "not configured" in mcp["detail"]
+
+
+@pytest.mark.parametrize("failed_name", [
+    "platform", "opencode", "git", "model-endpoint", "skill-cache", "workspace",
+])
+def test_doctor_required_failure_controls_top_level_envelope(
+    tmp_path, monkeypatch, failed_name,
+):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    env = _env(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config = {
+        "allowed_workspaces": [str(workspace)],
+        "model_endpoint": "https://model.intranet.example/v1",
+        "model_provider": "internal", "model_name": "code-1",
+        "allowed_model_hosts": ["model.intranet.example"],
+        "credential_env_names": ["MODEL_KEY"],
+    }
+    if failed_name == "model-endpoint":
+        config["model_endpoint"] = None
+    if failed_name == "workspace":
+        config["allowed_workspaces"] = [str(tmp_path / "missing-workspace")]
+    (config_dir / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    if failed_name == "skill-cache":
+        cache.rmdir()
+    monkeypatch.setattr(
+        agent_cmd, "detect_opencode_platform",
+        ((lambda: (_ for _ in ()).throw(ValueError("unsupported")))
+         if failed_name == "platform" else
+         (lambda: ("linux", "x86_64", "glibc", "baseline"))),
+    )
+    monkeypatch.setattr(
+        agent_cmd.shutil, "which",
+        lambda name: None if name == failed_name else f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(agent_cmd, "opencode_version", lambda argv: "1.15.11\n")
+
+    result = runner.invoke(agent_app, ["doctor", "--format", "json"], env=env)
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 12
+    assert {key: payload[key] for key in ("ok", "code", "message")} == {
+        "ok": False, "code": "AGENT_PROVIDER_UNAVAILABLE",
+        "message": "required local prerequisites unavailable",
+    }
+    checks = payload["data"]["checks"]
+    failed = next(item for item in checks if item["name"] == failed_name)
+    assert failed["classification"] == "required" and failed["ok"] is False
+    mcp = next(item for item in checks if item["name"] == "mcp")
+    assert mcp["classification"] == "advisory" and mcp["ok"] is False
+
+
+def test_skillctl_approval_is_truthful_advisory_distribution_check(tmp_path):
+    from skillify.install.opencode_distribution import check_opencode_distribution
+
+    payload = b"approved opencode bundle"
+    data = load_manifest(Path("infra/offline/opencode-manifest.json"))
+    artifact = next(item for item in data["artifacts"] if (
+        item["arch"], item["libc"], item["cpu"]
+    ) == ("x86_64", "glibc", "baseline"))
+    artifact["sha256"] = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "opencode-linux-x64-baseline.tar.gz").write_bytes(payload)
+    checks = check_opencode_distribution(
+        manifest_path=manifest, artifact_root=artifacts,
+        platform_detector=lambda: ("linux", "x86_64", "glibc", "baseline"),
+        version_runner=lambda argv: "1.15.11\n",
+    )
+    assert [check.name for check in checks] == [
+        "opencode-manifest", "opencode-platform", "opencode-version",
+        "opencode-checksum", "skillctl-approval",
+    ]
+    approval = checks[-1]
+    assert approval.ok is False
+    assert approval.classification == "advisory"
+    assert "not installable" in approval.detail
+    assert all(check.ok for check in checks if check.classification == "required")
+
+
+def test_runbook_distinguishes_runtime_doctor_from_skillctl_package_approval():
+    text = Path("docs/deployment/offline-opencode.md").read_text(encoding="utf-8")
+    assert "`skillctl-approval`" in text
+    assert "advisory" in text
+    assert "does not fail runtime doctor" in text
 
 
 def test_doctor_fails_closed_on_unsupported_platform_even_with_binaries(tmp_path, monkeypatch):
@@ -276,7 +384,10 @@ def test_doctor_fails_closed_on_unsupported_platform_even_with_binaries(tmp_path
     payload = json.loads(result.stdout)
     assert result.exit_code == 12 and payload["code"] == "AGENT_PROVIDER_UNAVAILABLE"
     platform_check = next(item for item in payload["data"]["checks"] if item["name"] == "platform")
-    assert platform_check == {"name": "platform", "ok": False, "detail": "unsupported platform"}
+    assert platform_check == {
+        "name": "platform", "ok": False, "detail": "unsupported platform",
+        "classification": "required",
+    }
 
 
 @pytest.mark.parametrize("configured", [

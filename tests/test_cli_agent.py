@@ -207,11 +207,18 @@ def _configured_distribution_env(tmp_path: Path, *, corrupt: bool = False) -> di
     manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
     artifacts = tmp_path / "artifacts"; artifacts.mkdir()
     (artifacts / "opencode-linux-x64.tar.gz").write_bytes(b"corrupt" if corrupt else payload)
+    workspace = tmp_path / "repo"; workspace.mkdir()
+    (tmp_path / "cache").mkdir()
     config_dir = tmp_path / "config"; config_dir.mkdir()
     (config_dir / "config.yaml").write_text(
         yaml.safe_dump({
             "opencode_manifest_path": str(manifest),
             "opencode_artifact_root": str(artifacts),
+            "allowed_workspaces": [str(workspace)],
+            "model_endpoint": "https://model.intranet.example/v1",
+            "model_provider": "internal", "model_name": "code-1",
+            "allowed_model_hosts": ["model.intranet.example"],
+            "credential_env_names": ["MODEL_KEY"],
         }),
         encoding="utf-8",
     )
@@ -237,8 +244,10 @@ def test_agent_doctor_json_exposes_offline_distribution_checks(
     checks = payload["data"]["distribution"]
     assert [check["name"] for check in checks] == [
         "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+        "skillctl-approval",
     ]
-    assert all(check["ok"] for check in checks)
+    assert all(check["ok"] for check in checks if check["classification"] == "required")
+    assert checks[-1]["ok"] is False and checks[-1]["classification"] == "advisory"
 
 
 def test_agent_doctor_distribution_failure_preserves_envelope_and_exit_code(
@@ -259,9 +268,12 @@ def test_agent_doctor_distribution_failure_preserves_envelope_and_exit_code(
     assert set(payload) == {"ok", "code", "message", "data"}
     assert payload["ok"] is False
     assert payload["code"] == "AGENT_PROVIDER_UNAVAILABLE"
-    failed = [check for check in payload["data"]["distribution"] if not check["ok"]]
+    assert payload["message"] == "offline OpenCode distribution check failed"
+    failed = [check for check in payload["data"]["distribution"]
+              if not check["ok"] and check["classification"] == "required"]
     assert len(failed) == 1
     assert failed[0]["name"] == "opencode-checksum"
+    assert failed[0]["classification"] == "required"
     assert failed[0]["hint"]
 
 

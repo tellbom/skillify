@@ -117,8 +117,10 @@ def test_doctor_verifies_manifest_platform_version_and_checksum(tmp_path: Path) 
     )
     assert [check.name for check in checks] == [
         "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+        "skillctl-approval",
     ]
-    assert all(check.ok for check in checks)
+    assert all(check.ok for check in checks if check.required)
+    assert checks[-1].ok is False and checks[-1].required is False
 
 
 def test_doctor_reports_version_subprocess_failure(tmp_path: Path) -> None:
@@ -139,7 +141,7 @@ def test_doctor_reports_version_subprocess_failure(tmp_path: Path) -> None:
         version_runner=timeout,
     )
 
-    failed = [check for check in checks if not check.ok]
+    failed = [check for check in checks if not check.ok and check.required]
     assert len(failed) == 1
     assert failed[0].name == "opencode-version"
 
@@ -188,7 +190,7 @@ def test_distribution_diagnostics_identify_the_failed_stage(
         version_runner=version_runner,
     )
 
-    failed = [check for check in checks if not check.ok]
+    failed = [check for check in checks if not check.ok and check.classification == "required"]
     assert len(failed) == 1
     assert failed[0].name == expected_name
     assert detail in failed[0].detail

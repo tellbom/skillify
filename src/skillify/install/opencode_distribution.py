@@ -41,6 +41,7 @@ class DistributionCheck:
     ok: bool
     detail: str
     hint: str = ""
+    classification: str = "required"
 
 
 _ARTIFACT_REQUIRED = ["version", "skillctlVersion", "os", "arch", "libc", "cpu", "sha256", "license", "sourceUrl", "intranetUri"]
@@ -200,6 +201,14 @@ def check_opencode_distribution(
             "install the approved manifest and configure its absolute path",
         )]
     manifest_check = DistributionCheck("opencode-manifest", True, str(manifest_path))
+    skillctl = data["skillctl"]
+    approval_check = DistributionCheck(
+        "skillctl-approval", bool(skillctl["installable"]),
+        ("approved installable package" if skillctl["installable"] else
+         "approval placeholder is not installable"),
+        "publish reviewed skillctl package bytes and replace the approval placeholder",
+        "advisory",
+    )
 
     try:
         os_name, arch, libc, cpu = platform_detector()
@@ -210,7 +219,7 @@ def check_opencode_distribution(
         return [manifest_check, DistributionCheck(
             "opencode-platform", False, str(exc),
             "select an approved artifact for a supported platform",
-        )]
+        ), approval_check]
     platform_check = DistributionCheck(
         "opencode-platform", True, f"{os_name}/{arch}/{libc}/{cpu}",
     )
@@ -222,7 +231,7 @@ def check_opencode_distribution(
         return [manifest_check, platform_check, DistributionCheck(
             "opencode-checksum", False, str(exc),
             "stage the approved artifact and verify its SHA-256 checksum",
-        )]
+        ), approval_check]
     checksum_check = DistributionCheck("opencode-checksum", True, artifact.sha256)
 
     try:
@@ -231,21 +240,22 @@ def check_opencode_distribution(
         return [manifest_check, platform_check, DistributionCheck(
             "opencode-version", False, f"version command timed out: {exc}",
             "activate the approved OpenCode v1.15.11 binary",
-        ), checksum_check]
+        ), checksum_check, approval_check]
     except (subprocess.SubprocessError, OSError) as exc:
         return [manifest_check, platform_check, DistributionCheck(
             "opencode-version", False, f"version command failed: {exc}",
             "activate the approved OpenCode v1.15.11 binary",
-        ), checksum_check]
+        ), checksum_check, approval_check]
     if actual.strip() != artifact.version:
         return [manifest_check, platform_check, DistributionCheck(
             "opencode-version", False,
             f"expected {artifact.version}, got {actual.strip()}",
             "activate the approved OpenCode v1.15.11 binary",
-        ), checksum_check]
+        ), checksum_check, approval_check]
     return [
         manifest_check,
         platform_check,
         DistributionCheck("opencode-version", True, artifact.version),
         checksum_check,
+        approval_check,
     ]

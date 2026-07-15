@@ -210,4 +210,7 @@ def test_doctor_configured_temporary_distribution_is_green(
     output = "\n".join(seen)
     assert all(name in output for name in (
         "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+        "skillctl-approval",
     ))
+    assert "WARN" in output and "not installable" in output
+    assert "doctor: all required checks passed" in output
