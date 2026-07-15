@@ -100,8 +100,46 @@
       "default": {}
     },
     "permissions": {
-      "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "readPaths": {"$ref": "#/$defs/pathAllowlist"},
+            "writePaths": {"$ref": "#/$defs/pathAllowlist"},
+            "commands": {
+              "type": "object",
+              "propertyNames": {"type": "string", "minLength": 1, "maxLength": 512},
+              "additionalProperties": {"type": "string", "enum": ["allow", "ask", "deny"]}
+            },
+            "networkDomains": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^(?!.*://)[^/@?#\\s]+$"
+              }
+            },
+            "mcpServers": {"$ref": "#/$defs/namedAllowlist"},
+            "databaseResources": {"$ref": "#/$defs/namedAllowlist"},
+            "unattended": {"type": "boolean"},
+            "confirm": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": ["read", "write", "command", "network", "mcp", "database", "credential"]
+              }
+            }
+          }
+        }
+      ],
       "default": []
     },
     "tags": {
@@ -120,6 +158,28 @@
         "enabled": {"type": "boolean", "default": false}
       },
       "default": {"enabled": false}
+    }
+  },
+  "$defs": {
+    "pathAllowlist": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000\\\\]+$"
+      }
+    },
+    "namedAllowlist": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^(?:\\*|[A-Za-z0-9][A-Za-z0-9._:/-]{0,127})$"
+      }
     }
   }
 }

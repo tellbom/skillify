@@ -152,3 +152,58 @@ def test_invalid_yaml(tmp_path: Path) -> None:
     skill_dir = _write_skill(tmp_path, manifest="not: valid: yaml: [")
     result = validate_skill_dir(skill_dir)
     assert not result.ok
+
+
+def test_structured_permissions_manifest_passes(tmp_path: Path) -> None:
+    manifest = VALID_MANIFEST + """
+permissions:
+  readPaths: [docs/**]
+  writePaths: [output/**]
+  commands:
+    "python -m pytest *": ask
+    "rm *": deny
+  networkDomains: [docs.internal, "*.example.com"]
+  mcpServers: [filesystem]
+  databaseResources: [analytics]
+  unattended: false
+  confirm: [command, database]
+"""
+    skill_dir = _write_skill(tmp_path, manifest=manifest)
+    result = validate_skill_dir(skill_dir)
+    assert result.ok, [str(issue) for issue in result.issues]
+
+
+def test_legacy_string_permissions_manifest_remains_valid(tmp_path: Path) -> None:
+    skill_dir = _write_skill(tmp_path, manifest=VALID_MANIFEST + "\npermissions: [network]\n")
+    result = validate_skill_dir(skill_dir)
+    assert result.ok, [str(issue) for issue in result.issues]
+
+
+def test_legacy_permission_string_length_remains_backward_compatible(tmp_path: Path) -> None:
+    legacy = "legacy-" + "x" * 256
+    skill_dir = _write_skill(
+        tmp_path, manifest=VALID_MANIFEST + f"\npermissions: [{legacy}]\n"
+    )
+    result = validate_skill_dir(skill_dir)
+    assert result.ok, [str(issue) for issue in result.issues]
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        "{unknown: []}",
+        "{readPaths: ../private}",
+        "{commands: {'echo *': sometimes}}",
+        "{networkDomains: ['https://example.com']}",
+        "{confirm: [unknown]}",
+    ],
+)
+def test_structured_permissions_rejects_unknown_or_malformed_values(
+    tmp_path: Path, permissions: str
+) -> None:
+    skill_dir = _write_skill(
+        tmp_path, manifest=VALID_MANIFEST + f"\npermissions: {permissions}\n"
+    )
+    result = validate_skill_dir(skill_dir)
+    assert not result.ok
+    assert any("permissions" in issue.path for issue in result.issues)

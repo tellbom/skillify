@@ -122,6 +122,15 @@ def validate_manifest_semantics(
             "runtime=claude-agent-skill requires 'claude' to be included in targets",
         )
 
+    permissions = data.get("permissions", [])
+    if isinstance(permissions, (list, dict)):
+        try:
+            from skillify.agent.permissions import PermissionManifest
+
+            PermissionManifest.from_value("validator:manifest", permissions)
+        except ValueError as exc:
+            result.add("skill.yaml:permissions", str(exc))
+
     deps = data.get("dependencies") or {}
     for i, entry in enumerate(deps.get("skills", []) or []):
         if "@" not in entry:
