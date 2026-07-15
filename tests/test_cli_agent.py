@@ -166,6 +166,14 @@ def test_agent_init_maps_config_save_oserror_to_config_invalid(tmp_path: Path) -
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 
+def test_status_rejects_config_yaml_directory(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "config/config.yaml").mkdir(parents=True)
+
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
 def test_agent_doctor_and_run_need_no_skillify_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -262,6 +270,14 @@ def test_status_rejects_non_mapping_or_invalid_runtime_state(
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 
+def test_status_rejects_runtime_json_directory(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "state/runtime.json").mkdir(parents=True)
+
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
 def test_logs_maps_read_oserror_to_config_invalid(tmp_path: Path) -> None:
     env = _env(tmp_path)
     log_path = tmp_path / "log/agent.log"
@@ -273,6 +289,14 @@ def test_logs_maps_read_oserror_to_config_invalid(tmp_path: Path) -> None:
     finally:
         log_path.chmod(0o600)
 
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_logs_rejects_agent_log_directory(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "log/agent.log").mkdir(parents=True)
+
+    result = runner.invoke(agent_app, ["logs", "--format", "json"], env=env)
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 

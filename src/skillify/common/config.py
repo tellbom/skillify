@@ -69,8 +69,11 @@ def load_agent_paths(
 
 def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     data: dict[str, Any] = {}
-    if paths.config_path.is_file():
+    try:
         loaded = yaml.safe_load(paths.config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    else:
         if not isinstance(loaded, dict):
             raise ValueError("agent config must be a mapping")
         data = dict(loaded)

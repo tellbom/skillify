@@ -207,11 +207,12 @@ def status(output: str = typer.Option("text", "--format")) -> None:
     """Show local endpoint-agent state."""
     try:
         paths, _ = _config()
-        data = (
-            json.loads(paths.runtime_path.read_text(encoding="utf-8"))
-            if paths.runtime_path.is_file()
-            else {"state": "stopped"}
-        )
+        try:
+            runtime_text = paths.runtime_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            data = {"state": "stopped"}
+        else:
+            data = json.loads(runtime_text)
         if (
             not isinstance(data, dict)
             or not isinstance(data.get("state"), str)
@@ -244,7 +245,11 @@ def logs(
     """Read redacted local lifecycle logs."""
     path = load_agent_paths().log_path
     try:
-        content = path.read_text(encoding="utf-8").splitlines()[-lines:] if path.is_file() else []
+        log_text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        content = []
     except OSError:
         _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "agent logs are invalid"), output)
+    else:
+        content = log_text.splitlines()[-lines:]
     _emit(ok=True, code=AgentErrorCode.OK, message="logs", data={"lines": content}, output=output)
