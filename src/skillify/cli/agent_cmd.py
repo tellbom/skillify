@@ -19,7 +19,14 @@ import yaml
 
 from skillify.agent.events import EventType, TaskState
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
-from skillify.agent.providers.opencode import OpenCodeError, OpenCodeProvider, ProviderCrashed, ProviderTimeout
+from skillify.agent.providers.opencode import (
+    LifecycleReasonCode,
+    OpenCodeError,
+    OpenCodeProvider,
+    ProviderCrashed,
+    ProviderTimeout,
+    linux_process_group_members,
+)
 from skillify.common.config import (
     AgentLocalConfig,
     AgentPaths,
@@ -77,6 +84,7 @@ class AgentRuntimeState:
     owner_uid: int
     pid: int
     pgid: int
+    process_session_id: int
     process_start_token: str
     executable: str
     workspace_hash: str
@@ -104,17 +112,24 @@ def read_runtime_state(paths: AgentPaths) -> AgentRuntimeState | None:
         data = json.loads(runtime_text)
         if not isinstance(data, dict): raise ValueError("runtime state must be an object")
         state = AgentRuntimeState(**data)
-        integer_fields = (state.schema_version, state.owner_uid, state.pid, state.pgid)
+        integer_fields = (
+            state.schema_version, state.owner_uid, state.pid, state.pgid,
+            state.process_session_id,
+        )
         string_fields = (
             state.process_start_token, state.executable, state.workspace_hash, state.task_id,
-            state.session_id, state.provider_version, state.started_at, state.state,
+            state.provider_version, state.started_at, state.state,
         )
         if any(type(value) is not int for value in integer_fields):
             raise ValueError("runtime integer fields are invalid")
         if any(not isinstance(value, str) or not value for value in string_fields):
             raise ValueError("runtime string fields are invalid")
-        if state.schema_version != 1 or state.pid <= 0 or state.pgid <= 0:
+        if (state.schema_version != 1 or state.pid <= 0 or state.pgid <= 0 or
+                state.process_session_id <= 0):
             raise ValueError("runtime identity fields are invalid")
+        if ((state.state == "starting" and state.session_id != "") or
+                (state.state != "starting" and not state.session_id)):
+            raise ValueError("runtime session fields are invalid")
         return state
     except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
         raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid") from exc
@@ -123,24 +138,81 @@ def read_runtime_state(paths: AgentPaths) -> AgentRuntimeState | None:
 def validate_owned_process(state: AgentRuntimeState, inspector) -> bool:
     return (state.schema_version == 1 and state.owner_uid == os.getuid() and
             inspector.is_alive(state.pid) and inspector.pgid(state.pid) == state.pgid and
+            inspector.session_id(state.pid) == state.process_session_id and
             inspector.start_token(state.pid) == state.process_start_token and
-            Path(inspector.executable(state.pid)).name == Path(state.executable).name)
+            inspector.uid(state.pid) == state.owner_uid and
+            inspector.executable(state.pid) == state.executable)
+
+
+def _owned_group_snapshot(state: AgentRuntimeState, inspector):
+    leader_alive = inspector.is_alive(state.pid)
+    if leader_alive and not validate_owned_process(state, inspector):
+        return None
+    try:
+        leader_start = int(state.process_start_token)
+        members = tuple(inspector.group_members(state.pgid))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not members:
+        return None if leader_alive else ()
+    leader_seen = False
+    for member in members:
+        try:
+            if (member.pgid != state.pgid or member.sid != state.process_session_id or
+                    member.uid != state.owner_uid or int(member.start_token) < leader_start):
+                return None
+            if member.pid == state.pid:
+                leader_seen = True
+                if member.start_token != state.process_start_token:
+                    return None
+        except (AttributeError, TypeError, ValueError):
+            return None
+    if leader_alive and not leader_seen:
+        return None
+    return members
+
+
+def _confirmed_owned_group(state: AgentRuntimeState, inspector):
+    first = _owned_group_snapshot(state, inspector)
+    if first is None or not first:
+        return first
+    return _owned_group_snapshot(state, inspector)
 
 
 def stop_owned_process(paths: AgentPaths, inspector, killpg=os.killpg) -> bool:
     state = read_runtime_state(paths)
     if state is None: return True
-    if not validate_owned_process(state, inspector):
+    members = _confirmed_owned_group(state, inspector)
+    if members is None:
         paths.runtime_path.unlink(missing_ok=True)
         return False
-    # Revalidate immediately before signaling to close the PID-reuse window.
-    if not validate_owned_process(state, inspector):
+    if not members:
         paths.runtime_path.unlink(missing_ok=True)
+        return True
+    try:
+        killpg(state.pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        members = _confirmed_owned_group(state, inspector)
+        if members == ():
+            paths.runtime_path.unlink(missing_ok=True)
+            return True
         return False
-    killpg(state.pgid, signal.SIGTERM)
-    if not inspector.wait_exited(state.pid, 5.0):
-        killpg(state.pgid, signal.SIGKILL)
-        if not inspector.wait_exited(state.pid, 1.0):
+    if not inspector.wait_group_exited(state.pgid, 5.0):
+        members = _confirmed_owned_group(state, inspector)
+        if members is None:
+            return False
+        if not members:
+            paths.runtime_path.unlink(missing_ok=True)
+            return True
+        try:
+            killpg(state.pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            members = _confirmed_owned_group(state, inspector)
+            if members == ():
+                paths.runtime_path.unlink(missing_ok=True)
+                return True
+            return False
+        if not inspector.wait_group_exited(state.pgid, 1.0):
             return False
     paths.runtime_path.unlink(missing_ok=True)
     return True
@@ -148,12 +220,21 @@ def stop_owned_process(paths: AgentPaths, inspector, killpg=os.killpg) -> bool:
 
 def append_agent_log(paths: AgentPaths, event: str, **fields: str) -> None:
     allowed = {key: value for key, value in fields.items() if key in {
-        "task_id", "session_id", "provider_version", "state", "reason_code"
+        "task_id", "session_id", "provider_version", "state"
     }}
-    paths.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with paths.log_path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"event": event, **allowed}, sort_keys=True) + "\n")
-    paths.log_path.chmod(0o600)
+    reason = fields.get("reason_code")
+    try:
+        if reason:
+            allowed["reason_code"] = LifecycleReasonCode(reason).value
+    except ValueError:
+        pass
+    try:
+        paths.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with paths.log_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"event": event, **allowed}, sort_keys=True) + "\n")
+        paths.log_path.chmod(0o600)
+    except OSError:
+        return
 
 
 class LinuxProcessInspector:
@@ -163,8 +244,19 @@ class LinuxProcessInspector:
         return os.getpgid(pid)
     def start_token(self, pid: int) -> str:
         return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    def uid(self, pid: int) -> int:
+        return Path(f"/proc/{pid}").stat().st_uid
+    def session_id(self, pid: int) -> int:
+        return os.getsid(pid)
     def executable(self, pid: int) -> str:
-        return os.readlink(f"/proc/{pid}/exe")
+        return str(Path(os.readlink(f"/proc/{pid}/exe")).resolve(strict=True))
+    def group_members(self, pgid: int):
+        return linux_process_group_members(pgid)
+    def wait_group_exited(self, pgid: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.group_members(pgid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self.group_members(pgid)
     def wait_exited(self, pid: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while self.is_alive(pid) and time.monotonic() < deadline:
@@ -261,20 +353,25 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
         workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
         runtime=runtime,
     )
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_termination)
+    sigterm_installed = True
     try:
         append_agent_log(paths, "run.start", task_id=task_id, state="starting")
         handle = provider.start(start_spec)
-        previous_sigterm = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGTERM, _raise_termination)
-        sigterm_installed = True
-        session = provider.create_session(handle, TaskSpec(task_id=task_id, prompt=prompt))
         owned = provider.ownership(handle)
-        write_runtime_state(paths, AgentRuntimeState(
-            schema_version=1, owner_uid=os.getuid(), pid=owned["pid"], pgid=owned["pgid"],
+        runtime_state = AgentRuntimeState(
+            schema_version=1, owner_uid=owned["uid"], pid=owned["pid"], pgid=owned["pgid"],
+            process_session_id=owned["sid"],
             process_start_token=owned["start_token"], executable=owned["executable"],
             workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
-            task_id=task_id, session_id=session.session_id, provider_version=handle.provider_version,
-            started_at=datetime.now(timezone.utc).isoformat(), state="running",
+            task_id=task_id, session_id="", provider_version=handle.provider_version,
+            started_at=datetime.now(timezone.utc).isoformat(), state="starting",
+        )
+        write_runtime_state(paths, runtime_state)
+        session = provider.create_session(handle, TaskSpec(task_id=task_id, prompt=prompt))
+        write_runtime_state(paths, replace(
+            runtime_state, session_id=session.session_id, state="running",
         ))
         for event in provider.stream_events(handle, session):
             reason = event.details.get("reason_code")
@@ -287,25 +384,36 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     except (KeyboardInterrupt, _TerminationRequested):
         terminal = "cancelled"; return terminal
     except Exception as exc:
-        append_agent_log(paths, "run.error", task_id=task_id, state="failed", reason_code=type(exc).__name__)
+        append_agent_log(paths, "run.error", task_id=task_id, state="failed",
+                         reason_code=LifecycleReasonCode.PROVIDER_FAILED.value)
         raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider execution failed") from exc
     finally:
-        if handle is not None and session is not None:
-            try: provider.cancel(handle, session)
-            except Exception: append_agent_log(paths, "abort.error", task_id=task_id, state=terminal, reason_code="ABORT_FAILED")
-        if handle is not None:
-            try:
-                provider.stop(handle)
-            except Exception as exc:
-                stop_error = exc
-                append_agent_log(paths, "stop.error", task_id=task_id, state=terminal, reason_code="STOP_UNCONFIRMED")
-        if handle is None or stop_error is None:
-            paths.runtime_path.unlink(missing_ok=True)
-        if sigterm_installed:
-            signal.signal(signal.SIGTERM, previous_sigterm)
-        append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
-        if stop_error is not None:
-            raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed") from stop_error
+        try:
+            if sigterm_installed:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            if handle is not None and session is not None:
+                try: provider.cancel(handle, session)
+                except Exception: append_agent_log(
+                    paths, "abort.error", task_id=task_id, state=terminal,
+                    reason_code=LifecycleReasonCode.ABORT_FAILED.value,
+                )
+            if handle is not None:
+                try:
+                    provider.stop(handle)
+                except Exception as exc:
+                    stop_error = exc
+                    append_agent_log(
+                        paths, "stop.error", task_id=task_id, state=terminal,
+                        reason_code=LifecycleReasonCode.STOP_UNCONFIRMED.value,
+                    )
+            if handle is None or stop_error is None:
+                paths.runtime_path.unlink(missing_ok=True)
+            append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
+            if stop_error is not None:
+                raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed") from stop_error
+        finally:
+            if sigterm_installed:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 @agent_app.command()
@@ -410,7 +518,9 @@ def status(output: str = typer.Option("text", "--format")) -> None:
         if state is None:
             data = {"state": "stopped"}
         elif validate_owned_process(state, LinuxProcessInspector()):
-            data = {"state": state.state, "task_id": state.task_id, "session_id": state.session_id}
+            data = {"state": state.state, "task_id": state.task_id}
+            if state.session_id:
+                data["session_id"] = state.session_id
         else:
             paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
         _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)

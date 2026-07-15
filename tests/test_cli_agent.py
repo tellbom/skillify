@@ -355,6 +355,7 @@ def test_malformed_missing_and_wrong_type_runtime_json_have_stable_envelopes(tmp
     env = _env(tmp_path); runtime = tmp_path / "state/runtime.json"; runtime.parent.mkdir()
     complete = {
         "schema_version": 1, "owner_uid": 1000, "pid": 4242, "pgid": 4242,
+        "process_session_id": 4242,
         "process_start_token": "start", "executable": "opencode", "workspace_hash": "hash",
         "task_id": "task", "session_id": "session", "provider_version": "1.15.11",
         "started_at": "2026-07-16T00:00:00+00:00", "state": "running",
@@ -387,7 +388,7 @@ def test_status_maps_process_inspection_oserror_to_config_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = agent_cmd.AgentRuntimeState(
-        1, __import__("os").getuid(), 4242, 4242, "start", "opencode",
+        1, __import__("os").getuid(), 4242, 4242, 4242, "start", "/opt/skillify/opencode",
         "workspace", "task", "session", "1.15.11", "time", "running",
     )
     monkeypatch.setattr(agent_cmd, "read_runtime_state", lambda paths: state)
@@ -410,3 +411,14 @@ def test_stop_maps_owned_state_oserror_to_config_invalid(
     )
     result = runner.invoke(agent_app, ["stop", "--format", "json"], env=_env(tmp_path))
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_agent_log_rejects_unenumerated_reason_code(tmp_path: Path) -> None:
+    paths = load_agent_paths(_env(tmp_path), home=tmp_path)
+    agent_cmd.append_agent_log(
+        paths, "run.error", task_id="task-1", state="failed",
+        reason_code="PRIVATE_REMOTE_ERROR",
+    )
+    text = paths.log_path.read_text(encoding="utf-8")
+    assert "PRIVATE_REMOTE_ERROR" not in text
+    assert json.loads(text)["event"] == "run.error"

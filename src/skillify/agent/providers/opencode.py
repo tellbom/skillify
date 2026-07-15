@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64, json, os, secrets, shutil, signal, socket, subprocess, time, uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Protocol
 
@@ -18,6 +19,15 @@ from skillify.agent.provider import (
 class OpenCodeError(Exception): pass
 class ProviderCrashed(OpenCodeError): pass
 class ProviderTimeout(OpenCodeError): pass
+
+
+class LifecycleReasonCode(str, Enum):
+    OPENCODE_ERROR = "OPENCODE_ERROR"
+    PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
+    PROVIDER_NETWORK = "PROVIDER_NETWORK"
+    PROVIDER_FAILED = "PROVIDER_FAILED"
+    ABORT_FAILED = "ABORT_FAILED"
+    STOP_UNCONFIRMED = "STOP_UNCONFIRMED"
 
 
 class ManagedProcess(Protocol):
@@ -38,17 +48,23 @@ def _auth(password: str) -> str:
 
 
 class RequestsTransport:
+    def __init__(self, session=None):
+        self.session = session or requests.Session()
+        self.session.trust_env = False
+
     def request_json(self, method, url, *, password, timeout, body=None):
-        response = requests.request(method, url, headers={"Authorization": _auth(password)}, json=body, timeout=timeout)
+        response = self.session.request(method, url, headers={"Authorization": _auth(password)}, json=body, timeout=timeout)
         response.raise_for_status()
         return {} if response.status_code == 204 else response.json()
     def iter_sse(self, url, *, password, timeout):
-        with requests.get(url, headers={"Authorization": _auth(password)}, timeout=timeout, stream=True) as response:
+        with self.session.get(url, headers={"Authorization": _auth(password)}, timeout=timeout, stream=True) as response:
             response.raise_for_status()
             for line in response.iter_lines(decode_unicode=True):
                 if line and line.startswith("data: "):
                     value = json.loads(line[6:])
                     if isinstance(value, dict): yield value
+                elif not line or line.startswith(":"):
+                    yield {}
 
 
 def find_free_port() -> int:
@@ -61,6 +77,49 @@ def linux_process_start_token(pid: int) -> str:
     return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
 
 
+def linux_process_uid(pid: int) -> int:
+    return Path(f"/proc/{pid}").stat().st_uid
+
+
+def linux_process_session_id(pid: int) -> int:
+    return os.getsid(pid)
+
+
+def linux_process_executable(pid: int) -> str:
+    return str(Path(os.readlink(f"/proc/{pid}/exe")).resolve(strict=True))
+
+
+@dataclass(frozen=True)
+class ProcessGroupMember:
+    pid: int
+    pgid: int
+    sid: int
+    uid: int
+    start_token: str
+
+
+def linux_process_group_members(pgid: int) -> tuple[ProcessGroupMember, ...]:
+    members = []
+    for proc_dir in Path("/proc").iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        try:
+            raw = (proc_dir / "stat").read_text(encoding="utf-8")
+            prefix, separator, suffix = raw.rpartition(") ")
+            if not separator:
+                continue
+            fields = suffix.split()
+            member_pgid, sid = int(fields[2]), int(fields[3])
+            if member_pgid == pgid:
+                members.append(ProcessGroupMember(
+                    pid=int(prefix.split(" ", 1)[0]), pgid=member_pgid, sid=sid,
+                    uid=proc_dir.stat().st_uid, start_token=fields[19],
+                ))
+        except (OSError, ValueError, IndexError):
+            continue
+    return tuple(sorted(members, key=lambda member: member.pid))
+
+
 @dataclass
 class _Live:
     process: ManagedProcess
@@ -68,6 +127,9 @@ class _Live:
     spec: ProviderStartSpec
     pgid: int
     start_token: str
+    uid: int
+    sid: int
+    executable: str
 
 
 @dataclass(frozen=True)
@@ -82,11 +144,17 @@ class OpenCodeProvider:
                  password_factory=lambda: secrets.token_urlsafe(32),
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  monotonic=time.monotonic, sleep=time.sleep,
-                 killpg=os.killpg, getpgid=os.getpgid, process_start_token=linux_process_start_token):
+                 killpg=os.killpg, getpgid=os.getpgid, process_start_token=linux_process_start_token,
+                 process_uid=linux_process_uid, process_session_id=linux_process_session_id,
+                 process_executable=linux_process_executable,
+                 group_members=linux_process_group_members):
         self.executable, self.transport, self.popen = executable, transport or RequestsTransport(), popen
         self.port_factory, self.password_factory, self.clock = port_factory, password_factory, clock
         self.monotonic, self.sleep, self.killpg, self.getpgid = monotonic, sleep, killpg, getpgid
-        self.process_start_token, self._live = process_start_token, {}
+        self.process_start_token, self.process_uid = process_start_token, process_uid
+        self.process_session_id, self.process_executable = process_session_id, process_executable
+        self.group_members = group_members
+        self._live = {}
         self._tasks: dict[str, _TaskRuntime] = {}
 
     def probe(self) -> ProviderProbe:
@@ -116,10 +184,16 @@ class OpenCodeProvider:
         process = self.popen(argv, cwd=str(spec.workspace), env=self._environment(spec.runtime, password, spec.config_dir),
                              text=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base_url, deadline = f"http://127.0.0.1:{port}", self.monotonic() + spec.startup_timeout_seconds
-        pgid = process.pid
+        pgid = process.pid; candidate = None
         try:
             pgid = self.getpgid(process.pid)
             start_token = self.process_start_token(process.pid)
+            uid = self.process_uid(process.pid)
+            sid = self.process_session_id(process.pid)
+            executable = self.process_executable(process.pid)
+            candidate = _Live(
+                process, password, spec, pgid, start_token, uid, sid, executable,
+            )
             while True:
                 if process.poll() is not None: raise ProviderCrashed("opencode exited during startup")
                 if self.monotonic() >= deadline: raise ProviderTimeout("opencode startup timed out")
@@ -137,11 +211,18 @@ class OpenCodeProvider:
                 if not isinstance(version, str) or not version.strip():
                     raise OpenCodeError("opencode health response omitted version")
                 handle = ProviderHandle(uuid.uuid4().hex, "opencode", version, base_url, process.pid)
-                self._live[handle.handle_id] = _Live(process, password, spec, pgid, start_token)
+                self._live[handle.handle_id] = candidate
                 return handle
-        except Exception:
-            try: self._terminate(process, pgid, spec.shutdown_timeout_seconds)
-            finally: password = ""
+        except BaseException:
+            try:
+                if candidate is None:
+                    self._terminate(process, pgid, spec.shutdown_timeout_seconds)
+                else:
+                    self._terminate_owned_group(candidate)
+            except Exception:
+                pass
+            finally:
+                password = ""
             raise
 
     def _terminate(self, process: ManagedProcess, pgid: int, timeout: float) -> None:
@@ -152,6 +233,75 @@ class OpenCodeProvider:
         except subprocess.TimeoutExpired:
             self.killpg(pgid, signal.SIGKILL)
             process.wait(timeout=1)
+
+    def _owned_group_snapshot(self, live: _Live):
+        try:
+            leader_start = int(live.start_token)
+            members = tuple(self.group_members(live.pgid))
+        except (OSError, TypeError, ValueError):
+            return None
+        leader_alive = live.process.poll() is None
+        if not members:
+            return None if leader_alive else ()
+        leader_seen = False
+        for member in members:
+            try:
+                if (member.pgid != live.pgid or member.sid != live.sid or
+                        member.uid != live.uid or int(member.start_token) < leader_start):
+                    return None
+                if member.pid == live.process.pid:
+                    leader_seen = True
+                    if member.start_token != live.start_token:
+                        return None
+            except (AttributeError, TypeError, ValueError):
+                return None
+        if leader_alive and not leader_seen:
+            return None
+        return members
+
+    def _confirmed_owned_group(self, live: _Live):
+        first = self._owned_group_snapshot(live)
+        if first is None or not first:
+            return first
+        return self._owned_group_snapshot(live)
+
+    def _wait_owned_group_gone(self, live: _Live, timeout: float) -> bool:
+        deadline = self.monotonic() + timeout
+        while True:
+            members = self._owned_group_snapshot(live)
+            if members == ():
+                return True
+            if members is None or self.monotonic() >= deadline:
+                return False
+            self.sleep(0.05)
+
+    def _terminate_owned_group(self, live: _Live) -> None:
+        members = self._confirmed_owned_group(live)
+        if members is None:
+            raise OpenCodeError("opencode process group ownership changed")
+        if not members:
+            return
+        self.killpg(live.pgid, signal.SIGTERM)
+        if live.process.poll() is None:
+            try:
+                live.process.wait(timeout=live.spec.shutdown_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+        if self._wait_owned_group_gone(live, live.spec.shutdown_timeout_seconds):
+            return
+        members = self._confirmed_owned_group(live)
+        if members is None:
+            raise OpenCodeError("opencode process group ownership changed")
+        if not members:
+            return
+        self.killpg(live.pgid, signal.SIGKILL)
+        if live.process.poll() is None:
+            try:
+                live.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        if not self._wait_owned_group_gone(live, 1):
+            raise ProviderTimeout("opencode process group exit was not confirmed")
 
     def _abort_quietly(self, handle: ProviderHandle, session: ProviderSession, live: _Live) -> None:
         try:
@@ -210,23 +360,27 @@ class OpenCodeProvider:
                     yield self._event(handle, session, EventType.ARTIFACT_CREATED, TaskState.RUNNING, sequence,
                                       {"artifact_count": len(props.get("diff", []))})
                 elif kind == "session.error":
-                    error = props.get("error", {}); reason = error.get("name", "OPENCODE_ERROR") if isinstance(error, dict) else "OPENCODE_ERROR"
-                    yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": str(reason)})
+                    yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
+                                      {"reason_code": LifecycleReasonCode.OPENCODE_ERROR.value})
                     return
                 elif kind == "session.idle":
                     yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.SUCCEEDED, sequence, {"result_state": "succeeded"})
                     return
             self._abort_quietly(handle, session, live)
             sequence += 1
-            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
+            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence,
+                              {"reason_code": LifecycleReasonCode.PROVIDER_TIMEOUT.value})
             sequence += 1
-            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
+            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
+                              {"reason_code": LifecycleReasonCode.PROVIDER_TIMEOUT.value})
         except (requests.RequestException, ValueError):
             self._abort_quietly(handle, session, live)
             sequence += 1
-            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_NETWORK"})
+            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence,
+                              {"reason_code": LifecycleReasonCode.PROVIDER_NETWORK.value})
             sequence += 1
-            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_NETWORK"})
+            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
+                              {"reason_code": LifecycleReasonCode.PROVIDER_NETWORK.value})
         finally:
             self._tasks.pop(session.session_id, None)
 
@@ -240,19 +394,18 @@ class OpenCodeProvider:
         return ProviderResult(TaskState.CANCELLED)
 
     def stop(self, handle):
-        live = self._live.pop(handle.handle_id, None)
+        live = self._live.get(handle.handle_id)
         if live is None: return ProviderResult(TaskState.SUCCEEDED)
-        try:
-            try: self.transport.request_json("POST", handle.base_url + "/instance/dispose", password=live.password, timeout=1)
-            except Exception: pass
-            self._terminate(live.process, live.pgid, live.spec.shutdown_timeout_seconds)
-        finally:
-            live.password = ""
-            for session_id, task in tuple(self._tasks.items()):
-                if task.handle_id == handle.handle_id: self._tasks.pop(session_id, None)
+        try: self.transport.request_json("POST", handle.base_url + "/instance/dispose", password=live.password, timeout=1)
+        except Exception: pass
+        self._terminate_owned_group(live)
+        self._live.pop(handle.handle_id, None)
+        live.password = ""
+        for session_id, task in tuple(self._tasks.items()):
+            if task.handle_id == handle.handle_id: self._tasks.pop(session_id, None)
         return ProviderResult(TaskState.SUCCEEDED)
 
     def ownership(self, handle):
         live = self._live[handle.handle_id]
-        return {"pid": handle.process_id, "pgid": live.pgid, "start_token": live.start_token,
-                "executable": self.executable}
+        return {"pid": handle.process_id, "pgid": live.pgid, "sid": live.sid,
+                "start_token": live.start_token, "uid": live.uid, "executable": live.executable}
