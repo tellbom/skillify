@@ -359,9 +359,16 @@ Expected: collection fails with `ModuleNotFoundError: No module named 'skillify.
 
 - [ ] **Step 3: Add the complete configuration patch to `common/config.py`**
 
-Add `Mapping` to the typing import, add `AgentPaths` and `AgentLocalConfig` plus
+Apply these import replacements, then add `AgentPaths` and `AgentLocalConfig` plus
 the three complete functions in the interface block above after
 `skillify_home()`, and use this exact YAML shape:
+
+```diff
+-from dataclasses import dataclass, field
++from dataclasses import asdict, dataclass, field
+-from typing import Any
++from typing import Any, Mapping
+```
 
 ```yaml
 provider: opencode
@@ -1275,7 +1282,7 @@ import requests
 
 from skillify.agent.events import EventType, TaskState
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
-from skillify.agent.providers.opencode import OpenCodeProvider, ProviderCrashed, ProviderTimeout
+from skillify.agent.providers.opencode import OpenCodeError, OpenCodeProvider, ProviderCrashed, ProviderTimeout
 
 NOW = datetime(2026, 7, 16, tzinfo=timezone.utc)
 
@@ -1369,10 +1376,12 @@ def test_normal_completion_maps_only_safe_events(tmp_path, fake_server, monkeypa
     ]
     provider, _, _, _ = _provider(fake_server, monkeypatch)
     handle = provider.start(_spec(tmp_path)); session = provider.create_session(handle, TaskSpec("task-1", "private prompt"))
+    assert "private prompt" not in repr(provider._tasks)
     events = list(provider.stream_events(handle, session))
     assert [e.type for e in events] == [EventType.TASK_ACCEPTED, EventType.PLAN_READY, EventType.TOOL_REQUESTED, EventType.TEST_COMPLETED, EventType.ARTIFACT_CREATED, EventType.TASK_FINISHED]
     assert events[-1].state is TaskState.SUCCEEDED
     assert "private" not in repr(events) and "source" not in repr(events) and "secret.py" not in repr(events)
+    assert provider._tasks == {}
 
 
 def test_cancel_timeout_crash_and_stop_cleanup(tmp_path, fake_server, monkeypatch):
@@ -1380,6 +1389,7 @@ def test_cancel_timeout_crash_and_stop_cleanup(tmp_path, fake_server, monkeypatc
     handle = provider.start(_spec(tmp_path)); session = provider.create_session(handle, TaskSpec("task-1", "private"))
     assert provider.cancel(handle, session).state is TaskState.CANCELLED
     assert Handler.requests[-1][1] == "/session/session-1/abort"
+    assert provider._tasks == {}
     assert provider.stop(handle).state is TaskState.SUCCEEDED
     assert killed and process.returncode == 0
     assert provider.stop(handle).state is TaskState.SUCCEEDED
@@ -1419,6 +1429,23 @@ def test_unhealthy_startup_deadline_terminates_process_group(tmp_path, monkeypat
         process_start_token=lambda pid: "start-100",
     )
     with pytest.raises(ProviderTimeout): provider.start(_spec(tmp_path))
+    assert killed == [(4242, signal.SIGTERM)]
+    assert process.returncode == 0 and provider._live == {}
+
+
+def test_healthy_response_without_version_terminates_started_process(tmp_path, monkeypatch):
+    class MissingVersion:
+        def request_json(self, *args, **kwargs): return {"healthy": True}
+    process = FakeProcess(); killed = []
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    provider = OpenCodeProvider(
+        transport=MissingVersion(), popen=lambda argv, **kwargs: process,
+        port_factory=lambda: 32123, password_factory=lambda: "temporary-password",
+        monotonic=lambda: 0.0, sleep=lambda value: None,
+        killpg=lambda pgid, sig: killed.append((pgid, sig)), getpgid=lambda pid: pid,
+        process_start_token=lambda pid: "start-100",
+    )
+    with pytest.raises(OpenCodeError, match="omitted version"): provider.start(_spec(tmp_path))
     assert killed == [(4242, signal.SIGTERM)]
     assert process.returncode == 0 and provider._live == {}
 
@@ -1537,6 +1564,12 @@ class _Live:
     start_token: str
 
 
+@dataclass(frozen=True)
+class _TaskRuntime:
+    handle_id: str
+    timeout_seconds: float
+
+
 class OpenCodeProvider:
     def __init__(self, *, executable="opencode", transport=None, popen=subprocess.Popen,
                  port_factory: Callable[[], int] = find_free_port,
@@ -1548,7 +1581,7 @@ class OpenCodeProvider:
         self.port_factory, self.password_factory, self.clock = port_factory, password_factory, clock
         self.monotonic, self.sleep, self.killpg, self.getpgid = monotonic, sleep, killpg, getpgid
         self.process_start_token, self._live = process_start_token, {}
-        self._tasks = {}
+        self._tasks: dict[str, _TaskRuntime] = {}
 
     def probe(self) -> ProviderProbe:
         path = shutil.which(self.executable)
@@ -1584,28 +1617,26 @@ class OpenCodeProvider:
             while True:
                 if process.poll() is not None: raise ProviderCrashed("opencode exited during startup")
                 if self.monotonic() >= deadline: raise ProviderTimeout("opencode startup timed out")
-                health = self.transport.request_json("GET", base_url + "/global/health", password=password, timeout=0.5)
-                if health.get("healthy") is True: break
-                self.sleep(0.05)
-        except requests.RequestException:
-            while self.monotonic() < deadline and process.poll() is None:
-                self.sleep(0.05)
                 try:
-                    health = self.transport.request_json("GET", base_url + "/global/health", password=password, timeout=0.5)
-                    if health.get("healthy") is True: break
+                    health = self.transport.request_json(
+                        "GET", base_url + "/global/health", password=password, timeout=0.5,
+                    )
                 except requests.RequestException:
+                    self.sleep(0.05)
                     continue
-            else:
-                try: self._terminate(process, pgid, spec.shutdown_timeout_seconds)
-                finally: password = ""
-                raise ProviderTimeout("opencode startup timed out")
+                if health.get("healthy") is not True:
+                    self.sleep(0.05)
+                    continue
+                version = health.get("version")
+                if not isinstance(version, str) or not version.strip():
+                    raise OpenCodeError("opencode health response omitted version")
+                handle = ProviderHandle(uuid.uuid4().hex, "opencode", version, base_url, process.pid)
+                self._live[handle.handle_id] = _Live(process, password, spec, pgid, start_token)
+                return handle
         except Exception:
             try: self._terminate(process, pgid, spec.shutdown_timeout_seconds)
             finally: password = ""
             raise
-        handle = ProviderHandle(uuid.uuid4().hex, "opencode", str(health["version"]), base_url, process.pid)
-        self._live[handle.handle_id] = _Live(process, password, spec, pgid, start_token)
-        return handle
 
     def _terminate(self, process: ManagedProcess, pgid: int, timeout: float) -> None:
         if process.poll() is not None: return
@@ -1628,9 +1659,9 @@ class OpenCodeProvider:
         raw = self.transport.request_json("POST", handle.base_url + "/session", password=live.password, timeout=5,
                                           body={"title": f"skillify:{spec.task_id}"})
         session = ProviderSession(spec.task_id, str(raw["id"]), handle.handle_id)
-        self._tasks[session.session_id] = spec
         self.transport.request_json("POST", handle.base_url + f"/session/{session.session_id}/prompt_async",
                                     password=live.password, timeout=5, body={"parts": [{"type": "text", "text": spec.prompt}]})
+        self._tasks[session.session_id] = _TaskRuntime(handle.handle_id, spec.timeout_seconds)
         return session
 
     def _event(self, handle, session, kind, state, sequence, details=None):
@@ -1642,8 +1673,9 @@ class OpenCodeProvider:
         live = self._live[handle.handle_id]
         if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
         task = self._tasks[session.session_id]; deadline = self.monotonic() + task.timeout_seconds
-        sequence = 1; yield self._event(handle, session, EventType.TASK_ACCEPTED, TaskState.QUEUED, sequence)
+        sequence = 1
         try:
+            yield self._event(handle, session, EventType.TASK_ACCEPTED, TaskState.QUEUED, sequence)
             for raw in self.transport.iter_sse(handle.base_url + "/event", password=live.password, timeout=task.timeout_seconds):
                 if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
                 if self.monotonic() >= deadline: break
@@ -1678,23 +1710,27 @@ class OpenCodeProvider:
                 elif kind == "session.idle":
                     yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.SUCCEEDED, sequence, {"result_state": "succeeded"})
                     return
-        except requests.RequestException:
+            self._abort_quietly(handle, session, live)
+            sequence += 1
+            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
+            sequence += 1
+            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
+        except (requests.RequestException, ValueError):
             self._abort_quietly(handle, session, live)
             sequence += 1
             yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_NETWORK"})
             sequence += 1
             yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_NETWORK"})
-            return
-        self._abort_quietly(handle, session, live)
-        sequence += 1
-        yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
-        sequence += 1
-        yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
+        finally:
+            self._tasks.pop(session.session_id, None)
 
     def cancel(self, handle, session):
         live = self._live[handle.handle_id]
-        self.transport.request_json("POST", handle.base_url + f"/session/{session.session_id}/abort",
-                                    password=live.password, timeout=5)
+        try:
+            self.transport.request_json("POST", handle.base_url + f"/session/{session.session_id}/abort",
+                                        password=live.password, timeout=5)
+        finally:
+            self._tasks.pop(session.session_id, None)
         return ProviderResult(TaskState.CANCELLED)
 
     def stop(self, handle):
@@ -1706,6 +1742,8 @@ class OpenCodeProvider:
             self._terminate(live.process, live.pgid, live.spec.shutdown_timeout_seconds)
         finally:
             live.password = ""
+            for session_id, task in tuple(self._tasks.items()):
+                if task.handle_id == handle.handle_id: self._tasks.pop(session_id, None)
         return ProviderResult(TaskState.SUCCEEDED)
 
     def ownership(self, handle):
@@ -1762,7 +1800,24 @@ def write_runtime_state(paths: AgentPaths, state: AgentRuntimeState) -> None:
 
 def read_runtime_state(paths: AgentPaths) -> AgentRuntimeState | None:
     if not paths.runtime_path.is_file(): return None
-    return AgentRuntimeState(**json.loads(paths.runtime_path.read_text(encoding="utf-8")))
+    try:
+        data = json.loads(paths.runtime_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict): raise ValueError("runtime state must be an object")
+        state = AgentRuntimeState(**data)
+        integer_fields = (state.schema_version, state.owner_uid, state.pid, state.pgid)
+        string_fields = (
+            state.process_start_token, state.executable, state.workspace_hash, state.task_id,
+            state.session_id, state.provider_version, state.started_at, state.state,
+        )
+        if any(type(value) is not int for value in integer_fields):
+            raise ValueError("runtime integer fields are invalid")
+        if any(not isinstance(value, str) or not value for value in string_fields):
+            raise ValueError("runtime string fields are invalid")
+        if state.schema_version != 1 or state.pid <= 0 or state.pgid <= 0:
+            raise ValueError("runtime identity fields are invalid")
+        return state
+    except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid") from exc
 
 
 def validate_owned_process(state: AgentRuntimeState, inspector) -> bool:
@@ -1819,22 +1874,28 @@ class LinuxProcessInspector:
 
 @agent_app.command()
 def status(output: str = typer.Option("text", "--format")) -> None:
-    paths = load_agent_paths(); state = read_runtime_state(paths)
-    if state is None:
-        data = {"state": "stopped"}
-    elif validate_owned_process(state, LinuxProcessInspector()):
-        data = {"state": state.state, "task_id": state.task_id, "session_id": state.session_id}
-    else:
-        paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
-    _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)
+    try:
+        paths = load_agent_paths(); state = read_runtime_state(paths)
+        if state is None:
+            data = {"state": "stopped"}
+        elif validate_owned_process(state, LinuxProcessInspector()):
+            data = {"state": state.state, "task_id": state.task_id, "session_id": state.session_id}
+        else:
+            paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
+        _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)
+    except AgentCommandFailure as exc:
+        _fail(exc, output)
 
 
 @agent_app.command()
 def stop(output: str = typer.Option("text", "--format")) -> None:
-    paths = load_agent_paths()
-    if not stop_owned_process(paths, LinuxProcessInspector()):
-        _fail(AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "runtime owner identity mismatch"), output)
-    _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
+    try:
+        paths = load_agent_paths()
+        if not stop_owned_process(paths, LinuxProcessInspector()):
+            raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed")
+        _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
+    except AgentCommandFailure as exc:
+        _fail(exc, output)
 ```
 
 - [ ] **Step 6: Add complete cross-CLI lifecycle tests**
@@ -1965,6 +2026,68 @@ def test_run_local_task_cleans_start_and_stream_failures(tmp_path, monkeypatch):
         agent_cmd._run_local_task(workspace, "private prompt", paths, config)
     assert captured.value.code is agent_cmd.AgentErrorCode.PROVIDER_FAILED
     assert not paths.runtime_path.exists()
+
+
+def test_sigterm_unwinds_through_abort_stop_cleanup_and_restores_handler(tmp_path, monkeypatch):
+    from skillify.agent.provider import ProviderHandle, ProviderResult, ProviderSession
+    from skillify.cli import agent_cmd
+    from skillify.common.config import AgentLocalConfig, load_agent_paths
+    calls = []; installed = []; previous = object()
+    class FakeProvider:
+        def start(self, spec): return ProviderHandle("h", "opencode", "1.15.11", "http://127.0.0.1:9", 4242)
+        def ownership(self, handle): return {"pid": 4242, "pgid": 4242, "start_token": "start-1", "executable": "opencode"}
+        def create_session(self, handle, spec): return ProviderSession(spec.task_id, "session-1", handle.handle_id)
+        def stream_events(self, handle, session):
+            installed[0](signal.SIGTERM, None)
+            yield
+        def cancel(self, handle, session): calls.append("abort"); return ProviderResult(TaskState.CANCELLED)
+        def stop(self, handle): calls.append("stop"); return ProviderResult(TaskState.SUCCEEDED)
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: FakeProvider())
+    monkeypatch.setattr(agent_cmd.signal, "getsignal", lambda sig: previous)
+    monkeypatch.setattr(agent_cmd.signal, "signal", lambda sig, handler: installed.append(handler))
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state"),
+                              "SKILLIFY_AGENT_LOG_DIR": str(tmp_path / "log")}, home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),), model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    assert agent_cmd._run_local_task(workspace, "private", paths, config) == "cancelled"
+    assert calls == ["abort", "stop"] and installed[-1] is previous
+    assert not paths.runtime_path.exists()
+
+
+def test_foreground_stop_failure_preserves_runtime_and_returns_provider_failed(tmp_path, monkeypatch):
+    from skillify.agent.events import TaskEvent
+    from skillify.agent.provider import ProviderHandle, ProviderResult, ProviderSession
+    from skillify.cli import agent_cmd
+    from skillify.cli.agent_cmd import AgentCommandFailure
+    from skillify.common.config import AgentLocalConfig, load_agent_paths
+    class StopFailure:
+        def start(self, spec): return ProviderHandle("h", "opencode", "1.15.11", "http://127.0.0.1:9", 4242)
+        def ownership(self, handle): return {"pid": 4242, "pgid": 4242, "start_token": "start-1", "executable": "opencode"}
+        def create_session(self, handle, spec): return ProviderSession(spec.task_id, "session-1", handle.handle_id)
+        def stream_events(self, handle, session):
+            yield TaskEvent(session.task_id, session.session_id, "opencode", "1.15.11", 1, 1, NOW,
+                            EventType.TASK_FINISHED, TaskState.SUCCEEDED, {"result_state": "succeeded"})
+        def cancel(self, handle, session): return ProviderResult(TaskState.CANCELLED)
+        def stop(self, handle): raise RuntimeError("process still alive")
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: StopFailure())
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state"),
+                              "SKILLIFY_AGENT_LOG_DIR": str(tmp_path / "log")}, home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),), model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    with pytest.raises(AgentCommandFailure) as captured:
+        agent_cmd._run_local_task(workspace, "private", paths, config)
+    assert captured.value.code is agent_cmd.AgentErrorCode.PROVIDER_FAILED
+    assert paths.runtime_path.exists()
 ```
 
 - [ ] **Step 8: Replace the Task 1.1 implementation with complete Provider wiring**
@@ -1997,19 +2120,31 @@ def _runtime_config(config: AgentLocalConfig) -> ModelRuntimeConfig:
     if not all((config.model_endpoint, config.model_provider, config.model_name,
                 config.allowed_model_hosts, config.credential_env_names)):
         raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is incomplete")
-    return ModelRuntimeConfig(
-        provider=config.model_provider,
-        endpoint=config.model_endpoint,
-        model=config.model_name,
-        allowed_endpoint_hosts=config.allowed_model_hosts,
-        credential_env_names=config.credential_env_names,
-    )
+    try:
+        return ModelRuntimeConfig(
+            provider=config.model_provider,
+            endpoint=config.model_endpoint,
+            model=config.model_name,
+            allowed_endpoint_hosts=config.allowed_model_hosts,
+            credential_env_names=config.credential_env_names,
+        )
+    except ValueError as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is invalid") from exc
+
+
+class _TerminationRequested(Exception):
+    pass
+
+
+def _raise_termination(signum, frame) -> None:
+    raise _TerminationRequested()
 
 
 def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
                     config: AgentLocalConfig) -> str:
     provider = _build_provider(); handle = None; session = None
     terminal = "failed"; task_id = uuid.uuid4().hex
+    previous_sigterm = None; sigterm_installed = False; stop_error = None
     config_dir = paths.cache_dir / "opencode" / hashlib.sha256(str(workspace).encode()).hexdigest()
     start_spec = ProviderStartSpec(
         workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
@@ -2018,6 +2153,9 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     try:
         append_agent_log(paths, "run.start", task_id=task_id, state="starting")
         handle = provider.start(start_spec)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _raise_termination)
+        sigterm_installed = True
         session = provider.create_session(handle, TaskSpec(task_id=task_id, prompt=prompt))
         owned = provider.ownership(handle)
         write_runtime_state(paths, AgentRuntimeState(
@@ -2035,7 +2173,7 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
             if event.type is EventType.TASK_FINISHED: terminal = event.state.value
             elif event.type is EventType.TASK_BLOCKED: terminal = "blocked"
         return terminal
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, _TerminationRequested):
         terminal = "cancelled"; return terminal
     except Exception as exc:
         append_agent_log(paths, "run.error", task_id=task_id, state="failed", reason_code=type(exc).__name__)
@@ -2045,10 +2183,18 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
             try: provider.cancel(handle, session)
             except Exception: append_agent_log(paths, "abort.error", task_id=task_id, state=terminal, reason_code="ABORT_FAILED")
         if handle is not None:
-            try: provider.stop(handle)
-            except Exception: append_agent_log(paths, "stop.error", task_id=task_id, state=terminal, reason_code="STOP_FAILED")
-        paths.runtime_path.unlink(missing_ok=True)
+            try:
+                provider.stop(handle)
+            except Exception as exc:
+                stop_error = exc
+                append_agent_log(paths, "stop.error", task_id=task_id, state=terminal, reason_code="STOP_UNCONFIRMED")
+        if handle is None or stop_error is None:
+            paths.runtime_path.unlink(missing_ok=True)
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
+        if stop_error is not None:
+            raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider stop was not confirmed") from stop_error
 ```
 
 Replace the Task 1.1 call site inside `run()` with:
@@ -2072,7 +2218,85 @@ final four-argument boundary:
 +            monkeypatch.setattr(agent_cmd, "_run_local_task", lambda workspace, prompt, paths, config: "failed")
 ```
 
-- [ ] **Step 7: Add the default-skipped real smoke test**
+Append these final stable-envelope tests to `tests/test_cli_agent.py`:
+
+```python
+def test_invalid_runtime_endpoint_maps_to_config_invalid(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"; workspace.mkdir(); env = _env(tmp_path)
+    initialized = runner.invoke(agent_app, [
+        "init", "--workspace", str(workspace),
+        "--model-endpoint", "https://unapproved.example/v1",
+        "--model-provider", "internal", "--model", "code-1",
+        "--allowed-model-host", "model.intranet.example",
+        "--credential-env", "MODEL_KEY", "--format", "json",
+    ], env=env)
+    assert initialized.exit_code == 0
+    result = runner.invoke(
+        agent_app, ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"],
+        input="inspect\n", env=env,
+    )
+    assert result.exit_code == 10
+    assert _json(result) == {
+        "ok": False, "code": "AGENT_CONFIG_INVALID",
+        "message": "model runtime config is invalid", "data": {},
+    }
+
+
+@pytest.mark.parametrize("changes", [
+    {"model_endpoint": None},
+    {"model_endpoint": "ftp://model.intranet.example/v1"},
+    {"allowed_model_hosts": ()},
+    {"allowed_model_hosts": ("other.intranet.example",)},
+    {"credential_env_names": ()},
+    {"credential_env_names": ("bad-name",)},
+])
+def test_all_invalid_or_missing_runtime_fields_map_to_config_invalid(changes) -> None:
+    from dataclasses import replace
+    from skillify.cli.agent_cmd import AgentCommandFailure, _runtime_config
+    from skillify.common.config import AgentLocalConfig
+    base = AgentLocalConfig(
+        model_endpoint="https://model.intranet.example/v1", model_provider="internal",
+        model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    with pytest.raises(AgentCommandFailure) as captured:
+        _runtime_config(replace(base, **changes))
+    assert captured.value.code is AgentErrorCode.CONFIG_INVALID
+
+
+def test_malformed_missing_and_wrong_type_runtime_json_have_stable_envelopes(tmp_path: Path) -> None:
+    env = _env(tmp_path); runtime = tmp_path / "state/runtime.json"; runtime.parent.mkdir()
+    complete = {
+        "schema_version": 1, "owner_uid": 1000, "pid": 4242, "pgid": 4242,
+        "process_start_token": "start", "executable": "opencode", "workspace_hash": "hash",
+        "task_id": "task", "session_id": "session", "provider_version": "1.15.11",
+        "started_at": "2026-07-16T00:00:00+00:00", "state": "running",
+    }
+    payloads = ["{", "{}", json.dumps({**complete, "pid": "4242"})]
+    for command in ("status", "stop"):
+        for payload in payloads:
+            runtime.write_text(payload, encoding="utf-8")
+            result = runner.invoke(agent_app, [command, "--format", "json"], env=env)
+            assert result.exit_code == 10
+            assert _json(result) == {
+                "ok": False, "code": "AGENT_CONFIG_INVALID",
+                "message": "runtime state is invalid", "data": {},
+            }
+
+
+def test_stop_unconfirmed_returns_provider_failed_envelope(tmp_path: Path, monkeypatch) -> None:
+    from skillify.cli import agent_cmd
+    env = _env(tmp_path)
+    monkeypatch.setattr(agent_cmd, "stop_owned_process", lambda paths, inspector: False)
+    result = runner.invoke(agent_app, ["stop", "--format", "json"], env=env)
+    assert result.exit_code == 13
+    assert _json(result) == {
+        "ok": False, "code": "AGENT_PROVIDER_FAILED",
+        "message": "provider stop was not confirmed", "data": {},
+    }
+```
+
+- [ ] **Step 9: Add the default-skipped real smoke test**
 
 Create `tests/test_opencode_provider_smoke.py` with this complete test:
 
@@ -2127,7 +2351,7 @@ def test_real_opencode_is_localhost_only_and_leaves_no_process(tmp_path: Path) -
         os.kill(handle.process_id, 0)
 ```
 
-- [ ] **Step 8: Run Task 1.3 GREEN tests and Dev-DoD**
+- [ ] **Step 10: Run Task 1.3 GREEN tests and Dev-DoD**
 
 Run:
 
@@ -2138,7 +2362,7 @@ uv run --no-sync pytest tests/test_provider_contract.py tests/test_opencode_prov
 
 Expected: compileall exits 0; all offline tests pass; exactly the real smoke module is skipped with `requires test-env:`.
 
-- [ ] **Step 9: Commit Task 1.3**
+- [ ] **Step 11: Commit Task 1.3**
 
 ```bash
 git add src/skillify/agent/providers src/skillify/cli/agent_cmd.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py
