@@ -71,6 +71,11 @@ class AgentPaths:
 class AgentLocalConfig:
     provider: str = "opencode"
     allowed_workspaces: tuple[str, ...] = ()
+    model_endpoint: str | None = None
+    model_provider: str | None = None
+    model_name: str | None = None
+    allowed_model_hosts: tuple[str, ...] = ()
+    credential_env_names: tuple[str, ...] = ()
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
 
@@ -91,17 +96,44 @@ def load_agent_paths(
     )
 
 def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
-    if not paths.config_path.is_file():
-        return AgentLocalConfig()
-    data = yaml.safe_load(paths.config_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("agent config must be a mapping")
-    return AgentLocalConfig(
+    data: dict[str, Any] = {}
+    if paths.config_path.is_file():
+        loaded = yaml.safe_load(paths.config_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict): raise ValueError("agent config must be a mapping")
+        data = dict(loaded)
+    scalar_overrides = {
+        "SKILLIFY_AGENT_MODEL_ENDPOINT": "model_endpoint",
+        "SKILLIFY_AGENT_MODEL_PROVIDER": "model_provider",
+        "SKILLIFY_AGENT_MODEL_NAME": "model_name",
+    }
+    for env_name, key in scalar_overrides.items():
+        if env_name in os.environ: data[key] = os.environ[env_name]
+    for env_name, key in {
+        "SKILLIFY_AGENT_ALLOWED_MODEL_HOSTS": "allowed_model_hosts",
+        "SKILLIFY_AGENT_CREDENTIAL_ENV_NAMES": "credential_env_names",
+    }.items():
+        if env_name in os.environ:
+            data[key] = [value.strip() for value in os.environ[env_name].split(",") if value.strip()]
+    config = AgentLocalConfig(
         provider=str(data.get("provider", "opencode")),
         allowed_workspaces=tuple(data.get("allowed_workspaces", ())),
+        model_endpoint=data.get("model_endpoint"),
+        model_provider=data.get("model_provider"),
+        model_name=data.get("model_name"),
+        allowed_model_hosts=tuple(data.get("allowed_model_hosts", ())),
+        credential_env_names=tuple(data.get("credential_env_names", ())),
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
     )
+    if config.provider != "opencode": raise ValueError("provider must be opencode")
+    if any(not Path(value).is_absolute() for value in config.allowed_workspaces):
+        raise ValueError("allowed workspaces must be absolute")
+    if len(set(config.allowed_workspaces)) != len(config.allowed_workspaces):
+        raise ValueError("allowed workspaces must be unique")
+    sequence_fields = (config.allowed_model_hosts, config.credential_env_names)
+    if any(not isinstance(item, str) for sequence in sequence_fields for item in sequence):
+        raise ValueError("model host and credential names must be strings")
+    return config
 
 def save_agent_local_config(paths: AgentPaths, config: AgentLocalConfig) -> None:
     paths.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -110,6 +142,18 @@ def save_agent_local_config(paths: AgentPaths, config: AgentLocalConfig) -> None
     temporary.chmod(0o600)
     temporary.replace(paths.config_path)
 ```
+
+Persisted YAML is the source of truth for endpoint/provider/model, exact allowed
+endpoint hosts, and credential **variable names**. `agent init` writes those
+safe values. Secret values are never accepted as CLI options or YAML keys; at
+Provider start they are read only with `os.environ[name]` for names in
+`credential_env_names`. Environment overrides have this exact precedence over
+YAML for safe metadata only: `SKILLIFY_AGENT_MODEL_ENDPOINT`,
+`SKILLIFY_AGENT_MODEL_PROVIDER`, `SKILLIFY_AGENT_MODEL_NAME`,
+`SKILLIFY_AGENT_ALLOWED_MODEL_HOSTS` (comma-separated), and
+`SKILLIFY_AGENT_CREDENTIAL_ENV_NAMES` (comma-separated). `load_agent_local_config`
+applies those overrides, then constructs `ModelRuntimeConfig`, whose validation
+is the final admission gate.
 
 `load_agent_paths()` resolves `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`; defaults are `~/.config`, `~/.local/state`, and `~/.cache`. The config/state/cache roots append `skillify/agent`, and the log root appends `skillify/agent/log` to the state home. `SKILLIFY_AGENT_CONFIG_DIR`, `SKILLIFY_AGENT_STATE_DIR`, `SKILLIFY_AGENT_CACHE_DIR`, and `SKILLIFY_AGENT_LOG_DIR` override them independently.
 
@@ -313,19 +357,26 @@ uv run --no-sync pytest tests/test_cli_agent.py -q
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'skillify.cli.agent_cmd'` or assertions fail because `agent` is not registered. No network request is permitted.
 
-- [ ] **Step 3: Implement XDG configuration and explicit workspace persistence**
+- [ ] **Step 3: Add the complete configuration patch to `common/config.py`**
 
-Implement the declarations above in `common/config.py`. YAML is exactly:
+Add `Mapping` to the typing import, add `AgentPaths` and `AgentLocalConfig` plus
+the three complete functions in the interface block above after
+`skillify_home()`, and use this exact YAML shape:
 
 ```yaml
 provider: opencode
 allowed_workspaces:
   - /resolved/absolute/workspace
+model_endpoint: https://model.intranet.example/v1
+model_provider: internal-openai
+model_name: code-model-1
+allowed_model_hosts:
+  - model.intranet.example
+credential_env_names:
+  - INTERNAL_MODEL_API_KEY
 opencode_manifest_path: null
 opencode_artifact_root: null
 ```
-
-Create parent directories with mode `0o700`, write through a sibling temporary file with mode `0o600`, then `replace()` the config. Reject non-mapping YAML, providers other than `opencode`, non-list workspace data, relative workspace values, and duplicate entries after `Path.resolve()`.
 
 - [ ] **Step 4: Create the complete six-command module**
 
@@ -337,6 +388,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from dataclasses import replace
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any
@@ -441,6 +493,11 @@ def _run_local_task(workspace: Path, prompt: str) -> str:
 def init(
     workspace: Path = typer.Option(..., "--workspace"),
     provider: str = typer.Option("opencode", "--provider"),
+    model_endpoint: str | None = typer.Option(None, "--model-endpoint"),
+    model_provider: str | None = typer.Option(None, "--model-provider"),
+    model_name: str | None = typer.Option(None, "--model"),
+    allowed_model_host: list[str] = typer.Option([], "--allowed-model-host"),
+    credential_env: list[str] = typer.Option([], "--credential-env"),
     output: str = typer.Option("text", "--format"),
 ) -> None:
     try:
@@ -451,7 +508,15 @@ def init(
             raise AgentCommandFailure(AgentErrorCode.WORKSPACE_UNAUTHORIZED, "workspace is not allowed")
         paths, config = _config()
         allowed = tuple(sorted(set(config.allowed_workspaces) | {str(resolved)}))
-        save_agent_local_config(paths, AgentLocalConfig(provider="opencode", allowed_workspaces=allowed))
+        updated = replace(
+            config, provider="opencode", allowed_workspaces=allowed,
+            model_endpoint=model_endpoint or config.model_endpoint,
+            model_provider=model_provider or config.model_provider,
+            model_name=model_name or config.model_name,
+            allowed_model_hosts=tuple(allowed_model_host) or config.allowed_model_hosts,
+            credential_env_names=tuple(credential_env) or config.credential_env_names,
+        )
+        save_agent_local_config(paths, updated)
         _emit(ok=True, code=AgentErrorCode.OK, message="workspace registered", data={"workspace": str(resolved)}, output=output)
     except AgentCommandFailure as exc:
         _fail(exc, output)
@@ -529,7 +594,7 @@ uv run --no-sync python -m compileall -q src
 uv run --no-sync pytest tests/test_cli_agent.py -q
 ```
 
-Expected: compileall exits 0 and `8 passed` (parameterization may increase the pass count, but zero failed/skipped is required).
+Expected: compileall exits 0 and `11 passed`, with zero failed/skipped.
 
 - [ ] **Step 6: Commit Task 1.1**
 
@@ -649,7 +714,6 @@ class TaskSpec:
     task_id: str
     prompt: str
     task_protocol_version: int = TASK_PROTOCOL_VERSION
-    model: str | None = None
     timeout_seconds: float = 900.0
 
 @dataclass(frozen=True)
@@ -728,6 +792,16 @@ def test_protocol_versions_are_explicit_and_stable() -> None:
     assert TASK_PROTOCOL_VERSION == 1
     assert PROVIDER_CONTRACT_VERSION == 1
     assert TaskSpec(task_id="task-1", prompt="work").task_protocol_version == 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"task_id": "", "prompt": "work"},
+    {"task_id": "task", "prompt": ""},
+    {"task_id": "task", "prompt": "work", "task_protocol_version": 2},
+    {"task_id": "task", "prompt": "work", "timeout_seconds": 0},
+])
+def test_task_spec_rejects_invalid_ids_protocol_prompt_and_timeout(kwargs) -> None:
+    with pytest.raises(ValueError): TaskSpec(**kwargs)
 
 
 def test_runtime_config_is_immutable_validated_and_redacted() -> None:
@@ -998,6 +1072,14 @@ class TaskSpec:
     task_protocol_version: int = TASK_PROTOCOL_VERSION
     timeout_seconds: float = 900.0
 
+    def __post_init__(self) -> None:
+        if not self.task_id.strip() or not self.prompt.strip():
+            raise ValueError("task id and prompt must be non-empty")
+        if self.task_protocol_version != TASK_PROTOCOL_VERSION:
+            raise ValueError("unsupported task protocol version")
+        if self.timeout_seconds <= 0:
+            raise ValueError("task timeout must be positive")
+
 
 @dataclass(frozen=True)
 class ProviderSession:
@@ -1116,18 +1198,40 @@ class FakeProvider:
         return ProviderResult(TaskState.SUCCEEDED)
 ```
 
-- [ ] **Step 6: Export the contract and run GREEN tests**
+- [ ] **Step 6: Create the complete public contract export**
 
-Export all public types from `agent/__init__.py`, then run:
+Create `src/skillify/agent/__init__.py`:
+
+```python
+from skillify.agent.events import (
+    PROVIDER_CONTRACT_VERSION, TASK_PROTOCOL_VERSION, EventType, TaskEvent, TaskState,
+)
+from skillify.agent.fake_provider import FakeOutcome, FakeProvider
+from skillify.agent.provider import (
+    AgentProvider, ModelRuntimeConfig, ProviderCapability, ProviderHandle,
+    ProviderProbe, ProviderResult, ProviderSession, ProviderStartSpec, TaskSpec,
+)
+
+__all__ = [
+    "AgentProvider", "EventType", "FakeOutcome", "FakeProvider",
+    "ModelRuntimeConfig", "PROVIDER_CONTRACT_VERSION", "ProviderCapability",
+    "ProviderHandle", "ProviderProbe", "ProviderResult", "ProviderSession",
+    "ProviderStartSpec", "TASK_PROTOCOL_VERSION", "TaskEvent", "TaskSpec", "TaskState",
+]
+```
+
+- [ ] **Step 7: Run Task 1.2 GREEN tests**
+
+Run:
 
 ```bash
 uv run --no-sync python -m compileall -q src
 uv run --no-sync pytest tests/test_provider_contract.py -q
 ```
 
-Expected: compileall exits 0 and `7 passed`, with zero failed/skipped.
+Expected: compileall exits 0 and `12 passed`, with zero failed/skipped.
 
-- [ ] **Step 7: Commit Task 1.2**
+- [ ] **Step 8: Commit Task 1.2**
 
 ```bash
 git add src/skillify/agent tests/test_provider_contract.py
@@ -1147,60 +1251,9 @@ git commit -m "feat(agent): define provider execution contract"
 
 **Interfaces:**
 - Consumes: the Task 1.2 `AgentProvider` signatures without renaming, Task 1.1 `AgentPaths`, existing `requests`, official OpenCode endpoints `GET /global/health`, `POST /session`, `POST /session/{id}/prompt_async`, `GET /event`, `POST /session/{id}/abort`, and `POST /instance/dispose`.
-- Produces: `OpenCodeProvider`, `OpenCodeError`, `HttpTransport`, `RequestsTransport`, `ManagedProcess`, and `map_opencode_event()`.
-
-Use these exact seams:
-
-```python
-class ManagedProcess(Protocol):
-    pid: int
-    def poll(self) -> int | None: raise NotImplementedError
-    def wait(self, timeout: float | None = None) -> int: raise NotImplementedError
-
-class HttpTransport(Protocol):
-    def request_json(
-        self, method: str, url: str, *, password: str,
-        timeout: float, body: Mapping[str, object] | None = None,
-    ) -> Mapping[str, object]: raise NotImplementedError
-    def iter_sse(
-        self, url: str, *, password: str, timeout: float,
-    ) -> Iterator[Mapping[str, object]]: raise NotImplementedError
-
-def find_free_port(host: str = "127.0.0.1") -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((host, 0))
-        return int(probe.getsockname()[1])
-
-def strong_password() -> str:
-    return secrets.token_urlsafe(32)
-
-class OpenCodeProvider:
-    def __init__(
-        self,
-        *,
-        executable: str = "opencode",
-        transport: HttpTransport | None = None,
-        process_factory: Callable[[list[str], Mapping[str, str], Path], ManagedProcess],
-        port_factory: Callable[[], int] = find_free_port,
-        password_factory: Callable[[], str] = strong_password,
-        clock: Callable[[], datetime],
-        monotonic: Callable[[], float],
-        sleep: Callable[[float], None],
-    ) -> None:
-        self.executable = executable
-        self.transport = transport or RequestsTransport()
-        self.process_factory = process_factory
-        self.port_factory = port_factory
-        self.password_factory = password_factory
-        self.clock = clock
-        self.monotonic = monotonic
-        self.sleep = sleep
-        self._private_handles: dict[str, object] = {}
-```
-
-`map_opencode_event(raw, *, session, provider_version, clock, sequence)` returns
-`TaskEvent | None` and implements the closed mapping table in Step 4; it never
-copies an unlisted value from `raw`.
+- Produces: `OpenCodeProvider`, `OpenCodeError`, `HttpTransport`,
+  `RequestsTransport`, and `ManagedProcess`, with their complete definitions in
+  Step 3 below.
 
 - [ ] **Step 1: Create the complete fake HTTP/process contract test file**
 
@@ -1211,16 +1264,18 @@ from __future__ import annotations
 
 import base64
 import json
+import signal
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+import requests
 
 from skillify.agent.events import EventType, TaskState
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
-from skillify.agent.providers.opencode import OpenCodeProvider, ProviderCrashed
+from skillify.agent.providers.opencode import OpenCodeProvider, ProviderCrashed, ProviderTimeout
 
 NOW = datetime(2026, 7, 16, tzinfo=timezone.utc)
 
@@ -1348,6 +1403,40 @@ def test_timeout_emits_blocked_then_failed(tmp_path, fake_server, monkeypatch):
         (EventType.TASK_FINISHED, TaskState.FAILED),
     ]
     assert events[-1].details["reason_code"] == "PROVIDER_TIMEOUT"
+    assert Handler.requests[-1][1] == "/session/session-1/abort"
+
+
+def test_unhealthy_startup_deadline_terminates_process_group(tmp_path, monkeypatch):
+    class Unhealthy:
+        def request_json(self, *args, **kwargs): return {"healthy": False, "version": "1.15.11"}
+    process = FakeProcess(); killed = []; values = iter((0.0, 0.0, 2.0))
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    provider = OpenCodeProvider(
+        transport=Unhealthy(), popen=lambda argv, **kwargs: process,
+        port_factory=lambda: 32123, password_factory=lambda: "temporary-password",
+        monotonic=lambda: next(values), sleep=lambda value: None,
+        killpg=lambda pgid, sig: killed.append((pgid, sig)), getpgid=lambda pid: pid,
+        process_start_token=lambda pid: "start-100",
+    )
+    with pytest.raises(ProviderTimeout): provider.start(_spec(tmp_path))
+    assert killed == [(4242, signal.SIGTERM)]
+    assert process.returncode == 0 and provider._live == {}
+
+
+def test_sse_network_error_is_redacted_failed_result_and_aborts(tmp_path, fake_server, monkeypatch):
+    provider, _, _, _ = _provider(fake_server, monkeypatch)
+    handle = provider.start(_spec(tmp_path)); session = provider.create_session(handle, TaskSpec("task-1", "private"))
+    working_transport = provider.transport
+    class BrokenSSE:
+        def request_json(self, *args, **kwargs): return working_transport.request_json(*args, **kwargs)
+        def iter_sse(self, *args, **kwargs):
+            raise requests.ConnectionError("secret network detail")
+            yield
+    provider.transport = BrokenSSE()
+    events = list(provider.stream_events(handle, session))
+    assert [event.details["reason_code"] for event in events[-2:]] == ["PROVIDER_NETWORK", "PROVIDER_NETWORK"]
+    assert "secret network detail" not in repr(events)
+    assert Handler.requests[-1][1] == "/session/session-1/abort"
 
 
 def test_foreign_session_events_are_ignored(tmp_path, fake_server, monkeypatch):
@@ -1488,17 +1577,51 @@ class OpenCodeProvider:
         process = self.popen(argv, cwd=str(spec.workspace), env=self._environment(spec.runtime, password, spec.config_dir),
                              text=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base_url, deadline = f"http://127.0.0.1:{port}", self.monotonic() + spec.startup_timeout_seconds
-        while True:
-            if process.poll() is not None: raise ProviderCrashed("opencode exited during startup")
-            try:
+        pgid = process.pid
+        try:
+            pgid = self.getpgid(process.pid)
+            start_token = self.process_start_token(process.pid)
+            while True:
+                if process.poll() is not None: raise ProviderCrashed("opencode exited during startup")
+                if self.monotonic() >= deadline: raise ProviderTimeout("opencode startup timed out")
                 health = self.transport.request_json("GET", base_url + "/global/health", password=password, timeout=0.5)
                 if health.get("healthy") is True: break
-            except (requests.RequestException, OpenCodeError):
-                if self.monotonic() >= deadline: raise ProviderTimeout("opencode startup timed out")
                 self.sleep(0.05)
+        except requests.RequestException:
+            while self.monotonic() < deadline and process.poll() is None:
+                self.sleep(0.05)
+                try:
+                    health = self.transport.request_json("GET", base_url + "/global/health", password=password, timeout=0.5)
+                    if health.get("healthy") is True: break
+                except requests.RequestException:
+                    continue
+            else:
+                try: self._terminate(process, pgid, spec.shutdown_timeout_seconds)
+                finally: password = ""
+                raise ProviderTimeout("opencode startup timed out")
+        except Exception:
+            try: self._terminate(process, pgid, spec.shutdown_timeout_seconds)
+            finally: password = ""
+            raise
         handle = ProviderHandle(uuid.uuid4().hex, "opencode", str(health["version"]), base_url, process.pid)
-        self._live[handle.handle_id] = _Live(process, password, spec, self.getpgid(process.pid), self.process_start_token(process.pid))
+        self._live[handle.handle_id] = _Live(process, password, spec, pgid, start_token)
         return handle
+
+    def _terminate(self, process: ManagedProcess, pgid: int, timeout: float) -> None:
+        if process.poll() is not None: return
+        self.killpg(pgid, signal.SIGTERM)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.killpg(pgid, signal.SIGKILL)
+            process.wait(timeout=1)
+
+    def _abort_quietly(self, handle: ProviderHandle, session: ProviderSession, live: _Live) -> None:
+        try:
+            self.transport.request_json("POST", handle.base_url + f"/session/{session.session_id}/abort",
+                                        password=live.password, timeout=1)
+        except Exception:
+            pass
 
     def create_session(self, handle: ProviderHandle, spec: TaskSpec) -> ProviderSession:
         live = self._live[handle.handle_id]
@@ -1520,40 +1643,49 @@ class OpenCodeProvider:
         if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
         task = self._tasks[session.session_id]; deadline = self.monotonic() + task.timeout_seconds
         sequence = 1; yield self._event(handle, session, EventType.TASK_ACCEPTED, TaskState.QUEUED, sequence)
-        for raw in self.transport.iter_sse(handle.base_url + "/event", password=live.password, timeout=task.timeout_seconds):
-            if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
-            if self.monotonic() >= deadline: break
-            props = raw.get("properties", {})
-            if not isinstance(props, dict) or props.get("sessionID") != session.session_id: continue
-            sequence += 1; kind = raw.get("type")
-            if kind == "todo.updated":
-                yield self._event(handle, session, EventType.PLAN_READY, TaskState.RUNNING, sequence, {"test_count": len(props.get("todos", []))})
-            elif kind == "permission.asked":
-                yield self._event(handle, session, EventType.TOOL_REQUESTED, TaskState.AWAITING_APPROVAL, sequence,
-                                  {"tool_name": str(props.get("permission", "unknown")), "tool_call_id": str(props.get("id", "unknown"))})
-            elif kind == "message.part.updated":
-                part = props.get("part", {}); state = part.get("state", {}) if isinstance(part, dict) else {}
-                tool = str(part.get("tool", "unknown")) if isinstance(part, dict) else "unknown"
-                call_id = str(part.get("callID", "unknown")) if isinstance(part, dict) else "unknown"
-                status = state.get("status") if isinstance(state, dict) else None
-                metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
-                exit_code = metadata.get("exit", 0) if isinstance(metadata, dict) else 0
-                event_type = EventType.TEST_COMPLETED if tool == "test" and status == "completed" else (
-                    EventType.TOOL_COMPLETED if status == "completed" else EventType.TOOL_REQUESTED
-                )
-                event_state = TaskState.RUNNING if status == "completed" else TaskState.AWAITING_APPROVAL
-                yield self._event(handle, session, event_type, event_state, sequence,
-                                  {"tool_name": tool, "tool_call_id": call_id, "exit_code": int(exit_code)})
-            elif kind == "session.diff":
-                yield self._event(handle, session, EventType.ARTIFACT_CREATED, TaskState.RUNNING, sequence,
-                                  {"artifact_count": len(props.get("diff", []))})
-            elif kind == "session.error":
-                error = props.get("error", {}); reason = error.get("name", "OPENCODE_ERROR") if isinstance(error, dict) else "OPENCODE_ERROR"
-                yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": str(reason)})
-                return
-            elif kind == "session.idle":
-                yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.SUCCEEDED, sequence, {"result_state": "succeeded"})
-                return
+        try:
+            for raw in self.transport.iter_sse(handle.base_url + "/event", password=live.password, timeout=task.timeout_seconds):
+                if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
+                if self.monotonic() >= deadline: break
+                props = raw.get("properties", {})
+                if not isinstance(props, dict) or props.get("sessionID") != session.session_id: continue
+                sequence += 1; kind = raw.get("type")
+                if kind == "todo.updated":
+                    yield self._event(handle, session, EventType.PLAN_READY, TaskState.RUNNING, sequence, {"test_count": len(props.get("todos", []))})
+                elif kind == "permission.asked":
+                    yield self._event(handle, session, EventType.TOOL_REQUESTED, TaskState.AWAITING_APPROVAL, sequence,
+                                      {"tool_name": str(props.get("permission", "unknown")), "tool_call_id": str(props.get("id", "unknown"))})
+                elif kind == "message.part.updated":
+                    part = props.get("part", {}); state = part.get("state", {}) if isinstance(part, dict) else {}
+                    tool = str(part.get("tool", "unknown")) if isinstance(part, dict) else "unknown"
+                    call_id = str(part.get("callID", "unknown")) if isinstance(part, dict) else "unknown"
+                    status = state.get("status") if isinstance(state, dict) else None
+                    metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
+                    exit_code = metadata.get("exit", 0) if isinstance(metadata, dict) else 0
+                    event_type = EventType.TEST_COMPLETED if tool == "test" and status == "completed" else (
+                        EventType.TOOL_COMPLETED if status == "completed" else EventType.TOOL_REQUESTED
+                    )
+                    event_state = TaskState.RUNNING if status == "completed" else TaskState.AWAITING_APPROVAL
+                    yield self._event(handle, session, event_type, event_state, sequence,
+                                      {"tool_name": tool, "tool_call_id": call_id, "exit_code": int(exit_code)})
+                elif kind == "session.diff":
+                    yield self._event(handle, session, EventType.ARTIFACT_CREATED, TaskState.RUNNING, sequence,
+                                      {"artifact_count": len(props.get("diff", []))})
+                elif kind == "session.error":
+                    error = props.get("error", {}); reason = error.get("name", "OPENCODE_ERROR") if isinstance(error, dict) else "OPENCODE_ERROR"
+                    yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": str(reason)})
+                    return
+                elif kind == "session.idle":
+                    yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.SUCCEEDED, sequence, {"result_state": "succeeded"})
+                    return
+        except requests.RequestException:
+            self._abort_quietly(handle, session, live)
+            sequence += 1
+            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_NETWORK"})
+            sequence += 1
+            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence, {"reason_code": "PROVIDER_NETWORK"})
+            return
+        self._abort_quietly(handle, session, live)
         sequence += 1
         yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence, {"reason_code": "PROVIDER_TIMEOUT"})
         sequence += 1
@@ -1568,14 +1700,12 @@ class OpenCodeProvider:
     def stop(self, handle):
         live = self._live.pop(handle.handle_id, None)
         if live is None: return ProviderResult(TaskState.SUCCEEDED)
-        try: self.transport.request_json("POST", handle.base_url + "/instance/dispose", password=live.password, timeout=1)
-        except Exception: pass
-        if live.process.poll() is None:
-            self.killpg(live.pgid, signal.SIGTERM)
-            try: live.process.wait(timeout=live.spec.shutdown_timeout_seconds)
-            except subprocess.TimeoutExpired:
-                self.killpg(live.pgid, signal.SIGKILL); live.process.wait(timeout=1)
-        live.password = ""
+        try:
+            try: self.transport.request_json("POST", handle.base_url + "/instance/dispose", password=live.password, timeout=1)
+            except Exception: pass
+            self._terminate(live.process, live.pgid, live.spec.shutdown_timeout_seconds)
+        finally:
+            live.password = ""
         return ProviderResult(TaskState.SUCCEEDED)
 
     def ownership(self, handle):
@@ -1584,7 +1714,19 @@ class OpenCodeProvider:
                 "executable": self.executable}
 ```
 
-- [ ] **Step 4: Add atomic cross-CLI ownership state and redacted lifecycle logs**
+- [ ] **Step 4: Create the complete OpenCode Provider export**
+
+Create `src/skillify/agent/providers/__init__.py`:
+
+```python
+from skillify.agent.providers.opencode import (
+    OpenCodeError, OpenCodeProvider, ProviderCrashed, ProviderTimeout,
+)
+
+__all__ = ["OpenCodeError", "OpenCodeProvider", "ProviderCrashed", "ProviderTimeout"]
+```
+
+- [ ] **Step 5: Add atomic cross-CLI ownership state and redacted lifecycle logs**
 
 Add the state/helper definitions to `agent_cmd.py` and replace the Task 1.1
 `status`/`stop` functions with the versions in this block. S1 intentionally supports
@@ -1636,7 +1778,15 @@ def stop_owned_process(paths: AgentPaths, inspector, killpg=os.killpg) -> bool:
     if not validate_owned_process(state, inspector):
         paths.runtime_path.unlink(missing_ok=True)
         return False
+    # Revalidate immediately before signaling to close the PID-reuse window.
+    if not validate_owned_process(state, inspector):
+        paths.runtime_path.unlink(missing_ok=True)
+        return False
     killpg(state.pgid, signal.SIGTERM)
+    if not inspector.wait_exited(state.pid, 5.0):
+        killpg(state.pgid, signal.SIGKILL)
+        if not inspector.wait_exited(state.pid, 1.0):
+            return False
     paths.runtime_path.unlink(missing_ok=True)
     return True
 
@@ -1660,6 +1810,11 @@ class LinuxProcessInspector:
         return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
     def executable(self, pid: int) -> str:
         return os.readlink(f"/proc/{pid}/exe")
+    def wait_exited(self, pid: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.is_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self.is_alive(pid)
 
 
 @agent_app.command()
@@ -1682,7 +1837,7 @@ def stop(output: str = typer.Option("text", "--format")) -> None:
     _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
 ```
 
-- [ ] **Step 5: Add complete cross-CLI lifecycle tests**
+- [ ] **Step 6: Add complete cross-CLI lifecycle tests**
 
 Append to `tests/test_opencode_provider_contract.py`:
 
@@ -1699,13 +1854,16 @@ def test_runtime_state_is_atomic_redacted_and_cross_cli_stoppable(tmp_path, monk
     assert paths.runtime_path.stat().st_mode & 0o777 == 0o600
     assert "password" not in text and "prompt" not in text and "MODEL_KEY" not in text
     class Inspector:
+        waits = iter((False, True))
         def is_alive(self, pid): return True
         def pgid(self, pid): return 4242
         def start_token(self, pid): return "start-100"
         def executable(self, pid): return "/opt/skillify/opencode"
+        def wait_exited(self, pid, timeout): return next(self.waits)
     killed = []
     assert stop_owned_process(paths, Inspector(), lambda pgid, sig: killed.append((pgid, sig))) is True
-    assert killed[0][0] == 4242 and not paths.runtime_path.exists()
+    assert killed == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert not paths.runtime_path.exists()
 
 
 def test_stale_or_reused_pid_is_cleared_without_signal(tmp_path):
@@ -1720,12 +1878,201 @@ def test_stale_or_reused_pid_is_cleared_without_signal(tmp_path):
         def pgid(self, pid): return 4242
         def start_token(self, pid): return "new"
         def executable(self, pid): return "/opt/skillify/opencode"
+        def wait_exited(self, pid, timeout): raise AssertionError("must not wait")
     killed = []
     assert stop_owned_process(paths, Reused(), lambda pgid, sig: killed.append(pgid)) is False
     assert killed == [] and not paths.runtime_path.exists()
+
+
+def test_cross_cli_stop_keeps_state_when_sigkill_cannot_confirm_exit(tmp_path):
+    from skillify.cli.agent_cmd import AgentRuntimeState, stop_owned_process, write_runtime_state
+    from skillify.common.config import load_agent_paths
+    paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state")}, home=tmp_path)
+    state = AgentRuntimeState(1, __import__("os").getuid(), 4242, 4242, "start-100", "opencode",
+                              "workspace", "task", "session", "1.15.11", "time", "running")
+    write_runtime_state(paths, state)
+    class Stuck:
+        def is_alive(self, pid): return True
+        def pgid(self, pid): return 4242
+        def start_token(self, pid): return "start-100"
+        def executable(self, pid): return "/opt/skillify/opencode"
+        def wait_exited(self, pid, timeout): return False
+    killed = []
+    assert stop_owned_process(paths, Stuck(), lambda pgid, sig: killed.append((pgid, sig))) is False
+    assert killed == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert paths.runtime_path.exists()
 ```
 
-- [ ] **Step 6: Add the default-skipped real smoke test**
+- [ ] **Step 7: Add complete RED tests for CLI-to-Provider execution wiring**
+
+Append to `tests/test_opencode_provider_contract.py`:
+
+```python
+def test_run_local_task_wires_provider_logs_events_and_always_cleans(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from skillify.agent.events import TaskEvent
+    from skillify.agent.provider import ProviderHandle, ProviderResult, ProviderSession
+    from skillify.cli import agent_cmd
+    from skillify.common.config import AgentLocalConfig, load_agent_paths
+    calls = []
+    class FakeProvider:
+        def start(self, spec): calls.append("start"); return ProviderHandle("h", "opencode", "1.15.11", "http://127.0.0.1:9", 4242)
+        def ownership(self, handle): return {"pid": 4242, "pgid": 4242, "start_token": "start-1", "executable": "opencode"}
+        def create_session(self, handle, spec): calls.append("session"); return ProviderSession(spec.task_id, "session-1", handle.handle_id)
+        def stream_events(self, handle, session):
+            calls.append("stream")
+            yield TaskEvent(session.task_id, session.session_id, "opencode", "1.15.11", 1, 1, NOW,
+                            EventType.TASK_FINISHED, TaskState.SUCCEEDED, {"result_state": "succeeded"})
+        def cancel(self, handle, session): calls.append("abort"); return ProviderResult(TaskState.CANCELLED)
+        def stop(self, handle): calls.append("stop"); return ProviderResult(TaskState.SUCCEEDED)
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: FakeProvider())
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    paths = load_agent_paths({
+        "SKILLIFY_AGENT_CONFIG_DIR": str(tmp_path / "config"),
+        "SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state"),
+        "SKILLIFY_AGENT_CACHE_DIR": str(tmp_path / "cache"),
+        "SKILLIFY_AGENT_LOG_DIR": str(tmp_path / "log"),
+    }, home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),), model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    assert agent_cmd._run_local_task(workspace, "private prompt", paths, config) == "succeeded"
+    assert calls == ["start", "session", "stream", "abort", "stop"]
+    assert not paths.runtime_path.exists()
+    log = paths.log_path.read_text(encoding="utf-8")
+    assert "private prompt" not in log and "top-secret" not in log and "MODEL_KEY" not in log
+
+
+def test_run_local_task_cleans_start_and_stream_failures(tmp_path, monkeypatch):
+    from skillify.cli import agent_cmd
+    from skillify.cli.agent_cmd import AgentCommandFailure
+    from skillify.common.config import AgentLocalConfig, load_agent_paths
+    class StartFailure:
+        def start(self, spec): raise RuntimeError("secret start detail")
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: StartFailure())
+    paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state"),
+                              "SKILLIFY_AGENT_LOG_DIR": str(tmp_path / "log")}, home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),), model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    with pytest.raises(AgentCommandFailure) as captured:
+        agent_cmd._run_local_task(workspace, "private prompt", paths, config)
+    assert captured.value.code is agent_cmd.AgentErrorCode.PROVIDER_FAILED
+    assert not paths.runtime_path.exists()
+```
+
+- [ ] **Step 8: Replace the Task 1.1 implementation with complete Provider wiring**
+
+In `agent_cmd.py`, replace the imports with the union of Task 1.1 imports and
+these exact additions:
+
+```python
+import hashlib
+import os
+import signal
+import time
+import uuid
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+
+from skillify.agent.events import EventType, TaskState
+from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
+from skillify.agent.providers.opencode import OpenCodeError, OpenCodeProvider, ProviderCrashed, ProviderTimeout
+```
+
+Replace `_run_local_task` completely and add `_build_provider`:
+
+```python
+def _build_provider() -> OpenCodeProvider:
+    return OpenCodeProvider()
+
+
+def _runtime_config(config: AgentLocalConfig) -> ModelRuntimeConfig:
+    if not all((config.model_endpoint, config.model_provider, config.model_name,
+                config.allowed_model_hosts, config.credential_env_names)):
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is incomplete")
+    return ModelRuntimeConfig(
+        provider=config.model_provider,
+        endpoint=config.model_endpoint,
+        model=config.model_name,
+        allowed_endpoint_hosts=config.allowed_model_hosts,
+        credential_env_names=config.credential_env_names,
+    )
+
+
+def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
+                    config: AgentLocalConfig) -> str:
+    provider = _build_provider(); handle = None; session = None
+    terminal = "failed"; task_id = uuid.uuid4().hex
+    config_dir = paths.cache_dir / "opencode" / hashlib.sha256(str(workspace).encode()).hexdigest()
+    start_spec = ProviderStartSpec(
+        workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
+        runtime=_runtime_config(config),
+    )
+    try:
+        append_agent_log(paths, "run.start", task_id=task_id, state="starting")
+        handle = provider.start(start_spec)
+        session = provider.create_session(handle, TaskSpec(task_id=task_id, prompt=prompt))
+        owned = provider.ownership(handle)
+        write_runtime_state(paths, AgentRuntimeState(
+            schema_version=1, owner_uid=os.getuid(), pid=owned["pid"], pgid=owned["pgid"],
+            process_start_token=owned["start_token"], executable=owned["executable"],
+            workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
+            task_id=task_id, session_id=session.session_id, provider_version=handle.provider_version,
+            started_at=datetime.now(timezone.utc).isoformat(), state="running",
+        ))
+        for event in provider.stream_events(handle, session):
+            reason = event.details.get("reason_code")
+            append_agent_log(paths, "provider.event", task_id=event.task_id,
+                             session_id=event.session_id, provider_version=event.provider_version,
+                             state=event.state.value, reason_code=str(reason) if reason else "")
+            if event.type is EventType.TASK_FINISHED: terminal = event.state.value
+            elif event.type is EventType.TASK_BLOCKED: terminal = "blocked"
+        return terminal
+    except KeyboardInterrupt:
+        terminal = "cancelled"; return terminal
+    except Exception as exc:
+        append_agent_log(paths, "run.error", task_id=task_id, state="failed", reason_code=type(exc).__name__)
+        raise AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider execution failed") from exc
+    finally:
+        if handle is not None and session is not None:
+            try: provider.cancel(handle, session)
+            except Exception: append_agent_log(paths, "abort.error", task_id=task_id, state=terminal, reason_code="ABORT_FAILED")
+        if handle is not None:
+            try: provider.stop(handle)
+            except Exception: append_agent_log(paths, "stop.error", task_id=task_id, state=terminal, reason_code="STOP_FAILED")
+        paths.runtime_path.unlink(missing_ok=True)
+        append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
+```
+
+Replace the Task 1.1 call site inside `run()` with:
+
+```python
+        paths, config = _config()
+        resolved = _workspace(workspace, config)
+        result = _run_local_task(resolved, _read_prompt(prompt_file), paths, config)
+```
+
+Update the two Task 1.1 error-path fakes in `tests/test_cli_agent.py` for the
+final four-argument boundary:
+
+```diff
+-                lambda workspace, prompt: (_ for _ in ()).throw(
++                lambda workspace, prompt, paths, config: (_ for _ in ()).throw(
+                     AgentCommandFailure(AgentErrorCode.PROVIDER_FAILED, "provider start failed")
+                 ),
+@@
+-            monkeypatch.setattr(agent_cmd, "_run_local_task", lambda workspace, prompt: "failed")
++            monkeypatch.setattr(agent_cmd, "_run_local_task", lambda workspace, prompt, paths, config: "failed")
+```
+
+- [ ] **Step 7: Add the default-skipped real smoke test**
 
 Create `tests/test_opencode_provider_smoke.py` with this complete test:
 
@@ -1780,7 +2127,7 @@ def test_real_opencode_is_localhost_only_and_leaves_no_process(tmp_path: Path) -
         os.kill(handle.process_id, 0)
 ```
 
-- [ ] **Step 7: Run Task 1.3 GREEN tests and Dev-DoD**
+- [ ] **Step 8: Run Task 1.3 GREEN tests and Dev-DoD**
 
 Run:
 
@@ -1791,7 +2138,7 @@ uv run --no-sync pytest tests/test_provider_contract.py tests/test_opencode_prov
 
 Expected: compileall exits 0; all offline tests pass; exactly the real smoke module is skipped with `requires test-env:`.
 
-- [ ] **Step 8: Commit Task 1.3**
+- [ ] **Step 9: Commit Task 1.3**
 
 ```bash
 git add src/skillify/agent/providers src/skillify/cli/agent_cmd.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py
@@ -1996,31 +2343,131 @@ def verify_artifact(path: Path, artifact: OpenCodeArtifact) -> None:
 
 - [ ] **Step 4: Create the canonical v1.15.11 manifest**
 
-Create six entries for the exact official artifacts and SHA-256 values in the repository assessment. Use these literal bundle locations:
+Create `infra/offline/opencode-manifest.json` with this complete content:
 
-```text
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-musl.tar.gz
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline-musl.tar.gz
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64.tar.gz
-file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64-musl.tar.gz
+```json
+{
+  "schemaVersion": 1,
+  "opencodeVersion": "1.15.11",
+  "skillctlVersion": "0.1.0",
+  "artifacts": [
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "glibc", "cpu": "avx2",
+      "sha256": "49317253722c698394980e1921ff28e919d79bb29d5c3f4cf314a4adaf7037cd", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "glibc", "cpu": "baseline",
+      "sha256": "eb19eabc9cb7fa8a73898328b69720738d35e0cad716898bfdbc2547f88b2450", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "musl", "cpu": "avx2",
+      "sha256": "82fdc56334a02fd89b123643197b59bea2af829be13f82ec154f210053423207", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-musl.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "musl", "cpu": "baseline",
+      "sha256": "421a63ecc5ae66b87b150349f29477a952a01526e85b48783bccce4c7b8dabd9", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline-musl.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "aarch64", "libc": "glibc", "cpu": "arm64",
+      "sha256": "93e4399f308c49387c25ec2b570602bf0f9dd5f57989427946c0c28dbf259ff4", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-arm64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "aarch64", "libc": "musl", "cpu": "arm64",
+      "sha256": "871b80411bd670ed9372335f0658203557fa4bfbf7791a3b1ab1d1f641103448", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-arm64-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64-musl.tar.gz"
+    }
+  ]
+}
 ```
-
-For each entry, `sourceUrl` is the literal
-`https://github.com/anomalyco/opencode/releases/download/v1.15.11/` prefix plus
-the file name on the same manifest entry. This records provenance without
-permitting runtime public download.
 
 - [ ] **Step 5: Add the complete manifest-driven doctor check**
 
-Add this implementation to `doctor_cmd.py` and call it from `run_doctor()` after
-the existing binary checks. The detector and runner are injected in tests; the
-function never downloads an artifact:
+First append this doctor-specific RED test to `tests/test_opencode_distribution.py`:
 
 ```python
+def test_doctor_verifies_manifest_platform_version_and_checksum(tmp_path: Path) -> None:
+    from skillify.cli.doctor_cmd import _check_opencode_distribution
+    payload = b"approved opencode bundle"
+    data = _data(); data["artifacts"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"; manifest.write_text(json.dumps(data), encoding="utf-8")
+    artifact_root = tmp_path / "artifacts"; artifact_root.mkdir()
+    (artifact_root / "opencode-linux-x64.tar.gz").write_bytes(payload)
+    checks = _check_opencode_distribution(
+        manifest_path=manifest,
+        artifact_root=artifact_root,
+        platform_detector=lambda: ("linux", "x86_64", "glibc", "avx2"),
+        version_runner=lambda argv: "1.15.11\n",
+    )
+    assert [check.name for check in checks] == [
+        "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+    ]
+    assert all(check.ok for check in checks)
+```
+
+Run `uv run --no-sync pytest tests/test_opencode_distribution.py -q`; expected:
+`ImportError: cannot import name '_check_opencode_distribution'`.
+
+Then add these imports to `doctor_cmd.py`:
+
+```python
+import os
+import platform
+import subprocess
+from urllib.parse import urlsplit
+
+from skillify.common.config import (
+    SkillifyConfig, load_agent_local_config, load_agent_paths, load_config,
+)
+from skillify.install.opencode_distribution import (
+    DistributionError, load_manifest, select_artifact, verify_artifact,
+)
+```
+
+Add the complete detector, runner, configuration resolver, and check. No function
+in this block downloads an artifact:
+
+```python
+def _detect_opencode_platform() -> tuple[str, str, str, str]:
+    if sys.platform != "linux": raise ValueError("OpenCode S1 supports Linux only")
+    machine = platform.machine().lower()
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(machine)
+    if arch is None: raise ValueError(f"unsupported architecture: {machine}")
+    libc_name = platform.libc_ver()[0].lower()
+    libc = "musl" if "musl" in libc_name else "glibc" if "glibc" in libc_name else ""
+    if not libc: raise ValueError("unable to detect glibc or musl")
+    if arch == "aarch64": return "linux", arch, libc, "arm64"
+    flags = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").lower()
+    return "linux", arch, libc, "avx2" if " avx2" in flags else "baseline"
+
+
+def _opencode_version(argv: list[str]) -> str:
+    completed = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=5)
+    return completed.stdout
+
+
+def _opencode_distribution_paths() -> tuple[Path, Path]:
+    local = load_agent_local_config(load_agent_paths())
+    manifest = os.environ.get("SKILLIFY_OPENCODE_MANIFEST_PATH") or local.opencode_manifest_path
+    artifacts = os.environ.get("SKILLIFY_OPENCODE_ARTIFACT_ROOT") or local.opencode_artifact_root
+    if not manifest: raise ValueError("SKILLIFY_OPENCODE_MANIFEST_PATH or opencode_manifest_path is required")
+    if not artifacts: raise ValueError("SKILLIFY_OPENCODE_ARTIFACT_ROOT or opencode_artifact_root is required")
+    return Path(manifest).expanduser().resolve(), Path(artifacts).expanduser().resolve()
+
+
 def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
-                                 platform_detector, version_runner) -> list[CheckResult]:
+                                 platform_detector=_detect_opencode_platform,
+                                 version_runner=_opencode_version) -> list[CheckResult]:
     try:
         os_name, arch, libc, cpu = platform_detector()
         data = load_manifest(manifest_path)
@@ -2040,32 +2487,140 @@ def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
         return [CheckResult("opencode-manifest", False, str(exc), "install the approved offline bundle")]
 ```
 
-Resolve `manifest_path` only from `SKILLIFY_OPENCODE_MANIFEST_PATH` or
-`AgentLocalConfig.opencode_manifest_path`, and `artifact_root` only from
-`SKILLIFY_OPENCODE_ARTIFACT_ROOT` or `AgentLocalConfig.opencode_artifact_root`.
-Missing values fail locally; no default public URL is permitted. Doctor reports:
+Finally, insert this exact call site in `run_doctor()` immediately after
+`checks += [_check_binary(b) for b in REQUIRED_BINARIES]`; all existing checks
+below it remain unchanged:
 
-```text
-opencode-manifest
-opencode-platform
-opencode-version
-opencode-checksum
+```python
+    try:
+        manifest_path, artifact_root = _opencode_distribution_paths()
+        checks += _check_opencode_distribution(
+            manifest_path=manifest_path,
+            artifact_root=artifact_root,
+        )
+    except (OSError, ValueError) as exc:
+        checks.append(CheckResult(
+            "opencode-manifest", False, str(exc), "configure the approved offline OpenCode bundle",
+        ))
 ```
 
-An absent artifact is a clear failure with the bundle path; doctor never downloads it. Existing Forgejo/devpi/Skill target checks remain unchanged.
+Run `uv run --no-sync pytest tests/test_opencode_distribution.py -q`; expected:
+all tests pass, with no network calls.
 
 - [ ] **Step 6: Write the offline deployment runbook**
 
-Document exact staging download URL, official and recomputed SHA-256, MIT notice retention, malware/OSS approval, immutable intranet publication, manifest placement, checksum-first extraction, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_LSP_DOWNLOAD`, internal model config, `NO_PROXY`, rollback, and these `[test-env]` commands:
+Create `docs/deployment/offline-opencode.md` with this complete content:
+
+````markdown
+# Offline OpenCode v1.15.11 deployment
+
+This procedure installs the S1-approved OpenCode v1.15.11 binary on disconnected
+Linux endpoints. Runtime public downloads are prohibited. The six approved
+source URLs, platform selectors, immutable local bundle URIs, and SHA-256 values
+are exactly those in `infra/offline/opencode-manifest.json`.
+
+## Stage and approve the bundle
+
+On an internet-connected staging host, select the manifest entry matching the
+target's architecture, libc, and CPU. For an x86-64 glibc host without AVX2:
 
 ```bash
+mkdir -p /var/tmp/opencode-1.15.11
+cd /var/tmp/opencode-1.15.11
+curl -fL --proto '=https' --tlsv1.2 \
+  -o opencode-linux-x64-baseline.tar.gz \
+  https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline.tar.gz
+printf '%s  %s\n' \
+  eb19eabc9cb7fa8a73898328b69720738d35e0cad716898bfdbc2547f88b2450 \
+  opencode-linux-x64-baseline.tar.gz | sha256sum --check --strict
+sha256sum opencode-linux-x64-baseline.tar.gz
+```
+
+The check output and independently recomputed digest must both equal
+`eb19eabc9cb7fa8a73898328b69720738d35e0cad716898bfdbc2547f88b2450`.
+Perform malware scanning and OSS/security approval, retain the upstream MIT
+license notice beside the bundle, and record approver, scanner version, scan
+result, source URL, and digest. Publish the approved bytes to immutable internal
+storage without renaming them. Copy the repository manifest unchanged beside
+the bundle set. Never publish a mutable `latest` alias.
+
+## Transfer and disconnected install
+
+Transfer the approved directory through the controlled media gateway to
+`/opt/skillify/offline/opencode/v1.15.11/`. Before extracting, run the same
+`sha256sum --check --strict` command using the selected manifest digest. A
+failure stops installation.
+
+```bash
+install -d -m 0755 /opt/skillify/opencode/1.15.11/bin
+tar -xzf /opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz \
+  -C /opt/skillify/opencode/1.15.11/bin
+/opt/skillify/opencode/1.15.11/bin/opencode --version
+ln -sfn /opt/skillify/opencode/1.15.11 /opt/skillify/opencode/current
+ln -sfn /opt/skillify/opencode/current/bin/opencode /usr/local/bin/opencode
+```
+
+The version command must print `1.15.11`. Configure doctor with absolute local
+paths only:
+
+```bash
+export SKILLIFY_OPENCODE_MANIFEST_PATH=/opt/skillify/offline/opencode/opencode-manifest.json
+export SKILLIFY_OPENCODE_ARTIFACT_ROOT=/opt/skillify/offline/opencode/v1.15.11
+```
+
+## Endpoint configuration
+
+In the endpoint agent YAML, set `model_endpoint` to the approved internal HTTPS
+endpoint, `model_provider` and `model_name` to approved identifiers,
+`allowed_model_hosts` to that endpoint's exact host, and
+`credential_env_names` to the approved secret variable name. Store the secret
+value in the endpoint secret manager/environment, never in YAML or logs.
+
+The launcher must set:
+
+```bash
+export OPENCODE_DISABLE_AUTOUPDATE=true
+export OPENCODE_DISABLE_LSP_DOWNLOAD=true
+export OPENCODE_DISABLE_DEFAULT_PLUGINS=true
+export NO_PROXY=localhost,127.0.0.1
+```
+
+OpenCode must bind `127.0.0.1` only. Firewall policy must deny endpoint inbound
+access and permit only the approved outbound model/MCP destinations.
+
+## Upgrade, downgrade, and rollback
+
+Stage every new version as a separate immutable directory and reviewed manifest;
+do not overwrite v1.15.11. Stop the agent, verify no owned process remains,
+install and verify the new version, atomically repoint `current`, then rerun the
+acceptance checklist. To downgrade or roll back, stop the agent, repoint
+`/opt/skillify/opencode/current` to the previously approved directory, verify its
+manifest checksum and version, and rerun the checklist. Preserve failed-version
+logs and approval evidence; never bypass an incompatible libc/CPU selector.
+
+## `[test-env]` acceptance evidence
+
+On the disconnected target, record OS, architecture, libc, and CPU flags, then run:
+
+```bash
+uname -a
+getconf GNU_LIBC_VERSION || ldd --version
+grep -m1 -E '^(flags|Features)' /proc/cpuinfo
 opencode --version
 skillctl agent doctor --format json
+skillctl agent run --workspace /srv/skillify-test/repository \
+  --prompt-file /srv/skillify-test/task.txt --format json
 ss -ltnp
+ps -ef | grep '[o]pencode serve'
+skillctl agent stop --format json
 ps -ef | grep '[o]pencode serve'
 ```
 
-Include disconnected install, upgrade, downgrade, localhost binding, task execution, and residual-process evidence. Do not include `curl | sh`.
+Retain evidence that doctor reports the exact manifest/platform/version/checksum,
+the example task produced the expected edit/test/diff summary, every OpenCode
+listener is on `127.0.0.1`, cancellation and SIGTERM complete within their bounds,
+and the final process query has no OpenCode server. Any failure blocks G1.
+````
 
 - [ ] **Step 7: Run Task 1.4 GREEN tests and focused S1 regression**
 
