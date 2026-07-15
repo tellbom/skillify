@@ -46,6 +46,15 @@ def _json(result) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+def _assert_error_envelope(result, *, exit_code: int, code: str) -> None:
+    assert result.exit_code == exit_code
+    payload = _json(result)
+    assert payload["ok"] is False
+    assert payload["code"] == code
+    assert set(payload) == {"ok", "code", "message", "data"}
+    assert payload["data"] == {}
+
+
 def test_agent_help_exact_snapshot() -> None:
     result = runner.invoke(agent_app, ["--help"], color=False, env={"COLUMNS": "120"})
     assert result.exit_code == 0
@@ -84,6 +93,19 @@ def test_agent_init_records_only_resolved_workspace(tmp_path: Path) -> None:
     assert str(tmp_path.parent) not in config["allowed_workspaces"]
 
 
+def test_agent_init_rejects_nonexistent_workspace_with_json_envelope(tmp_path: Path) -> None:
+    result = runner.invoke(
+        agent_app,
+        ["init", "--workspace", str(tmp_path / "missing"), "--format", "json"],
+        env=_env(tmp_path),
+    )
+    _assert_error_envelope(
+        result,
+        exit_code=11,
+        code="AGENT_WORKSPACE_UNAUTHORIZED",
+    )
+
+
 def test_agent_run_rejects_unregistered_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -100,6 +122,48 @@ def test_agent_run_rejects_unregistered_workspace(tmp_path: Path) -> None:
         "message": "workspace is not registered",
         "data": {},
     }
+
+
+def test_agent_run_maps_missing_prompt_to_config_invalid(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    env = _env(tmp_path)
+    assert runner.invoke(
+        agent_app,
+        ["init", "--workspace", str(workspace), "--format", "json"],
+        env=env,
+    ).exit_code == 0
+
+    result = runner.invoke(
+        agent_app,
+        [
+            "run",
+            "--workspace",
+            str(workspace),
+            "--prompt-file",
+            str(tmp_path / "missing-prompt.txt"),
+            "--format",
+            "json",
+        ],
+        env=env,
+    )
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_agent_init_maps_config_save_oserror_to_config_invalid(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    config_path = tmp_path / "config-is-a-file"
+    config_path.write_text("not a directory", encoding="utf-8")
+    env = _env(tmp_path)
+    env["SKILLIFY_AGENT_CONFIG_DIR"] = str(config_path)
+
+    result = runner.invoke(
+        agent_app,
+        ["init", "--workspace", str(workspace), "--format", "json"],
+        env=env,
+    )
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 
 def test_agent_doctor_and_run_need_no_skillify_server(
@@ -172,3 +236,49 @@ def test_status_stop_and_logs_are_local_and_idempotent(tmp_path: Path) -> None:
     assert _json(stop)["code"] == "OK"
     assert _json(logs)["data"] == {"lines": []}
     assert {status.exit_code, stop.exit_code, logs.exit_code} == {0}
+
+
+@pytest.mark.parametrize(
+    "runtime_data",
+    [
+        [],
+        None,
+        "running",
+        1,
+        {"state": ""},
+        {"state": 1},
+    ],
+)
+def test_status_rejects_non_mapping_or_invalid_runtime_state(
+    tmp_path: Path,
+    runtime_data: object,
+) -> None:
+    env = _env(tmp_path)
+    runtime_path = tmp_path / "state/runtime.json"
+    runtime_path.parent.mkdir()
+    runtime_path.write_text(json.dumps(runtime_data), encoding="utf-8")
+
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_logs_maps_read_oserror_to_config_invalid(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    log_path = tmp_path / "log/agent.log"
+    log_path.parent.mkdir()
+    log_path.write_text("private lifecycle line\n", encoding="utf-8")
+    log_path.chmod(0o000)
+    try:
+        result = runner.invoke(agent_app, ["logs", "--format", "json"], env=env)
+    finally:
+        log_path.chmod(0o600)
+
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
+def test_stop_maps_runtime_unlink_oserror_to_config_invalid(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "state/runtime.json").mkdir(parents=True)
+
+    result = runner.invoke(agent_app, ["stop", "--format", "json"], env=env)
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")

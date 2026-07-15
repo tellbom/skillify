@@ -93,7 +93,10 @@ def _workspace(value: Path, config: AgentLocalConfig) -> Path:
 
 
 def _read_prompt(path: str) -> str:
-    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    try:
+        text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "prompt file is unavailable") from exc
     if not text.strip():
         raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "prompt file is empty")
     return text
@@ -139,7 +142,13 @@ def init(
     try:
         if provider != "opencode":
             raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "provider must be opencode")
-        resolved = workspace.resolve(strict=True)
+        try:
+            resolved = workspace.resolve(strict=True)
+        except OSError as exc:
+            raise AgentCommandFailure(
+                AgentErrorCode.WORKSPACE_UNAUTHORIZED,
+                "workspace is not allowed",
+            ) from exc
         if not resolved.is_dir() or resolved in {Path("/"), Path.home().resolve()}:
             raise AgentCommandFailure(AgentErrorCode.WORKSPACE_UNAUTHORIZED, "workspace is not allowed")
         paths, config = _config()
@@ -154,7 +163,10 @@ def init(
             allowed_model_hosts=tuple(allowed_model_host) or config.allowed_model_hosts,
             credential_env_names=tuple(credential_env) or config.credential_env_names,
         )
-        save_agent_local_config(paths, updated)
+        try:
+            save_agent_local_config(paths, updated)
+        except OSError as exc:
+            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "agent config is invalid") from exc
         _emit(
             ok=True,
             code=AgentErrorCode.OK,
@@ -200,6 +212,12 @@ def status(output: str = typer.Option("text", "--format")) -> None:
             if paths.runtime_path.is_file()
             else {"state": "stopped"}
         )
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("state"), str)
+            or not data["state"].strip()
+        ):
+            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid")
         _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)
     except AgentCommandFailure as exc:
         _fail(exc, output)
@@ -211,7 +229,10 @@ def status(output: str = typer.Option("text", "--format")) -> None:
 def stop(output: str = typer.Option("text", "--format")) -> None:
     """Stop the owned local provider process."""
     paths = load_agent_paths()
-    paths.runtime_path.unlink(missing_ok=True)
+    try:
+        paths.runtime_path.unlink(missing_ok=True)
+    except OSError:
+        _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "runtime state is invalid"), output)
     _emit(ok=True, code=AgentErrorCode.OK, message="stopped", data={"state": "stopped"}, output=output)
 
 
@@ -222,5 +243,8 @@ def logs(
 ) -> None:
     """Read redacted local lifecycle logs."""
     path = load_agent_paths().log_path
-    content = path.read_text(encoding="utf-8").splitlines()[-lines:] if path.is_file() else []
+    try:
+        content = path.read_text(encoding="utf-8").splitlines()[-lines:] if path.is_file() else []
+    except OSError:
+        _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "agent logs are invalid"), output)
     _emit(ok=True, code=AgentErrorCode.OK, message="logs", data={"lines": content}, output=output)
