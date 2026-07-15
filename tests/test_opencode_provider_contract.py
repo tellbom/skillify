@@ -687,12 +687,12 @@ def test_provider_ownership_records_real_uid_sid_and_full_executable(tmp_path, f
     }
 
 
-def test_stale_or_reused_pid_is_cleared_without_signal(tmp_path):
+def test_uncertain_cleanup_pending_group_is_preserved_without_signal(tmp_path):
     from skillify.cli.agent_cmd import AgentRuntimeState, stop_owned_process, write_runtime_state
     from skillify.common.config import load_agent_paths
     paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state")}, home=tmp_path)
     state = AgentRuntimeState(1, __import__("os").getuid(), 4242, 4242, 4242, "old", "/opt/skillify/opencode",
-                              "workspace", "task", "session", "1.15.11", "time", "running")
+                              "workspace", "task", "", "unknown", "time", "cleanup_pending")
     write_runtime_state(paths, state)
     class Reused:
         def is_alive(self, pid): return True
@@ -704,7 +704,7 @@ def test_stale_or_reused_pid_is_cleared_without_signal(tmp_path):
         def wait_exited(self, pid, timeout): raise AssertionError("must not wait")
     killed = []
     assert stop_owned_process(paths, Reused(), lambda pgid, sig: killed.append(pgid)) is False
-    assert killed == [] and not paths.runtime_path.exists()
+    assert killed == [] and paths.runtime_path.exists()
 
 
 def test_cross_cli_stop_keeps_state_when_sigkill_cannot_confirm_exit(tmp_path):

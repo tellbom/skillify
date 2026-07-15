@@ -440,6 +440,60 @@ def test_stop_unconfirmed_returns_provider_failed_envelope(tmp_path: Path, monke
     }
 
 
+def test_cleanup_pending_runtime_write_failure_stops_restores_and_has_stable_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import signal
+    from skillify.agent.provider import ProviderHandle, ProviderResult
+    from skillify.agent.events import TaskState
+    from skillify.agent.providers.opencode import ProviderCleanupPending
+    from skillify.common.config import AgentLocalConfig
+
+    paths = load_agent_paths(_env(tmp_path), home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),),
+        model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1",
+        allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    handle = ProviderHandle(
+        "pending", "opencode", "unknown", "http://127.0.0.1:32123", 4242,
+    )
+    calls = []; installed = []; previous = object()
+    class PendingProvider:
+        def start(self, spec):
+            calls.append("start"); raise ProviderCleanupPending(handle)
+        def ownership(self, value):
+            calls.append("ownership")
+            return {"pid": 4242, "pgid": 4242, "sid": 4242, "start_token": "100",
+                    "uid": __import__("os").getuid(), "executable": "/opt/skillify/opencode"}
+        def stop(self, value):
+            calls.append("stop"); return ProviderResult(TaskState.SUCCEEDED)
+
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    monkeypatch.setattr(agent_cmd, "_config", lambda: (paths, config))
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: PendingProvider())
+    monkeypatch.setattr(
+        agent_cmd, "write_runtime_state",
+        lambda paths, state: (_ for _ in ()).throw(OSError("private state detail")),
+    )
+    monkeypatch.setattr(agent_cmd.signal, "getsignal", lambda sig: previous)
+    monkeypatch.setattr(agent_cmd.signal, "signal", lambda sig, handler: installed.append(handler))
+
+    result = runner.invoke(
+        agent_app,
+        ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"],
+        input="private prompt\n",
+    )
+    _assert_error_envelope(result, exit_code=13, code="AGENT_PROVIDER_FAILED")
+    assert calls == ["start", "ownership", "stop"]
+    assert installed[-1] is previous
+    assert "private state detail" not in result.stdout
+    assert not paths.runtime_path.exists()
+
+
 def test_status_maps_process_inspection_oserror_to_config_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

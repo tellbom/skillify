@@ -186,7 +186,6 @@ def stop_owned_process(paths: AgentPaths, inspector, killpg=os.killpg) -> bool:
     if state is None: return True
     members = _confirmed_owned_group(state, inspector)
     if members is None:
-        paths.runtime_path.unlink(missing_ok=True)
         return False
     if not members:
         paths.runtime_path.unlink(missing_ok=True)
@@ -389,14 +388,19 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         handle = exc.handle
         owned = provider.ownership(handle)
-        write_runtime_state(paths, AgentRuntimeState(
-            schema_version=1, owner_uid=owned["uid"], pid=owned["pid"], pgid=owned["pgid"],
-            process_session_id=owned["sid"], process_start_token=owned["start_token"],
-            executable=owned["executable"],
-            workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
-            task_id=task_id, session_id="", provider_version=handle.provider_version,
-            started_at=datetime.now(timezone.utc).isoformat(), state="cleanup_pending",
-        ))
+        try:
+            write_runtime_state(paths, AgentRuntimeState(
+                schema_version=1, owner_uid=owned["uid"], pid=owned["pid"], pgid=owned["pgid"],
+                process_session_id=owned["sid"], process_start_token=owned["start_token"],
+                executable=owned["executable"],
+                workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
+                task_id=task_id, session_id="", provider_version=handle.provider_version,
+                started_at=datetime.now(timezone.utc).isoformat(), state="cleanup_pending",
+            ))
+        except OSError as write_error:
+            raise AgentCommandFailure(
+                AgentErrorCode.PROVIDER_FAILED, "provider recovery state could not be persisted",
+            ) from write_error
         cleanup_handed_off = True
         terminal = "cleanup_pending"
         append_agent_log(
