@@ -108,6 +108,51 @@ def test_generated_ownership_rejects_invalid_json_pointer(pointer: str) -> None:
         GeneratedOwnership("opencode.json", pointer, "a" * 64)
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: GeneratedOwnership("bad\ud800name", None, "a" * 64),
+        lambda: GeneratedOwnership("opencode.json", "/mcp/bad\udfffname", "a" * 64),
+        lambda: LockedDependency("skill", "excel/bad\ud800name", "1.0.0", "a" * 64),
+        lambda: make_lock(namespace="bad\ud800name"),
+        lambda: make_lock(forgejo_release="v1.2.3\udfff"),
+        lambda: make_lock(installed_at="2026-07-16T00:00:00+00:00\ud800"),
+    ],
+)
+def test_constructor_rejects_non_utf8_unicode_scalar_strings(factory) -> None:
+    with pytest.raises(CapabilityLockError, match="valid UTF-8"):
+        factory()
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("generated", "path", "bad\ud800name"),
+        ("generated", "json_pointer", "/mcp/bad\udfffname"),
+        ("dependencies", "identifier", "excel/bad\ud800name"),
+        ("lock", "namespace", "bad\udfffname"),
+        ("lock", "forgejo_release", "v1.2.3\ud800"),
+        ("lock", "installed_at", "2026-07-16T00:00:00+00:00\udfff"),
+    ],
+)
+def test_from_json_rejects_non_utf8_unicode_scalar_strings(
+    section: str, field: str, value: str,
+) -> None:
+    data = json.loads(make_lock().to_json())
+    if section == "lock":
+        data[field] = value
+    else:
+        data[section][0][field] = value
+
+    with pytest.raises(CapabilityLockError, match="valid UTF-8"):
+        CapabilityLock.from_json(json.dumps(data))
+
+
+def test_valid_unicode_scalar_generated_path_remains_canonical() -> None:
+    lock = make_lock(generated=(GeneratedOwnership("skills/分析-😀.md", None, "a" * 64),))
+    assert CapabilityLock.from_json(lock.to_json()).digest == lock.digest
+
+
 def test_lock_rejects_duplicate_dependencies_and_ownership() -> None:
     dependency = LockedDependency("skill", "excel/lookup", "2.0.0", "b" * 64)
     with pytest.raises(CapabilityLockError, match="duplicate dependency"):

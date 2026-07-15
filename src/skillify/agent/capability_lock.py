@@ -46,6 +46,12 @@ _HEX_64_RE = re.compile(r"[0-9a-f]{64}\Z")
 def _require_string(value: object, field: str) -> str:
     if type(value) is not str:
         raise CapabilityLockError(f"{field} must be a string")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise CapabilityLockError(
+            f"{field} must contain only valid UTF-8 Unicode scalar values"
+        ) from exc
     return value
 
 
