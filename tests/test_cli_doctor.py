@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -9,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from skillify.cli.doctor_cmd import run_doctor
-from skillify.common.config import SkillifyConfig
+from skillify.common.config import (
+    AgentLocalConfig, SkillifyConfig, load_agent_paths,
+)
 
 
 class _FakeForgejoHandler(BaseHTTPRequestHandler):
@@ -128,3 +132,76 @@ def test_doctor_fails_when_forgejo_unreachable(tmp_path: Path) -> None:
     )
     ok = run_doctor(console=_NullConsole(), config=cfg)
     assert ok is False
+
+
+def _isolated_green_config(tmp_path: Path, fake_server: str) -> SkillifyConfig:
+    from skillify.install.agent_defaults import ensure_default_agent_configs
+    cfg = SkillifyConfig(
+        forgejo_url=fake_server, forgejo_token="good-token",
+        devpi_index_url=fake_server, home=tmp_path / "skillify-home",
+    )
+    cfg.ensure_dirs(); ensure_default_agent_configs(cfg.agents_dir)
+    for agent in ("claude", "opencode"):
+        root = tmp_path / f"{agent}-doctor-root"; root.mkdir()
+        (cfg.agents_dir / f"{agent}.yaml").write_text(
+            f"agent: {agent}\ntargetDirTemplate: '{(root / '{namespace}__{name}').as_posix()}'\nlinkMode: auto\n",
+            encoding="utf-8",
+        )
+    return cfg
+
+
+def test_doctor_unconfigured_distribution_preserves_green_baseline_without_user_home(
+    tmp_path: Path, fake_server: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _isolated_green_config(tmp_path, fake_server)
+    paths = load_agent_paths({}, home=tmp_path / "isolated-agent-home")
+    monkeypatch.setattr(Path, "home", classmethod(
+        lambda cls: (_ for _ in ()).throw(AssertionError("real user home must not be read"))
+    ))
+    def unexpected_platform():
+        raise AssertionError("unconfigured distribution must be skipped")
+    ok = run_doctor(
+        console=_NullConsole(), config=cfg, agent_paths=paths,
+        agent_config=AgentLocalConfig(), platform_detector=unexpected_platform,
+        version_runner=lambda argv: (_ for _ in ()).throw(AssertionError("version must not run")),
+    )
+    assert ok is True
+
+
+def test_doctor_configured_temporary_distribution_is_green(
+    tmp_path: Path, fake_server: str,
+) -> None:
+    cfg = _isolated_green_config(tmp_path, fake_server)
+    payload = b"approved opencode bundle"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest_data = {
+        "schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0",
+        "artifacts": [{
+            "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux",
+            "arch": "x86_64", "libc": "glibc", "cpu": "avx2", "sha256": digest,
+            "license": "MIT",
+            "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",
+            "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz",
+        }],
+    }
+    manifest = tmp_path / "manifest.json"; manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"; artifacts.mkdir()
+    (artifacts / "opencode-linux-x64.tar.gz").write_bytes(payload)
+    paths = load_agent_paths({}, home=tmp_path / "isolated-agent-home")
+    agent_config = AgentLocalConfig(
+        opencode_manifest_path=str(manifest), opencode_artifact_root=str(artifacts),
+    )
+    seen: list[str] = []
+    class RecordingConsole:
+        def print(self, *args, **kwargs):
+            if args: seen.append(str(args[0]))
+    ok = run_doctor(
+        console=RecordingConsole(), config=cfg, agent_paths=paths, agent_config=agent_config,
+        platform_detector=lambda: ("linux", "x86_64", "glibc", "avx2"),
+        version_runner=lambda argv: "1.15.11\n",
+    )
+    assert ok is True
+    output = "\n".join(seen)
+    assert all(name in output for name in (
+        "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+    ))

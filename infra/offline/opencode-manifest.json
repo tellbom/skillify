@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "opencodeVersion": "1.15.11",
+  "skillctlVersion": "0.1.0",
+  "artifacts": [
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "glibc", "cpu": "avx2",
+      "sha256": "49317253722c698394980e1921ff28e919d79bb29d5c3f4cf314a4adaf7037cd", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "glibc", "cpu": "baseline",
+      "sha256": "eb19eabc9cb7fa8a73898328b69720738d35e0cad716898bfdbc2547f88b2450", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "musl", "cpu": "avx2",
+      "sha256": "82fdc56334a02fd89b123643197b59bea2af829be13f82ec154f210053423207", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-musl.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64", "libc": "musl", "cpu": "baseline",
+      "sha256": "421a63ecc5ae66b87b150349f29477a952a01526e85b48783bccce4c7b8dabd9", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline-musl.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "aarch64", "libc": "glibc", "cpu": "arm64",
+      "sha256": "93e4399f308c49387c25ec2b570602bf0f9dd5f57989427946c0c28dbf259ff4", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-arm64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64.tar.gz"
+    },
+    {
+      "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "aarch64", "libc": "musl", "cpu": "arm64",
+      "sha256": "871b80411bd670ed9372335f0658203557fa4bfbf7791a3b1ab1d1f641103448", "license": "MIT",
+      "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-arm64-musl.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-arm64-musl.tar.gz"
+    }
+  ]
+}

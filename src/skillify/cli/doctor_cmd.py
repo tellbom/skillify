@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import platform
 import shutil
+import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from rich.console import Console
 
-from skillify.common.config import SkillifyConfig, load_config
+from skillify.common.config import (
+    AgentLocalConfig, AgentPaths, SkillifyConfig,
+    load_agent_local_config, load_agent_paths, load_config,
+)
 from skillify.install.agent_defaults import RESERVED_UNIMPLEMENTED_AGENTS, ensure_default_agent_configs
+from skillify.install.opencode_distribution import (
+    DistributionError, load_manifest, select_artifact, verify_artifact,
+)
 from skillify.install.projector import agent_skills_root, load_agent_rule
 
 REQUIRED_BINARIES = ["uv"]
@@ -140,11 +150,97 @@ def _check_devpi_reachable(cfg: SkillifyConfig) -> CheckResult:
         )
 
 
-def run_doctor(*, console: Console, config: SkillifyConfig | None = None) -> bool:
+def _detect_opencode_platform() -> tuple[str, str, str, str]:
+    if sys.platform != "linux": raise ValueError("OpenCode S1 supports Linux only")
+    machine = platform.machine().lower()
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(machine)
+    if arch is None: raise ValueError(f"unsupported architecture: {machine}")
+    libc_name = platform.libc_ver()[0].lower()
+    libc = "musl" if "musl" in libc_name else "glibc" if "glibc" in libc_name else ""
+    if not libc: raise ValueError("unable to detect glibc or musl")
+    if arch == "aarch64": return "linux", arch, libc, "arm64"
+    flags = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").lower()
+    return "linux", arch, libc, "avx2" if " avx2" in flags else "baseline"
+
+
+def _opencode_version(argv: list[str]) -> str:
+    completed = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=5)
+    return completed.stdout
+
+
+def _opencode_distribution_paths(config: AgentLocalConfig) -> tuple[Path, Path] | None:
+    manifest, artifacts = config.opencode_manifest_path, config.opencode_artifact_root
+    if manifest is None and artifacts is None: return None
+    if not manifest or not artifacts:
+        raise ValueError("opencode_manifest_path and opencode_artifact_root must be configured together")
+    manifest_path, artifact_root = Path(manifest), Path(artifacts)
+    if not manifest_path.is_absolute() or not artifact_root.is_absolute():
+        raise ValueError("OpenCode distribution paths must be absolute")
+    return manifest_path.resolve(), artifact_root.resolve()
+
+
+def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
+                                 platform_detector: Callable[[], tuple[str, str, str, str]],
+                                 version_runner: Callable[[list[str]], str]) -> list[CheckResult]:
+    try:
+        os_name, arch, libc, cpu = platform_detector()
+        data = load_manifest(manifest_path)
+        artifact = select_artifact(data, version="1.15.11", os_name=os_name, arch=arch, libc=libc, cpu=cpu)
+        local_path = artifact_root / Path(urlsplit(artifact.intranet_uri).path).name
+        verify_artifact(local_path, artifact)
+        actual = version_runner(["opencode", "--version"])
+        if actual.strip() != artifact.version:
+            return [CheckResult("opencode-version", False, f"expected {artifact.version}, got {actual.strip()}")]
+        return [
+            CheckResult("opencode-manifest", True, str(manifest_path)),
+            CheckResult("opencode-platform", True, f"{os_name}/{arch}/{libc}/{cpu}"),
+            CheckResult("opencode-version", True, artifact.version),
+            CheckResult("opencode-checksum", True, artifact.sha256),
+        ]
+    except (OSError, subprocess.SubprocessError, DistributionError, ValueError) as exc:
+        return [CheckResult("opencode-manifest", False, str(exc), "install the approved offline bundle")]
+
+
+def run_doctor(
+    *,
+    console: Console,
+    config: SkillifyConfig | None = None,
+    agent_paths: AgentPaths | None = None,
+    agent_config: AgentLocalConfig | None = None,
+    platform_detector: Callable[[], tuple[str, str, str, str]] = _detect_opencode_platform,
+    version_runner: Callable[[list[str]], str] = _opencode_version,
+) -> bool:
+    config_was_injected = config is not None
     cfg = config or load_config()
 
     checks: list[CheckResult] = [_check_python()]
     checks += [_check_binary(b) for b in REQUIRED_BINARIES]
+    try:
+        local_config = agent_config
+        if local_config is None:
+            resolved_paths = agent_paths
+            if resolved_paths is None:
+                # Injected SkillifyConfig tests remain under cfg.home and never
+                # fall through to the real XDG/user home. Normal CLI execution
+                # still resolves the normal endpoint-agent XDG paths.
+                resolved_paths = (
+                    load_agent_paths({}, home=cfg.home)
+                    if config_was_injected else load_agent_paths()
+                )
+            local_config = load_agent_local_config(resolved_paths)
+        distribution_paths = _opencode_distribution_paths(local_config)
+        if distribution_paths is not None:
+            manifest_path, artifact_root = distribution_paths
+            checks += _check_opencode_distribution(
+                manifest_path=manifest_path,
+                artifact_root=artifact_root,
+                platform_detector=platform_detector,
+                version_runner=version_runner,
+            )
+    except (OSError, TypeError, ValueError) as exc:
+        checks.append(CheckResult(
+            "opencode-manifest", False, str(exc), "configure the approved offline OpenCode bundle",
+        ))
     checks.append(_check_skills_dir_writable(cfg))
     checks.append(_check_forgejo_reachable(cfg))
     checks.append(_check_forgejo_token(cfg))
