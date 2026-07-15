@@ -68,12 +68,15 @@ class ProviderStartSpec:
     runtime: ModelRuntimeConfig
     startup_timeout_seconds: float = 5.0
     shutdown_timeout_seconds: float = 5.0
+    source_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:
             raise ValueError("workspace must be an explicit allowed absolute path")
         if any(not path.is_absolute() for path in self.allowed_paths):
             raise ValueError("allowed paths must be absolute")
+        if self.source_config_path is not None and not self.source_config_path.is_absolute():
+            raise ValueError("source config path must be absolute")
         if not all(
             math.isfinite(value) and value > 0
             for value in (self.startup_timeout_seconds, self.shutdown_timeout_seconds)

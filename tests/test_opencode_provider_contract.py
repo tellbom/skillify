@@ -70,6 +70,19 @@ def fake_server(monkeypatch):
     server.shutdown(); thread.join(timeout=2)
 
 
+@pytest.fixture(autouse=True)
+def supported_fake_opencode_binary(monkeypatch):
+    """Keep every process-boundary contract test deterministic and offline."""
+    monkeypatch.setattr(
+        "skillify.agent.providers.opencode.shutil.which",
+        lambda executable: "/opt/skillify/opencode",
+    )
+    monkeypatch.setattr(
+        "skillify.agent.providers.opencode._run_version",
+        lambda argv: "1.15.11\n",
+    )
+
+
 def _runtime() -> ModelRuntimeConfig:
     return ModelRuntimeConfig("internal", "https://model.intranet.example/v1", "code-1",
                               ("model.intranet.example",), ("MODEL_KEY",))
@@ -177,7 +190,7 @@ def test_requests_transport_ignores_hostile_ambient_proxy(fake_server, monkeypat
 def test_start_is_local_authenticated_isolated_and_pipe_safe(tmp_path, fake_server, monkeypatch):
     provider, captured, _, _ = _provider(fake_server, monkeypatch)
     handle = provider.start(_spec(tmp_path))
-    assert captured["argv"] == ["opencode", "serve", "--hostname", "127.0.0.1", "--port", str(fake_server.server_port)]
+    assert captured["argv"] == ["/opt/skillify/opencode", "serve", "--hostname", "127.0.0.1", "--port", str(fake_server.server_port)]
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["stdout"] is captured["kwargs"]["stderr"] is __import__("subprocess").DEVNULL
     assert handle.base_url.startswith("http://127.0.0.1:")

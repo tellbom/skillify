@@ -15,7 +15,14 @@ RUNBOOK = Path("docs/deployment/offline-opencode.md")
 
 
 def _data(uri="file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz"):
-    return {"schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0", "artifacts": [{
+    return {"schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0",
+        "skillctl": {
+            "version": "0.1.0", "platforms": ["linux-x86_64", "linux-aarch64"],
+            "sha256": "08fab45a1670460a52f974c0203b5cd7c8a1f7deb0854bbb62a1adb7a14b4c82",
+            "license": "MIT", "sourceUrl": "https://github.com/tellbom/skillify/archive/refs/tags/v0.1.0.tar.gz",
+            "intranetUri": "file:///opt/skillify/offline/skillctl/0.1.0/skillctl-0.1.0-approval-placeholder.json",
+            "installable": False,
+        }, "artifacts": [{
         "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux", "arch": "x86_64",
         "libc": "glibc", "cpu": "avx2", "sha256": "a" * 64, "license": "MIT",
         "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",

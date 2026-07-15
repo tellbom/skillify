@@ -75,6 +75,11 @@ endpoint, `model_provider` and `model_name` to approved identifiers,
 `allowed_model_hosts` to that endpoint's exact host, and
 `credential_env_names` to the approved secret variable name. Store the secret
 value in the endpoint secret manager/environment, never in YAML or logs.
+If existing OpenCode preferences are needed, set the explicit absolute
+`opencode_user_config_path` (or `SKILLIFY_OPENCODE_USER_CONFIG_PATH`). Skillify
+accepts only safe `theme` and string-to-string `keybinds` values, rejects every
+runtime/security/provider/plugin field, and writes a separate mode-0600 config;
+it never reads an ambient HOME configuration implicitly.
 
 The launcher must set:
 
@@ -82,8 +87,20 @@ The launcher must set:
 export OPENCODE_DISABLE_AUTOUPDATE=true
 export OPENCODE_DISABLE_LSP_DOWNLOAD=true
 export OPENCODE_DISABLE_DEFAULT_PLUGINS=true
+export OPENCODE_DISABLE_MODELS_FETCH=true
 export NO_PROXY=localhost,127.0.0.1
 ```
+
+## skillctl approval gate
+
+The same manifest records skillctl version, supported Linux platforms, MIT
+license, canonical source, immutable local URI, and SHA-256 independently from
+OpenCode. The repository-owned `skillctl-0.1.0-approval-placeholder.json` is a
+deterministic approval record, not an executable package. Its manifest entry has
+`installable: false`; disconnected installation must therefore fail closed until
+the release pipeline replaces it with reviewed wheel bytes and a freshly
+computed checksum. Never interpret the placeholder checksum as approval of a
+wheel and never invent or copy a digest from another artifact.
 
 OpenCode must bind `127.0.0.1` only. Firewall policy must deny endpoint inbound
 access and permit only the approved outbound model/MCP destinations.
@@ -109,7 +126,7 @@ grep -m1 -E '^(flags|Features)' /proc/cpuinfo
 opencode --version
 skillctl agent doctor --format json
 skillctl agent run --workspace /srv/skillify-test/repository \
-  --prompt-file /srv/skillify-test/task.txt --format json
+  --task /srv/skillify-test/task.txt --format json
 ss -ltnp
 ps -ef | grep '[o]pencode serve'
 skillctl agent stop --format json

@@ -15,12 +15,24 @@ class DistributionError(Exception): pass
 class ManifestInvalid(DistributionError): pass
 class ArtifactNotFound(DistributionError): pass
 class ArtifactCorrupt(DistributionError): pass
+class ArtifactNotApproved(DistributionError): pass
 
 
 @dataclass(frozen=True)
 class OpenCodeArtifact:
     version: str; skillctl_version: str; os: str; arch: str; libc: str; cpu: str
     sha256: str; license: str; source_url: str; intranet_uri: str
+
+
+@dataclass(frozen=True)
+class SkillctlArtifact:
+    version: str
+    platforms: tuple[str, ...]
+    sha256: str
+    license: str
+    source_url: str
+    intranet_uri: str
+    installable: bool
 
 
 @dataclass(frozen=True)
@@ -42,10 +54,23 @@ _APPROVED_FILENAMES = {
 }
 MANIFEST_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": False,
-    "required": ["schemaVersion", "opencodeVersion", "skillctlVersion", "artifacts"],
+    "required": ["schemaVersion", "opencodeVersion", "skillctlVersion", "skillctl", "artifacts"],
     "properties": {
         "schemaVersion": {"const": 1}, "opencodeVersion": {"const": "1.15.11"},
         "skillctlVersion": {"const": "0.1.0"},
+        "skillctl": {
+            "type": "object", "additionalProperties": False,
+            "required": ["version", "platforms", "sha256", "license", "sourceUrl", "intranetUri", "installable"],
+            "properties": {
+                "version": {"const": "0.1.0"},
+                "platforms": {"type": "array", "minItems": 1, "uniqueItems": True,
+                              "items": {"enum": ["linux-x86_64", "linux-aarch64"]}},
+                "sha256": {"pattern": "^[0-9a-f]{64}$"}, "license": {"const": "MIT"},
+                "sourceUrl": {"const": "https://github.com/tellbom/skillify/archive/refs/tags/v0.1.0.tar.gz"},
+                "intranetUri": {"const": "file:///opt/skillify/offline/skillctl/0.1.0/skillctl-0.1.0-approval-placeholder.json"},
+                "installable": {"const": False},
+            },
+        },
         "artifacts": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": False,
             "required": _ARTIFACT_REQUIRED, "properties": {
                 "version": {"const": "1.15.11"}, "skillctlVersion": {"const": "0.1.0"},
@@ -68,6 +93,9 @@ def validate_manifest(data: Mapping[str, object]) -> None:
     errors = sorted(Draft202012Validator(MANIFEST_SCHEMA).iter_errors(data), key=lambda error: list(error.path))
     if errors: raise ManifestInvalid(errors[0].message)
     if "latest" in json.dumps(data).lower(): raise ManifestInvalid("floating latest is forbidden")
+    skillctl = data["skillctl"]
+    if skillctl["version"] != data["skillctlVersion"]:
+        raise ManifestInvalid("skillctl metadata version must match skillctlVersion")
     seen = set()
     for item in data["artifacts"]:
         selector = (item["arch"], item["libc"], item["cpu"])
@@ -97,6 +125,23 @@ def select_artifact(
     if len(matches) != 1: raise ManifestInvalid("no exact artifact for version and platform")
     item = matches[0]
     return OpenCodeArtifact(item["version"], item["skillctlVersion"], item["os"], item["arch"], item["libc"], item["cpu"], item["sha256"], item["license"], item["sourceUrl"], item["intranetUri"])
+
+
+def select_skillctl(
+    data: Mapping[str, object], *, platform_name: str,
+    require_installable: bool = True,
+) -> SkillctlArtifact:
+    validate_manifest(data)
+    item = data["skillctl"]
+    if platform_name not in item["platforms"]:
+        raise ManifestInvalid("skillctl does not support the selected platform")
+    artifact = SkillctlArtifact(
+        item["version"], tuple(item["platforms"]), item["sha256"], item["license"],
+        item["sourceUrl"], item["intranetUri"], item["installable"],
+    )
+    if require_installable and not artifact.installable:
+        raise ArtifactNotApproved("skillctl artifact approval is pending")
+    return artifact
 
 
 def verify_artifact(path: Path, artifact: OpenCodeArtifact) -> None:

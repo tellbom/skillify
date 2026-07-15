@@ -48,6 +48,7 @@ class AgentLocalConfig:
     credential_env_names: tuple[str, ...] = ()
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
+    opencode_user_config_path: str | None = None
 
 
 def load_agent_paths(
@@ -83,6 +84,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_AGENT_MODEL_NAME": "model_name",
         "SKILLIFY_OPENCODE_MANIFEST_PATH": "opencode_manifest_path",
         "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
+        "SKILLIFY_OPENCODE_USER_CONFIG_PATH": "opencode_user_config_path",
     }
     for env_name, key in scalar_overrides.items():
         if env_name in os.environ:
@@ -103,6 +105,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         credential_env_names=tuple(data.get("credential_env_names", ())),
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
+        opencode_user_config_path=data.get("opencode_user_config_path"),
     )
     if config.provider != "opencode":
         raise ValueError("provider must be opencode")
@@ -110,6 +113,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         raise ValueError("allowed workspaces must be absolute")
     if len(set(config.allowed_workspaces)) != len(config.allowed_workspaces):
         raise ValueError("allowed workspaces must be unique")
+    if (config.opencode_user_config_path is not None and
+            not Path(config.opencode_user_config_path).is_absolute()):
+        raise ValueError("OpenCode user config path must be absolute")
     sequence_fields = (config.allowed_model_hosts, config.credential_env_names)
     if any(not isinstance(item, str) for sequence in sequence_fields for item in sequence):
         raise ValueError("model host and credential names must be strings")

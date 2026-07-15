@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -312,6 +314,30 @@ def _read_prompt(path: str) -> str:
     return text
 
 
+def _resolve_task(task: str | None, prompt_file: str | None) -> str:
+    if (task is None) == (prompt_file is None):
+        raise AgentCommandFailure(
+            AgentErrorCode.CONFIG_INVALID,
+            "exactly one of --task and --prompt-file is required",
+        )
+    if prompt_file is not None:
+        return _read_prompt(prompt_file)
+    assert task is not None
+    if task == "-":
+        return _read_prompt("-")
+    candidate = Path(task)
+    try:
+        if candidate.is_file():
+            return _read_prompt(task)
+        if candidate.exists():
+            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "task path is not a file")
+    except OSError as exc:
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "task is unavailable") from exc
+    if not task.strip():
+        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "task is empty")
+    return task
+
+
 def _build_provider() -> OpenCodeProvider:
     return OpenCodeProvider()
 
@@ -360,6 +386,10 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     start_spec = ProviderStartSpec(
         workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
         runtime=runtime,
+        source_config_path=(
+            Path(config.opencode_user_config_path)
+            if config.opencode_user_config_path is not None else None
+        ),
     )
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, _raise_termination)
@@ -455,11 +485,7 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
 def doctor(output: str = typer.Option("text", "--format")) -> None:
     """Check local endpoint-agent prerequisites."""
     try:
-        _, config = _config()
-        executable = shutil.which("opencode")
-        if executable is None:
-            raise AgentCommandFailure(AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed")
-        data: dict[str, Any] = {"opencode": executable}
+        paths, config = _config()
         try:
             distribution_paths = resolve_distribution_paths(
                 config.opencode_manifest_path, config.opencode_artifact_root,
@@ -468,6 +494,51 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
             raise AgentCommandFailure(
                 AgentErrorCode.CONFIG_INVALID, "OpenCode distribution config is invalid",
             ) from exc
+        executable = shutil.which("opencode")
+        checks: list[dict[str, object]] = []
+        try:
+            os_name, arch, libc, cpu = detect_opencode_platform()
+        except (OSError, TypeError, ValueError):
+            platform_ok = False
+            platform_detail = "unsupported platform"
+        else:
+            platform_ok = True
+            platform_detail = f"{os_name}/{arch}/{libc}/{cpu}"
+        checks.append({"name": "platform", "ok": platform_ok, "detail": platform_detail})
+        opencode_ok = False
+        opencode_detail = "not installed"
+        if executable is not None:
+            try:
+                actual_version = opencode_version([executable, "--version"]).strip()
+            except (OSError, subprocess.SubprocessError, ValueError):
+                opencode_detail = "version probe failed"
+            else:
+                opencode_ok = actual_version == "1.15.11"
+                opencode_detail = actual_version if opencode_ok else "unsupported version"
+        checks.append({"name": "opencode", "ok": opencode_ok, "detail": opencode_detail})
+        git_path = shutil.which("git")
+        checks.append({"name": "git", "ok": git_path is not None,
+                       "detail": git_path or "not installed"})
+        try:
+            _runtime_config(config)
+        except AgentCommandFailure:
+            model_ok = False
+            model_detail = "not configured or invalid"
+        else:
+            model_ok = True
+            model_detail = "configured; reachability requires test-env"
+        checks.append({"name": "model-endpoint", "ok": model_ok, "detail": model_detail})
+        cache_ok = paths.cache_dir.is_dir() and os.access(paths.cache_dir, os.R_OK | os.W_OK)
+        checks.append({"name": "skill-cache", "ok": cache_ok,
+                       "detail": str(paths.cache_dir) if cache_ok else "not initialized or inaccessible"})
+        checks.append({"name": "mcp", "ok": False, "detail": "not configured; runtime check requires test-env"})
+        workspaces = [Path(value) for value in config.allowed_workspaces]
+        workspace_ok = bool(workspaces) and all(
+            value.is_dir() and os.access(value, os.R_OK | os.W_OK) for value in workspaces
+        )
+        checks.append({"name": "workspace", "ok": workspace_ok,
+                       "detail": "configured and writable" if workspace_ok else "not configured or inaccessible"})
+        data: dict[str, Any] = {"opencode": executable, "checks": checks}
         if distribution_paths is not None:
             manifest_path, artifact_root = distribution_paths
             checks = check_opencode_distribution(
@@ -486,13 +557,14 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
                     output=output,
                 )
                 raise typer.Exit(int(AgentExit.PROVIDER_UNAVAILABLE))
-        _emit(
-            ok=True,
-            code=AgentErrorCode.OK,
-            message="local prerequisites available",
-            data=data,
-            output=output,
-        )
+        # Model, cache, MCP, and workspace readiness are reported truthfully but
+        # are deployment-specific admission gates rather than binary prerequisites.
+        required_ok = platform_ok and opencode_ok and git_path is not None
+        _emit(ok=required_ok, code=(AgentErrorCode.OK if required_ok else AgentErrorCode.PROVIDER_UNAVAILABLE),
+              message=("local prerequisites available" if required_ok else "local prerequisites unavailable"),
+              data=data, output=output)
+        if not required_ok:
+            raise typer.Exit(int(AgentExit.PROVIDER_UNAVAILABLE))
     except AgentCommandFailure as exc:
         _fail(exc, output)
 
@@ -551,14 +623,15 @@ def init(
 @agent_app.command()
 def run(
     workspace: Path = typer.Option(..., "--workspace"),
-    prompt_file: str = typer.Option(..., "--prompt-file"),
+    task: str | None = typer.Option(None, "--task"),
+    prompt_file: str | None = typer.Option(None, "--prompt-file", hidden=True),
     output: str = typer.Option("text", "--format"),
 ) -> None:
     """Run an endpoint-agent task locally."""
     try:
         paths, config = _config()
         resolved = _workspace(workspace, config)
-        result = _run_local_task(resolved, _read_prompt(prompt_file), paths, config)
+        result = _run_local_task(resolved, _resolve_task(task, prompt_file), paths, config)
         if result != "succeeded":
             raise AgentCommandFailure(AgentErrorCode.TASK_FAILED, "task failed")
         _emit(
@@ -614,6 +687,7 @@ def stop(output: str = typer.Option("text", "--format")) -> None:
 
 @agent_app.command()
 def logs(
+    task_id: str | None = typer.Option(None, "--task-id"),
     lines: int = typer.Option(100, "--lines", min=1, max=10000),
     output: str = typer.Option("text", "--format"),
 ) -> None:
@@ -626,5 +700,56 @@ def logs(
     except OSError:
         _fail(AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "agent logs are invalid"), output)
     else:
-        content = log_text.splitlines()[-lines:]
+        safe_events = {
+            "run.start", "provider.event", "run.error", "abort.error", "stop.error",
+            "run.stop", "start.cleanup_pending",
+        }
+        safe_states = {
+            "queued", "awaiting_approval", "starting", "running", "blocked",
+            "succeeded", "failed", "cancelled", "cleanup_pending",
+        }
+        task_pattern = re.compile(r"^[0-9a-f]{32}$")
+        session_pattern = re.compile(r"^(?:session-[0-9]{1,16}|ses_[A-Za-z0-9]{8,64})$")
+        version_pattern = re.compile(r"^(?:1\.15\.11|unknown)$")
+        parsed = []
+        for line in log_text.splitlines():
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(record, dict) or record.get("event") not in safe_events:
+                continue
+            if not isinstance(record.get("task_id"), str) or not task_pattern.fullmatch(record["task_id"]):
+                continue
+            if record.get("state") not in safe_states:
+                continue
+            if "session_id" in record and (
+                not isinstance(record["session_id"], str) or
+                not session_pattern.fullmatch(record["session_id"])
+            ):
+                continue
+            if "provider_version" in record and (
+                not isinstance(record["provider_version"], str) or
+                not version_pattern.fullmatch(record["provider_version"])
+            ):
+                continue
+            if "reason_code" in record:
+                try:
+                    LifecycleReasonCode(record["reason_code"])
+                except (TypeError, ValueError):
+                    continue
+            if record["event"] == "provider.event" and not all(
+                key in record for key in ("session_id", "provider_version")
+            ):
+                continue
+            if task_id is not None and record.get("task_id") != task_id:
+                continue
+            safe = {
+                key: value for key, value in record.items()
+                if key in {"event", "task_id", "session_id", "provider_version", "state", "reason_code"}
+                and isinstance(value, str)
+            }
+            if safe.get("event") and (task_id is None or safe.get("task_id") == task_id):
+                parsed.append(safe)
+        content = parsed[-lines:]
     _emit(ok=True, code=AgentErrorCode.OK, message="logs", data={"lines": content}, output=output)

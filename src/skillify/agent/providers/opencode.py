@@ -44,6 +44,17 @@ class LifecycleReasonCode(str, Enum):
     STOP_UNCONFIRMED = "STOP_UNCONFIRMED"
 
 
+SUPPORTED_OPENCODE_VERSION = "1.15.11"
+
+
+def _run_version(argv: list[str]) -> str:
+    completed = subprocess.run(
+        argv, check=True, capture_output=True, text=True, timeout=5,
+        env={key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ},
+    )
+    return completed.stdout
+
+
 class ManagedProcess(Protocol):
     pid: int
     def poll(self) -> int | None: """Return the process status."""
@@ -161,40 +172,97 @@ class OpenCodeProvider:
                  killpg=os.killpg, getpgid=os.getpgid, process_start_token=linux_process_start_token,
                  process_uid=linux_process_uid, process_session_id=linux_process_session_id,
                  process_executable=linux_process_executable,
-                 group_members=linux_process_group_members):
+                 group_members=linux_process_group_members,
+                 version_runner: Callable[[list[str]], str] | None = None):
         self.executable, self.transport, self.popen = executable, transport or RequestsTransport(), popen
         self.port_factory, self.password_factory, self.clock = port_factory, password_factory, clock
         self.monotonic, self.sleep, self.killpg, self.getpgid = monotonic, sleep, killpg, getpgid
         self.process_start_token, self.process_uid = process_start_token, process_uid
         self.process_session_id, self.process_executable = process_session_id, process_executable
         self.group_members = group_members
+        self.version_runner = version_runner or _run_version
         self._live = {}
         self._tasks: dict[str, _TaskRuntime] = {}
 
     def probe(self) -> ProviderProbe:
+        path, version, reason = self._supported_executable()
+        if path is None or version is None:
+            return ProviderProbe(False, None, reason)
+        return ProviderProbe(True, ProviderCapability("opencode", version), None)
+
+    def _supported_executable(self) -> tuple[str | None, str | None, str | None]:
         path = shutil.which(self.executable)
-        return ProviderProbe(bool(path), ProviderCapability("opencode", "1.15.11") if path else None,
-                             None if path else "OPENCODE_NOT_FOUND")
+        if path is None:
+            return None, None, "OPENCODE_NOT_FOUND"
+        try:
+            version = self.version_runner([path, "--version"]).strip()
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None, None, "OPENCODE_PROBE_FAILED"
+        if version != SUPPORTED_OPENCODE_VERSION:
+            return None, None, "OPENCODE_VERSION_UNSUPPORTED"
+        return path, version, None
 
     def _environment(self, runtime: ModelRuntimeConfig, password: str, config_dir: Path) -> dict[str, str]:
-        env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL") if key in os.environ}
+        env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
+        isolated_home = config_dir / "home"
+        isolated_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        isolated_home.chmod(0o700)
+        env["HOME"] = str(isolated_home)
         for name in runtime.credential_env_names:
             if name not in os.environ: raise OpenCodeError(f"required credential variable {name} is unset")
             env[name] = os.environ[name]
         env.update({"OPENCODE_SERVER_USERNAME": "opencode", "OPENCODE_SERVER_PASSWORD": password,
                     "OPENCODE_CONFIG_DIR": str(config_dir), "OPENCODE_DISABLE_AUTOUPDATE": "true",
                     "OPENCODE_DISABLE_LSP_DOWNLOAD": "true", "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+                    "OPENCODE_DISABLE_MODELS_FETCH": "true",
                     "NO_PROXY": "localhost,127.0.0.1"})
         return env
 
+    def _safe_source_config(self, spec: ProviderStartSpec) -> dict[str, object]:
+        if spec.source_config_path is None:
+            return {}
+        if spec.source_config_path.resolve() == (spec.config_dir / "opencode.json").resolve():
+            raise OpenCodeError("user config must be isolated from generated config")
+        try:
+            value = json.loads(spec.source_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise OpenCodeError("user config is unavailable or invalid") from exc
+        if not isinstance(value, dict):
+            raise OpenCodeError("user config must be a JSON object")
+        if set(value) - {"theme", "keybinds"}:
+            raise OpenCodeError("user config contains unsupported or conflicting fields")
+        theme = value.get("theme")
+        if theme is not None and (not isinstance(theme, str) or not theme.strip()):
+            raise OpenCodeError("user config theme is invalid")
+        keybinds = value.get("keybinds")
+        if keybinds is not None and (
+            not isinstance(keybinds, dict) or
+            any(not isinstance(key, str) or not isinstance(binding, str)
+                for key, binding in keybinds.items())
+        ):
+            raise OpenCodeError("user config keybinds are invalid")
+        return dict(value)
+
     def start(self, spec: ProviderStartSpec) -> ProviderHandle:
+        executable_path, _, _ = self._supported_executable()
+        if executable_path is None:
+            raise OpenCodeError("opencode executable is unavailable or incompatible")
         spec.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        config = {"autoupdate": False, "share": "disabled", "model": f"{spec.runtime.provider}/{spec.runtime.model}",
+        spec.config_dir.chmod(0o700)
+        config = {**self._safe_source_config(spec),
+                  "autoupdate": False, "share": "disabled", "model": f"{spec.runtime.provider}/{spec.runtime.model}",
                   "provider": {spec.runtime.provider: {"env": list(spec.runtime.credential_env_names),
                   "options": {"baseURL": spec.runtime.endpoint}}}}
-        path = spec.config_dir / "opencode.json"; path.write_text(json.dumps(config, sort_keys=True), encoding="utf-8"); path.chmod(0o600)
+        path = spec.config_dir / "opencode.json"
+        temporary = spec.config_dir / f".opencode.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(json.dumps(config, sort_keys=True), encoding="utf-8")
+            temporary.chmod(0o600)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         port, password = self.port_factory(), self.password_factory()
-        argv = [self.executable, "serve", "--hostname", "127.0.0.1", "--port", str(port)]
+        argv = [executable_path, "serve", "--hostname", "127.0.0.1", "--port", str(port)]
         process = self.popen(argv, cwd=str(spec.workspace), env=self._environment(spec.runtime, password, spec.config_dir),
                              text=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base_url, deadline = f"http://127.0.0.1:{port}", self.monotonic() + spec.startup_timeout_seconds
@@ -228,8 +296,10 @@ class OpenCodeProvider:
                 version = health.get("version")
                 if not isinstance(version, str) or not version.strip():
                     raise OpenCodeError("opencode health response omitted version")
+                if version.strip() != SUPPORTED_OPENCODE_VERSION:
+                    raise OpenCodeError("unsupported opencode version")
                 handle = ProviderHandle(
-                    provisional_handle.handle_id, "opencode", version, base_url, process.pid,
+                    provisional_handle.handle_id, "opencode", version.strip(), base_url, process.pid,
                 )
                 return handle
         except BaseException as original_error:

@@ -1,0 +1,6 @@
+{
+  "artifact": "skillctl-0.1.0-linux-py3-none-any.whl",
+  "approvalStatus": "pending",
+  "installable": false,
+  "reason": "Build, scan, and approve immutable wheel bytes before deployment."
+}

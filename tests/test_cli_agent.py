@@ -189,6 +189,12 @@ def _configured_distribution_env(tmp_path: Path, *, corrupt: bool = False) -> di
     digest = hashlib.sha256(payload).hexdigest()
     manifest_data = {
         "schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0",
+        "skillctl": {
+            "version": "0.1.0", "platforms": ["linux-x86_64"], "sha256": "a" * 64,
+            "license": "MIT", "sourceUrl": "https://github.com/tellbom/skillify/archive/refs/tags/v0.1.0.tar.gz",
+            "intranetUri": "file:///opt/skillify/offline/skillctl/0.1.0/skillctl-0.1.0-approval-placeholder.json",
+            "installable": False,
+        },
         "artifacts": [{
             "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux",
             "arch": "x86_64", "libc": "glibc", "cpu": "avx2", "sha256": digest,
