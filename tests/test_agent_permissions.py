@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import stat
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -12,7 +15,9 @@ from skillify.agent.permissions import (
     OperationKind,
     OperationRequest,
     PermissionAction,
+    PermissionDecision,
     PermissionManifest,
+    PermissionValidationError,
     merge_permissions,
     summarize_permissions,
     write_authorization_audit,
@@ -46,6 +51,19 @@ def policy(
 
 def request(kind: OperationKind, workspace: Path, **kwargs: object) -> OperationRequest:
     return OperationRequest(kind=kind, workspace=workspace, **kwargs)
+
+
+def _append_audit_process(audit_path: str, workspace: str, start: int, count: int) -> None:
+    operation = OperationRequest(
+        kind=OperationKind.MCP,
+        workspace=Path(workspace),
+        mcp_server="filesystem",
+    )
+    decision = merge_permissions((policy(),)).decide(operation)
+    for index in range(start, start + count):
+        write_authorization_audit(
+            Path(audit_path), task_id=f"process-{index}", request=operation, decision=decision
+        )
 
 
 def test_later_allow_cannot_override_earlier_deny(tmp_path: Path) -> None:
@@ -167,9 +185,34 @@ def test_ambiguous_numeric_hosts_are_rejected(numeric_host: str) -> None:
         policy(network=(numeric_host,))
 
 
+@pytest.mark.parametrize(
+    "unicode_numeric_host",
+    ["２１３０７０６４３３", "０１７７.０.０.１", "１２７.１", "0x７f.1"],
+)
+def test_post_idna_numeric_hosts_are_rejected(unicode_numeric_host: str) -> None:
+    with pytest.raises(PermissionValidationError, match="invalid domain"):
+        policy(network=(unicode_numeric_host,))
+
+
 @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "powershell"])
 def test_shell_entrypoints_are_always_confirmation_bound(tmp_path: Path, shell: str) -> None:
     operation = request(OperationKind.COMMAND, tmp_path, command=(shell, "-c", "rm -rf /"))
+    assert policy().decide(operation).action is PermissionAction.ASK
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("busybox", "rm", "-rf", "build"),
+        ("/bin/toybox", "rm", "-rf", "build"),
+        ("busybox", "--help", "su"),
+        ("/usr/bin/toybox", "-x", "sh", "-c", "id"),
+    ],
+)
+def test_multicall_dangerous_applets_require_confirmation(
+    tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    operation = request(OperationKind.COMMAND, tmp_path, command=argv)
     assert policy().decide(operation).action is PermissionAction.ASK
 
 
@@ -214,6 +257,20 @@ def test_web_origin_cannot_use_unattended_write_for_extensionless_code(tmp_path:
     assert merge_permissions((policy(),)).decide(operation).action is PermissionAction.ASK
 
 
+@pytest.mark.parametrize("origin", ["", "browser", "remote", "ｗｅｂ"])
+def test_unknown_or_confusable_operation_origins_fail_closed(
+    tmp_path: Path, origin: str
+) -> None:
+    with pytest.raises(PermissionValidationError, match="origin"):
+        request(
+            OperationKind.WRITE_PATH,
+            tmp_path,
+            path="src/app.py",
+            origin=origin,
+            unattended=True,
+        )
+
+
 def test_unattended_and_explicit_confirmation_form_restrictive_lattice(tmp_path: Path) -> None:
     operation = request(OperationKind.NETWORK, tmp_path, domain="docs.internal", unattended=True)
     merged = merge_permissions(
@@ -251,6 +308,78 @@ def test_legacy_permission_tags_normalize_to_restrictive_named_policy(tmp_path: 
 def test_direct_structured_policy_parser_rejects_schema_type_confusion(value: object) -> None:
     with pytest.raises(ValueError):
         PermissionManifest.from_value("task:bad", value)
+
+
+def test_declared_mapping_and_sequence_inputs_are_snapshotted(tmp_path: Path) -> None:
+    command_source = {"echo *": "allow"}
+    environment_source = {"SAFE_NAME": "sensitive-value"}
+    manifest = PermissionManifest(
+        policy_id="task:snapshot",
+        commands=MappingProxyType(command_source),
+    )
+    operation = OperationRequest(
+        kind=OperationKind.COMMAND,
+        workspace=tmp_path,
+        command=("echo", "ok"),
+        environment=MappingProxyType(environment_source),
+    )
+    command_source["echo *"] = "deny"
+    environment_source["SAFE_NAME"] = "changed"
+    assert manifest.decide(operation).action is PermissionAction.ALLOW
+    assert operation.environment["SAFE_NAME"] == "sensitive-value"
+    assert PermissionManifest.from_value("task:tuple", {"readPaths": ("docs/**",)})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "command"},
+        {"unattended": "TOP_SECRET"},
+        {"database_write": 1},
+        {"command": ["echo", "ok"]},
+        {"domain": 123},
+        {"origin": b"web"},
+        {"environment": [("TOKEN", "secret")]},
+    ],
+)
+def test_operation_request_rejects_forged_runtime_types(
+    tmp_path: Path, kwargs: dict[str, object]
+) -> None:
+    values: dict[str, object] = {"kind": OperationKind.NETWORK, "workspace": tmp_path}
+    values.update(kwargs)
+    with pytest.raises(PermissionValidationError):
+        OperationRequest(**values)  # type: ignore[arg-type]
+
+
+def test_permission_decision_requires_exact_enum_bool_and_tuple_types() -> None:
+    with pytest.raises(PermissionValidationError):
+        PermissionDecision("allow", ("task",), ())  # type: ignore[arg-type]
+    with pytest.raises(PermissionValidationError):
+        PermissionDecision(PermissionAction.ALLOW, ["task"], ())  # type: ignore[arg-type]
+
+
+def test_runtime_policy_and_request_resource_limits_fail_stably(tmp_path: Path) -> None:
+    with pytest.raises(PermissionValidationError, match="entries"):
+        policy(read=tuple(f"docs/{index}" for index in range(257)))
+    with pytest.raises(PermissionValidationError, match="glob segments"):
+        policy(read=("/".join(["**"] * 129),))
+    with pytest.raises(PermissionValidationError, match="pattern length"):
+        policy(command={"x" * 513: "allow"})
+    with pytest.raises(PermissionValidationError, match="arguments"):
+        request(OperationKind.COMMAND, tmp_path, command=tuple("x" for _ in range(257)))
+    with pytest.raises(PermissionValidationError, match="argument length"):
+        request(OperationKind.COMMAND, tmp_path, command=("x" * 4097,))
+    with pytest.raises(PermissionValidationError, match="path length"):
+        request(OperationKind.WRITE_PATH, tmp_path, path="x" * 4097)
+    with pytest.raises(PermissionValidationError, match="policies"):
+        merge_permissions(tuple(policy(f"task:{index}") for index in range(65)))
+
+
+def test_policy_decision_revalidates_forged_oversized_request(tmp_path: Path) -> None:
+    operation = request(OperationKind.WRITE_PATH, tmp_path, path="output.txt")
+    object.__setattr__(operation, "path", "x" * 4097)
+    with pytest.raises(PermissionValidationError, match="path length"):
+        policy().decide(operation)
 
 
 def test_summary_has_no_absolute_workspace_or_raw_command_arguments(tmp_path: Path) -> None:
@@ -360,6 +489,77 @@ def test_audit_rejects_symlinked_parent_directory(tmp_path: Path) -> None:
             decision=decision,
         )
     assert not (outside / "audit.jsonl").exists()
+
+
+def test_audit_rejects_leaf_symlink_without_mutating_target(tmp_path: Path) -> None:
+    target = tmp_path / "valuable.txt"
+    target.write_text("keep", encoding="utf-8")
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.symlink_to(target)
+    operation = request(OperationKind.MCP, tmp_path, mcp_server="filesystem")
+    decision = merge_permissions((policy(),)).decide(operation)
+    with pytest.raises(OSError):
+        write_authorization_audit(
+            audit_path, task_id="task-123", request=operation, decision=decision
+        )
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_audit_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.fifo"
+    os.mkfifo(audit_path, 0o600)
+    operation = request(OperationKind.MCP, tmp_path, mcp_server="filesystem")
+    decision = merge_permissions((policy(),)).decide(operation)
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        write_authorization_audit(
+            audit_path, task_id="task-123", request=operation, decision=decision
+        )
+    assert time.monotonic() - started < 1.0
+
+
+def test_audit_appends_complete_records_across_processes(tmp_path: Path) -> None:
+    audit_path = tmp_path / "authorization.jsonl"
+    context = multiprocessing.get_context("fork")
+    processes = [
+        context.Process(
+            target=_append_audit_process,
+            args=(str(audit_path), str(tmp_path), worker * 12, 12),
+        )
+        for worker in range(4)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+    records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 48
+    assert {record["taskId"] for record in records} == {
+        f"process-{index}" for index in range(48)
+    }
+
+
+def test_audit_boundary_revalidates_forged_objects_before_file_mutation(tmp_path: Path) -> None:
+    audit_path = tmp_path / "authorization.jsonl"
+    audit_path.write_text("keep\n", encoding="utf-8")
+    forged_request = object.__new__(OperationRequest)
+    object.__setattr__(forged_request, "kind", type("ForgedKind", (), {"value": "TOP_SECRET"})())
+    object.__setattr__(forged_request, "unattended", "TOP_SECRET")
+    forged_decision = object.__new__(PermissionDecision)
+    object.__setattr__(
+        forged_decision, "action", type("ForgedAction", (), {"value": "TOP_SECRET"})()
+    )
+    object.__setattr__(forged_decision, "matched_policy_ids", ("task",))
+    object.__setattr__(forged_decision, "reason_codes", ())
+    with pytest.raises(PermissionValidationError):
+        write_authorization_audit(
+            audit_path,
+            task_id="task-123",
+            request=forged_request,
+            decision=forged_decision,
+        )
+    assert audit_path.read_text(encoding="utf-8") == "keep\n"
 
 
 @pytest.mark.parametrize("task_id", ["", "contains space", "../escape", "x" * 129])

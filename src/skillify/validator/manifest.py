@@ -123,7 +123,7 @@ def validate_manifest_semantics(
         )
 
     permissions = data.get("permissions", [])
-    if isinstance(permissions, (list, dict)):
+    if isinstance(permissions, dict):
         try:
             from skillify.agent.permissions import PermissionManifest
 

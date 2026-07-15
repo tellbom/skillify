@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -28,6 +28,24 @@ _SHELL_EXECUTABLES = frozenset(
         "powershell", "pwsh", "sh", "timeout", "xargs", "zsh",
     }
 )
+
+
+class PermissionValidationError(ValueError):
+    """A stable fail-closed error for malformed or oversized policy inputs."""
+
+
+_MAX_POLICIES = 64
+_MAX_ENTRIES = 256
+_MAX_PATTERN_LENGTH = 1024
+_MAX_COMMAND_PATTERN_LENGTH = 512
+_MAX_GLOB_SEGMENTS = 128
+_MAX_REQUEST_PATH_LENGTH = 4096
+_MAX_COMMAND_ARGUMENTS = 256
+_MAX_ARGUMENT_LENGTH = 4096
+_MAX_PROMPT_LENGTH = 1_048_576
+_MAX_ENVIRONMENT_VALUE_LENGTH = 65_536
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+_OPERATION_ORIGINS = frozenset({"local", "web"})
 
 
 class PermissionAction(str, Enum):
@@ -66,6 +84,21 @@ class OperationRequest:
     prompt: str | None = field(default=None, repr=False, compare=False)
     environment: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
 
+    def __post_init__(self) -> None:
+        if type(self.origin) is str:
+            object.__setattr__(self, "origin", self.origin.strip().casefold())
+        if type(self.environment) in {dict, _MAPPING_PROXY_TYPE}:
+            if len(self.environment) > _MAX_ENTRIES:
+                raise PermissionValidationError(
+                    "environment must be a bounded dictionary"
+                )
+            object.__setattr__(
+                self,
+                "environment",
+                MappingProxyType(dict(self.environment)),
+            )
+        _validate_operation_request(self, require_exact_class=False)
+
 
 @dataclass(frozen=True)
 class PermissionDecision:
@@ -73,12 +106,116 @@ class PermissionDecision:
     matched_policy_ids: tuple[str, ...]
     reason_codes: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        _validate_permission_decision(self, require_exact_class=False)
+
+
+def _bounded_optional_string(
+    value: object,
+    *,
+    name: str,
+    maximum: int,
+) -> None:
+    if value is not None and (
+        type(value) is not str or len(value) > maximum or "\x00" in value
+    ):
+        raise PermissionValidationError(f"{name} must be a bounded string")
+
+
+def _validate_operation_request(
+    request: object,
+    *,
+    require_exact_class: bool,
+) -> None:
+    if require_exact_class and type(request) is not OperationRequest:
+        raise PermissionValidationError("request must be an OperationRequest")
+    try:
+        kind = request.kind  # type: ignore[attr-defined]
+        workspace = request.workspace  # type: ignore[attr-defined]
+        path = request.path  # type: ignore[attr-defined]
+        command = request.command  # type: ignore[attr-defined]
+        domain = request.domain  # type: ignore[attr-defined]
+        mcp_server = request.mcp_server  # type: ignore[attr-defined]
+        database_resource = request.database_resource  # type: ignore[attr-defined]
+        database_write = request.database_write  # type: ignore[attr-defined]
+        credential_name = request.credential_name  # type: ignore[attr-defined]
+        origin = request.origin  # type: ignore[attr-defined]
+        unattended = request.unattended  # type: ignore[attr-defined]
+        prompt = request.prompt  # type: ignore[attr-defined]
+        environment = request.environment  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise PermissionValidationError("request is missing required fields") from exc
+    if type(kind) is not OperationKind:
+        raise PermissionValidationError("kind must be an OperationKind")
+    if not isinstance(workspace, Path) or len(str(workspace)) > _MAX_REQUEST_PATH_LENGTH:
+        raise PermissionValidationError("workspace path length or type is invalid")
+    if path is not None and not isinstance(path, (str, Path)):
+        raise PermissionValidationError("path must be a string or Path")
+    if path is not None and (len(str(path)) > _MAX_REQUEST_PATH_LENGTH or "\x00" in str(path)):
+        raise PermissionValidationError("request path length is invalid")
+    if type(command) is not tuple:
+        raise PermissionValidationError("command must be a tuple of string arguments")
+    if len(command) > _MAX_COMMAND_ARGUMENTS:
+        raise PermissionValidationError("command has too many arguments")
+    if any(type(argument) is not str for argument in command):
+        raise PermissionValidationError("command must be a tuple of string arguments")
+    if any(len(argument) > _MAX_ARGUMENT_LENGTH or "\x00" in argument for argument in command):
+        raise PermissionValidationError("command argument length is invalid")
+    _bounded_optional_string(domain, name="domain", maximum=253)
+    _bounded_optional_string(mcp_server, name="mcp_server", maximum=128)
+    _bounded_optional_string(database_resource, name="database_resource", maximum=128)
+    _bounded_optional_string(credential_name, name="credential_name", maximum=256)
+    _bounded_optional_string(prompt, name="prompt", maximum=_MAX_PROMPT_LENGTH)
+    if type(origin) is not str or origin not in _OPERATION_ORIGINS:
+        raise PermissionValidationError("origin must be local or web")
+    if type(database_write) is not bool or type(unattended) is not bool:
+        raise PermissionValidationError("request flags must be strict booleans")
+    if type(environment) is not _MAPPING_PROXY_TYPE or len(environment) > _MAX_ENTRIES:
+        raise PermissionValidationError("environment must be a bounded immutable mapping")
+    if any(
+        type(key) is not str
+        or type(value) is not str
+        or len(key) > 256
+        or len(value) > _MAX_ENVIRONMENT_VALUE_LENGTH
+        or "\x00" in key
+        or "\x00" in value
+        for key, value in environment.items()
+    ):
+        raise PermissionValidationError("environment entries must be bounded strings")
+
+
+def _validate_permission_decision(
+    decision: object,
+    *,
+    require_exact_class: bool,
+) -> None:
+    if require_exact_class and type(decision) is not PermissionDecision:
+        raise PermissionValidationError("decision must be a PermissionDecision")
+    try:
+        action = decision.action  # type: ignore[attr-defined]
+        policy_ids = decision.matched_policy_ids  # type: ignore[attr-defined]
+        reasons = decision.reason_codes  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise PermissionValidationError("decision is missing required fields") from exc
+    if type(action) is not PermissionAction:
+        raise PermissionValidationError("action must be a PermissionAction")
+    if type(policy_ids) is not tuple or type(reasons) is not tuple:
+        raise PermissionValidationError("decision identifiers must be tuples")
+    if len(policy_ids) > _MAX_POLICIES or len(reasons) > _MAX_ENTRIES:
+        raise PermissionValidationError("decision identifiers exceed resource limits")
+    if any(type(item) is not str or not _IDENTIFIER_RE.fullmatch(item) for item in policy_ids):
+        raise PermissionValidationError("matched policy ID is invalid")
+    if any(type(item) is not str or not _IDENTIFIER_RE.fullmatch(item) for item in reasons):
+        raise PermissionValidationError("reason code is invalid")
+
 
 def _as_action(value: PermissionAction | str) -> PermissionAction:
+    if type(value) not in {PermissionAction, str}:
+        raise PermissionValidationError("permission action must be an enum or string")
     try:
         return value if isinstance(value, PermissionAction) else PermissionAction(value)
     except ValueError as exc:
-        raise ValueError(f"invalid permission action: {value!r}") from exc
+        raise PermissionValidationError(f"invalid permission action: {value!r}") from exc
 
 
 def _category(kind: OperationKind) -> str:
@@ -92,6 +229,18 @@ def _safe_relative_pattern(pattern: str) -> bool:
         return True
     pure = PurePosixPath(pattern)
     return not pure.is_absolute() and ".." not in pure.parts and "." not in pure.parts
+
+
+def _validate_bounded_entries(
+    name: str,
+    entries: tuple[str, ...],
+    *,
+    maximum_length: int,
+) -> None:
+    if len(entries) > _MAX_ENTRIES:
+        raise PermissionValidationError(f"{name} has too many entries")
+    if any(len(item) > maximum_length or "\x00" in item for item in entries):
+        raise PermissionValidationError(f"{name} entry length is invalid")
 
 
 def _match_segments(pattern: str, relative_path: str) -> bool:
@@ -209,6 +358,12 @@ def _normalize_domain(value: str) -> str | None:
     except UnicodeError:
         return None
     labels = normalized.split(".")
+    if all(
+        re.fullmatch(r"[0-9]+", label)
+        or re.fullmatch(r"0[xX][0-9A-Fa-f]+", label)
+        for label in labels
+    ):
+        return None
     if any(not label or len(label) > 63 for label in labels) or len(normalized) > 253:
         return None
     if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels):
@@ -259,10 +414,12 @@ class PermissionManifest:
     legacy_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not _IDENTIFIER_RE.fullmatch(self.policy_id):
-            raise ValueError("policy_id must use 1-128 safe identifier characters")
+        if type(self.policy_id) is not str or not _IDENTIFIER_RE.fullmatch(self.policy_id):
+            raise PermissionValidationError(
+                "policy_id must use 1-128 safe identifier characters"
+            )
         if type(self.unattended) is not bool:
-            raise ValueError("unattended must be a boolean")
+            raise PermissionValidationError("unattended must be a boolean")
         sequence_fields = {
             "readPaths": self.read_paths,
             "writePaths": self.write_paths,
@@ -273,58 +430,110 @@ class PermissionManifest:
             "legacy permissions": self.legacy_tags,
         }
         if any(
-            not isinstance(patterns, tuple)
-            or any(not isinstance(item, str) for item in patterns)
+            type(patterns) is tuple and len(patterns) > _MAX_ENTRIES
             for patterns in sequence_fields.values()
         ):
-            raise ValueError("permission allowlists must be sequences of strings")
-        if not isinstance(self.commands, Mapping) or any(
-            not isinstance(pattern, str) for pattern in self.commands
+            raise PermissionValidationError("permission allowlist has too many entries")
+        if any(
+            not isinstance(patterns, tuple)
+            or any(type(item) is not str for item in patterns)
+            for patterns in sequence_fields.values()
         ):
-            raise ValueError("commands must map argv patterns to actions")
+            raise PermissionValidationError(
+                "permission allowlists must be sequences of strings"
+            )
+        if type(self.commands) not in {dict, _MAPPING_PROXY_TYPE}:
+            raise PermissionValidationError("commands must map argv patterns to actions")
+        if len(self.commands) > _MAX_ENTRIES:
+            raise PermissionValidationError("commands has too many entries")
+        if any(
+            type(pattern) is not str for pattern in self.commands
+        ):
+            raise PermissionValidationError("commands must map argv patterns to actions")
+        for name, entries, maximum in (
+            ("readPaths", self.read_paths, _MAX_PATTERN_LENGTH),
+            ("writePaths", self.write_paths, _MAX_PATTERN_LENGTH),
+            ("networkDomains", self.network_domains, 253),
+            ("mcpServers", self.mcp_servers, 128),
+            ("databaseResources", self.database_resources, 128),
+            ("confirm", self.confirm, 32),
+            ("legacy permissions", self.legacy_tags, _MAX_COMMAND_PATTERN_LENGTH),
+        ):
+            _validate_bounded_entries(name, entries, maximum_length=maximum)
+        if any(len(pattern) > _MAX_COMMAND_PATTERN_LENGTH for pattern in self.commands):
+            raise PermissionValidationError("command pattern length is invalid")
         converted = {pattern: _as_action(action) for pattern, action in self.commands.items()}
         object.__setattr__(self, "commands", MappingProxyType(converted))
         for name, patterns in (("readPaths", self.read_paths), ("writePaths", self.write_paths)):
             if any(not _safe_relative_pattern(pattern) for pattern in patterns):
-                raise ValueError(f"{name} must contain workspace-relative glob patterns")
+                raise PermissionValidationError(
+                    f"{name} must contain workspace-relative glob patterns"
+                )
+            if any(len(PurePosixPath(pattern).parts) > _MAX_GLOB_SEGMENTS for pattern in patterns):
+                raise PermissionValidationError(f"{name} exceeds glob segments limit")
         if any(_parse_command_pattern(pattern) is None for pattern in converted):
-            raise ValueError("commands contains an invalid argv pattern")
+            raise PermissionValidationError("commands contains an invalid argv pattern")
         if any(pattern != "*" and _normalize_domain(pattern.removeprefix("*.")) is None for pattern in self.network_domains):
-            raise ValueError("networkDomains contains an invalid domain pattern")
+            raise PermissionValidationError(
+                "networkDomains contains an invalid domain pattern"
+            )
         for name, patterns in (
             ("mcpServers", self.mcp_servers),
             ("databaseResources", self.database_resources),
         ):
             if any(pattern != "*" and not _IDENTIFIER_RE.fullmatch(pattern) for pattern in patterns):
-                raise ValueError(f"{name} contains an invalid identifier")
+                raise PermissionValidationError(f"{name} contains an invalid identifier")
         valid_categories = {kind.value for kind in OperationKind}
         if any(category not in valid_categories for category in self.confirm):
-            raise ValueError("confirm contains an unknown operation category")
+            raise PermissionValidationError(
+                "confirm contains an unknown operation category"
+            )
 
     @classmethod
     def from_value(cls, policy_id: str, value: object) -> "PermissionManifest":
-        if isinstance(value, list) and all(isinstance(item, str) and item for item in value):
-            return cls(policy_id=policy_id, legacy_tags=tuple(value))
-        if not isinstance(value, Mapping):
-            raise ValueError("permissions must be a legacy string list or structured object")
+        if type(value) is list:
+            if len(value) > _MAX_ENTRIES:
+                raise PermissionValidationError(
+                    "legacy permissions has too many entries"
+                )
+            if all(type(item) is str and item for item in value):
+                return cls(policy_id=policy_id, legacy_tags=tuple(value))
+        if type(value) is not dict:
+            raise PermissionValidationError(
+                "permissions must be a legacy string list or structured object"
+            )
         allowed_keys = {
             "readPaths", "writePaths", "commands", "networkDomains", "mcpServers",
             "databaseResources", "unattended", "confirm",
         }
+        if len(value) > len(allowed_keys):
+            raise PermissionValidationError("permissions contains too many keys")
         unknown = set(value) - allowed_keys
         if unknown:
             rendered = sorted(repr(key) for key in unknown)
-            raise ValueError(f"permissions contains unknown keys: {rendered!r}")
+            raise PermissionValidationError(
+                f"permissions contains unknown keys: {rendered!r}"
+            )
         list_keys = {
             "readPaths", "writePaths", "networkDomains", "mcpServers",
             "databaseResources", "confirm",
         }
-        if any(key in value and not isinstance(value[key], (list, tuple)) for key in list_keys):
-            raise ValueError("permission allowlists must be arrays")
-        if "commands" in value and not isinstance(value["commands"], Mapping):
-            raise ValueError("commands must be an object")
+        if any(
+            key in value and type(value[key]) not in {list, tuple}
+            for key in list_keys
+        ):
+            raise PermissionValidationError("permission allowlists must be arrays")
+        if any(
+            key in value and len(value[key]) > _MAX_ENTRIES
+            for key in list_keys
+        ):
+            raise PermissionValidationError("permission allowlist has too many entries")
+        if "commands" in value and type(value["commands"]) is not dict:
+            raise PermissionValidationError("commands must be an object")
+        if "commands" in value and len(value["commands"]) > _MAX_ENTRIES:
+            raise PermissionValidationError("commands has too many entries")
         if "unattended" in value and type(value["unattended"]) is not bool:
-            raise ValueError("unattended must be a boolean")
+            raise PermissionValidationError("unattended must be a boolean")
         try:
             return cls(
                 policy_id=policy_id,
@@ -338,9 +547,12 @@ class PermissionManifest:
                 confirm=tuple(value.get("confirm", ())),
             )
         except (TypeError, AttributeError) as exc:
-            raise ValueError("permissions has an invalid structured value") from exc
+            raise PermissionValidationError(
+                "permissions has an invalid structured value"
+            ) from exc
 
     def decide(self, request: OperationRequest) -> PermissionDecision:
+        _validate_operation_request(request, require_exact_class=True)
         category = _category(request.kind)
         if self.legacy_tags:
             deny_tags = {tag.removeprefix("deny:") for tag in self.legacy_tags if tag.startswith("deny:")}
@@ -401,9 +613,14 @@ class PermissionManifest:
 
         if request.kind is OperationKind.COMMAND and request.command:
             executable = Path(request.command[0]).name.lower()
-            if executable in (
+            dangerous_executables = (
                 _DESTRUCTIVE_EXECUTABLES | _PRIVILEGED_EXECUTABLES | _SHELL_EXECUTABLES
-            ):
+            )
+            multicall_danger = executable in {"busybox", "toybox"} and any(
+                Path(argument).name.lower() in dangerous_executables
+                for argument in request.command[1:]
+            )
+            if executable in dangerous_executables or multicall_danger:
                 action = _more_restrictive(action, PermissionAction.ASK)
                 reasons.append("dangerous-command")
         if request.kind is OperationKind.CREDENTIAL:
@@ -429,6 +646,12 @@ class PermissionManifest:
 class MergedPermissions:
     policies: tuple[PermissionManifest, ...]
 
+    def __post_init__(self) -> None:
+        if type(self.policies) is not tuple or len(self.policies) > _MAX_POLICIES:
+            raise PermissionValidationError("merged policies exceed resource limits")
+        if any(type(policy) is not PermissionManifest for policy in self.policies):
+            raise PermissionValidationError("merged policies contain an invalid policy")
+
     def decide(self, request: OperationRequest) -> PermissionDecision:
         if not self.policies:
             return PermissionDecision(PermissionAction.DENY, (), ("no-policy",))
@@ -445,8 +668,14 @@ class MergedPermissions:
         )
 
 
-def merge_permissions(policies: Sequence[PermissionManifest]) -> MergedPermissions:
+def merge_permissions(
+    policies: list[PermissionManifest] | tuple[PermissionManifest, ...],
+) -> MergedPermissions:
     """Retain each policy so a later allow can never erase an earlier denial."""
+    if type(policies) not in {list, tuple}:
+        raise PermissionValidationError("policies must be a bounded sequence")
+    if len(policies) > _MAX_POLICIES:
+        raise PermissionValidationError("too many policies")
     return MergedPermissions(tuple(policies))
 
 
@@ -577,14 +806,14 @@ def write_authorization_audit(
     decision: PermissionDecision,
 ) -> None:
     """Append one locked JSONL record, excluding prompts, values, argv, and external paths."""
-    if not _IDENTIFIER_RE.fullmatch(task_id):
-        raise ValueError("task_id must use 1-128 safe identifier characters")
-    for policy_id in decision.matched_policy_ids:
-        if not _IDENTIFIER_RE.fullmatch(policy_id):
-            raise ValueError("matched policy ID is invalid")
-    for reason in decision.reason_codes:
-        if not _IDENTIFIER_RE.fullmatch(reason):
-            raise ValueError("reason code is invalid")
+    if not isinstance(audit_path, Path) or len(str(audit_path)) > _MAX_REQUEST_PATH_LENGTH:
+        raise PermissionValidationError("audit path length or type is invalid")
+    if type(task_id) is not str or not _IDENTIFIER_RE.fullmatch(task_id):
+        raise PermissionValidationError(
+            "task_id must use 1-128 safe identifier characters"
+        )
+    _validate_operation_request(request, require_exact_class=True)
+    _validate_permission_decision(decision, require_exact_class=True)
     record = {
         "action": decision.action.value,
         "matchedPolicyIds": list(decision.matched_policy_ids),
@@ -632,5 +861,5 @@ def write_authorization_audit(
 __all__ = [
     "MergedPermissions", "OperationKind", "OperationRequest", "PermissionAction",
     "PermissionDecision", "PermissionManifest", "merge_permissions", "redact_path",
-    "summarize_permissions", "write_authorization_audit",
+    "PermissionValidationError", "summarize_permissions", "write_authorization_audit",
 ]
