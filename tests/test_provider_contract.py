@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,6 +61,15 @@ def test_task_spec_rejects_invalid_ids_protocol_prompt_and_timeout(kwargs) -> No
     with pytest.raises(ValueError): TaskSpec(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    [float("nan"), float("inf"), float("-inf"), 0, -1],
+)
+def test_task_spec_rejects_non_finite_or_non_positive_timeout(timeout_seconds: float) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        TaskSpec("task", "work", timeout_seconds=timeout_seconds)
+
+
 def test_runtime_config_is_immutable_validated_and_redacted() -> None:
     config = _runtime()
     assert config.redacted() == {
@@ -74,6 +84,28 @@ def test_runtime_config_is_immutable_validated_and_redacted() -> None:
         ModelRuntimeConfig("p", "https://api.openai.com/v1", "m", ("model.intranet.example",), ("API_KEY",))
     with pytest.raises(ValueError, match="credential"):
         ModelRuntimeConfig("p", "https://model.intranet.example/v1", "m", ("model.intranet.example",), ("KEY=value",))
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://model.intranet.example:not-a-port/v1",
+    "https://model.intranet.example:99999/v1",
+])
+def test_runtime_config_rejects_invalid_or_out_of_range_ports(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="port"):
+        ModelRuntimeConfig(
+            "p", endpoint, "m", ("model.intranet.example",), ("API_KEY",),
+        )
+
+
+@pytest.mark.parametrize("field", ["startup_timeout_seconds", "shutdown_timeout_seconds"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 0, -1])
+def test_provider_start_spec_rejects_non_finite_or_non_positive_timeouts(
+    tmp_path: Path,
+    field: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        replace(_start(tmp_path), **{field: value})
 
 
 def test_task_event_defensively_copies_details_and_rejects_sensitive_fields() -> None:
@@ -140,3 +172,21 @@ def test_fake_provider_stop_cleans_handles_and_sessions(tmp_path: Path) -> None:
     assert provider.stop(handle).state is TaskState.SUCCEEDED
     assert provider.live_handle_count == provider.live_session_count == 0
     assert provider.stop(handle).state is TaskState.SUCCEEDED
+
+
+def test_fake_provider_stop_clears_cancellation_marker_before_id_reuse(tmp_path: Path) -> None:
+    values = iter(("handle-1", "session-reused", "handle-2", "session-reused"))
+    provider = FakeProvider(clock=lambda: NOW, id_factory=lambda: next(values))
+    start_spec = _start(tmp_path)
+
+    first_handle = provider.start(start_spec)
+    first_session = provider.create_session(first_handle, TaskSpec("task-1", "private"))
+    provider.cancel(first_handle, first_session)
+    provider.stop(first_handle)
+
+    second_handle = provider.start(start_spec)
+    second_session = provider.create_session(second_handle, TaskSpec("task-2", "private"))
+    events = list(provider.stream_events(second_handle, second_session))
+
+    assert second_session.session_id == first_session.session_id
+    assert events[-1].state is TaskState.SUCCEEDED

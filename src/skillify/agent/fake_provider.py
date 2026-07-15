@@ -86,5 +86,7 @@ class FakeProvider:
     def stop(self, handle: ProviderHandle) -> ProviderResult:
         self.handles.pop(handle.handle_id, None)
         stale = [key for key, value in self.sessions.items() if value.handle_id == handle.handle_id]
-        for key in stale: self.sessions.pop(key, None)
+        for key in stale:
+            self.sessions.pop(key, None)
+            self.cancelled_session_ids.discard(key)
         return ProviderResult(TaskState.SUCCEEDED)

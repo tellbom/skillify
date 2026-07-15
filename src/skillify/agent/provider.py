@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,10 @@ class ModelRuntimeConfig:
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.endpoint)
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("model endpoint port is invalid") from exc
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("model endpoint must be an absolute HTTP(S) URL without userinfo")
         if parsed.query or parsed.fragment or parsed.hostname not in self.allowed_endpoint_hosts:
@@ -69,7 +74,10 @@ class ProviderStartSpec:
             raise ValueError("workspace must be an explicit allowed absolute path")
         if any(not path.is_absolute() for path in self.allowed_paths):
             raise ValueError("allowed paths must be absolute")
-        if min(self.startup_timeout_seconds, self.shutdown_timeout_seconds) <= 0:
+        if not all(
+            math.isfinite(value) and value > 0
+            for value in (self.startup_timeout_seconds, self.shutdown_timeout_seconds)
+        ):
             raise ValueError("timeouts must be positive")
 
 
@@ -94,7 +102,7 @@ class TaskSpec:
             raise ValueError("task id and prompt must be non-empty")
         if self.task_protocol_version != TASK_PROTOCOL_VERSION:
             raise ValueError("unsupported task protocol version")
-        if self.timeout_seconds <= 0:
+        if not (math.isfinite(self.timeout_seconds) and self.timeout_seconds > 0):
             raise ValueError("task timeout must be positive")
 
 
