@@ -246,6 +246,62 @@ def test_status_stop_and_logs_are_local_and_idempotent(tmp_path: Path) -> None:
     assert {status.exit_code, stop.exit_code, logs.exit_code} == {0}
 
 
+@pytest.mark.parametrize("identity_valid", [True, False])
+def test_status_keeps_runtime_and_reports_degraded_for_nonempty_owned_or_uncertain_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity_valid: bool
+) -> None:
+    from skillify.cli.agent_cmd import AgentRuntimeState, write_runtime_state
+
+    env = _env(tmp_path); paths = load_agent_paths(env, home=tmp_path)
+    state = AgentRuntimeState(
+        1, __import__("os").getuid(), 4242, 4242, 4242, "100",
+        "/opt/skillify/opencode", "workspace", "task-1", "session-1", "1.15.11",
+        "2026-07-16T00:00:00+00:00", "running",
+    )
+    write_runtime_state(paths, state)
+    child = type("Member", (), {
+        "pid": 5000, "pgid": 4242, "sid": 4242,
+        "uid": state.owner_uid, "start_token": "101",
+    })()
+    class Inspector:
+        def is_alive(self, pid): return not identity_valid
+        def pgid(self, pid): return 9999
+        def session_id(self, pid): return 4242
+        def start_token(self, pid): return "reused"
+        def uid(self, pid): return state.owner_uid
+        def executable(self, pid): return state.executable
+        def group_members(self, pgid): return (child,)
+    monkeypatch.setattr(agent_cmd, "LinuxProcessInspector", lambda: Inspector())
+
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
+    assert result.exit_code == 0
+    assert _json(result)["data"] == {
+        "state": "degraded", "task_id": "task-1", "session_id": "session-1",
+    }
+    assert paths.runtime_path.exists()
+
+
+def test_status_deletes_runtime_only_after_whole_group_is_confirmed_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from skillify.cli.agent_cmd import AgentRuntimeState, write_runtime_state
+
+    env = _env(tmp_path); paths = load_agent_paths(env, home=tmp_path)
+    write_runtime_state(paths, AgentRuntimeState(
+        1, __import__("os").getuid(), 4242, 4242, 4242, "100",
+        "/opt/skillify/opencode", "workspace", "task-1", "session-1", "1.15.11",
+        "2026-07-16T00:00:00+00:00", "running",
+    ))
+    class EmptyInspector:
+        def is_alive(self, pid): return False
+        def group_members(self, pgid): return ()
+    monkeypatch.setattr(agent_cmd, "LinuxProcessInspector", lambda: EmptyInspector())
+
+    result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
+    assert _json(result)["data"] == {"state": "stopped"}
+    assert not paths.runtime_path.exists()
+
+
 @pytest.mark.parametrize(
     "runtime_data",
     [
@@ -394,7 +450,7 @@ def test_status_maps_process_inspection_oserror_to_config_invalid(
     monkeypatch.setattr(agent_cmd, "read_runtime_state", lambda paths: state)
     monkeypatch.setattr(
         agent_cmd,
-        "validate_owned_process",
+        "_confirmed_owned_group",
         lambda state, inspector: (_ for _ in ()).throw(PermissionError("private path")),
     )
     result = runner.invoke(agent_app, ["status", "--format", "json"], env=_env(tmp_path))

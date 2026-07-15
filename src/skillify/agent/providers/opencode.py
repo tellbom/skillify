@@ -21,6 +21,20 @@ class ProviderCrashed(OpenCodeError): pass
 class ProviderTimeout(OpenCodeError): pass
 
 
+class ProviderCleanupPending(OpenCodeError):
+    def __init__(self, handle: ProviderHandle):
+        super().__init__("opencode cleanup is pending")
+        self.handle = handle
+
+
+class ProviderCleanupUnrecoverable(OpenCodeError):
+    pass
+
+
+class _MalformedSseEvent(Exception):
+    pass
+
+
 class LifecycleReasonCode(str, Enum):
     OPENCODE_ERROR = "OPENCODE_ERROR"
     PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
@@ -59,7 +73,7 @@ class RequestsTransport:
     def iter_sse(self, url, *, password, timeout):
         with self.session.get(url, headers={"Authorization": _auth(password)}, timeout=timeout, stream=True) as response:
             response.raise_for_status()
-            for line in response.iter_lines(decode_unicode=True):
+            for line in response.iter_lines(chunk_size=1, decode_unicode=True):
                 if line and line.startswith("data: "):
                     value = json.loads(line[6:])
                     if isinstance(value, dict): yield value
@@ -185,6 +199,9 @@ class OpenCodeProvider:
                              text=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base_url, deadline = f"http://127.0.0.1:{port}", self.monotonic() + spec.startup_timeout_seconds
         pgid = process.pid; candidate = None
+        provisional_handle = ProviderHandle(
+            uuid.uuid4().hex, "opencode", "unknown", base_url, process.pid,
+        )
         try:
             pgid = self.getpgid(process.pid)
             start_token = self.process_start_token(process.pid)
@@ -194,6 +211,7 @@ class OpenCodeProvider:
             candidate = _Live(
                 process, password, spec, pgid, start_token, uid, sid, executable,
             )
+            self._live[provisional_handle.handle_id] = candidate
             while True:
                 if process.poll() is not None: raise ProviderCrashed("opencode exited during startup")
                 if self.monotonic() >= deadline: raise ProviderTimeout("opencode startup timed out")
@@ -210,29 +228,72 @@ class OpenCodeProvider:
                 version = health.get("version")
                 if not isinstance(version, str) or not version.strip():
                     raise OpenCodeError("opencode health response omitted version")
-                handle = ProviderHandle(uuid.uuid4().hex, "opencode", version, base_url, process.pid)
-                self._live[handle.handle_id] = candidate
+                handle = ProviderHandle(
+                    provisional_handle.handle_id, "opencode", version, base_url, process.pid,
+                )
                 return handle
-        except BaseException:
+        except BaseException as original_error:
+            cleanup_error = None
             try:
                 if candidate is None:
-                    self._terminate(process, pgid, spec.shutdown_timeout_seconds)
+                    self._terminate_unverified_group(
+                        process, pgid, spec.shutdown_timeout_seconds,
+                    )
                 else:
                     self._terminate_owned_group(candidate)
-            except Exception:
-                pass
-            finally:
+            except BaseException as exc:
+                cleanup_error = exc
+            if candidate is None:
                 password = ""
+                if cleanup_error is not None:
+                    raise ProviderCleanupUnrecoverable(
+                        "opencode cleanup could not be confirmed without a complete identity"
+                    ) from original_error
+                raise
+            candidate.password = ""
+            password = ""
+            if cleanup_error is not None:
+                raise ProviderCleanupPending(provisional_handle) from original_error
+            self._live.pop(provisional_handle.handle_id, None)
             raise
 
-    def _terminate(self, process: ManagedProcess, pgid: int, timeout: float) -> None:
-        if process.poll() is not None: return
-        self.killpg(pgid, signal.SIGTERM)
+    def _unverified_group_is_empty(self, pgid: int) -> bool:
         try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            return not tuple(self.group_members(pgid))
+        except (OSError, TypeError):
+            return False
+
+    def _terminate_unverified_group(
+        self, process: ManagedProcess, pgid: int, timeout: float,
+    ) -> None:
+        if self._unverified_group_is_empty(pgid):
+            return
+        try:
+            self.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            if self._unverified_group_is_empty(pgid):
+                return
+        if process.poll() is None:
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                pass
+        if self._unverified_group_is_empty(pgid):
+            return
+        try:
             self.killpg(pgid, signal.SIGKILL)
-            process.wait(timeout=1)
+        except ProcessLookupError:
+            if self._unverified_group_is_empty(pgid):
+                return
+        if process.poll() is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        if not self._unverified_group_is_empty(pgid):
+            raise ProviderCleanupUnrecoverable(
+                "opencode process group exit was not confirmed"
+            )
 
     def _owned_group_snapshot(self, live: _Live):
         try:
@@ -281,12 +342,23 @@ class OpenCodeProvider:
             raise OpenCodeError("opencode process group ownership changed")
         if not members:
             return
-        self.killpg(live.pgid, signal.SIGTERM)
+        try:
+            self.killpg(live.pgid, signal.SIGTERM)
+        except ProcessLookupError as exc:
+            members = self._confirmed_owned_group(live)
+            if members == ():
+                return
+            raise OpenCodeError("opencode process group exit was not confirmed") from exc
         if live.process.poll() is None:
             try:
                 live.process.wait(timeout=live.spec.shutdown_timeout_seconds)
             except subprocess.TimeoutExpired:
                 pass
+        members = self._confirmed_owned_group(live)
+        if members is None:
+            raise OpenCodeError("opencode process group ownership changed")
+        if not members:
+            return
         if self._wait_owned_group_gone(live, live.spec.shutdown_timeout_seconds):
             return
         members = self._confirmed_owned_group(live)
@@ -294,7 +366,13 @@ class OpenCodeProvider:
             raise OpenCodeError("opencode process group ownership changed")
         if not members:
             return
-        self.killpg(live.pgid, signal.SIGKILL)
+        try:
+            self.killpg(live.pgid, signal.SIGKILL)
+        except ProcessLookupError as exc:
+            members = self._confirmed_owned_group(live)
+            if members == ():
+                return
+            raise OpenCodeError("opencode process group exit was not confirmed") from exc
         if live.process.poll() is None:
             try:
                 live.process.wait(timeout=1)
@@ -325,6 +403,24 @@ class OpenCodeProvider:
         return TaskEvent(session.task_id, session.session_id, "opencode", handle.provider_version, 1, 1,
                          self.clock(), kind, state, values)
 
+    @staticmethod
+    def _event_text(value: object) -> str:
+        if not isinstance(value, str) or not value:
+            raise _MalformedSseEvent()
+        return value
+
+    def _failed_events(self, handle, session, sequence, reason_code):
+        sequence += 1
+        yield self._event(
+            handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence,
+            {"reason_code": reason_code.value},
+        )
+        sequence += 1
+        yield self._event(
+            handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
+            {"reason_code": reason_code.value},
+        )
+
     def stream_events(self, handle, session):
         live = self._live[handle.handle_id]
         if live.process.poll() is not None: raise ProviderCrashed("opencode exited")
@@ -338,27 +434,45 @@ class OpenCodeProvider:
                 props = raw.get("properties", {})
                 if not isinstance(props, dict) or props.get("sessionID") != session.session_id: continue
                 sequence += 1; kind = raw.get("type")
+                if not isinstance(kind, str):
+                    raise _MalformedSseEvent()
                 if kind == "todo.updated":
-                    yield self._event(handle, session, EventType.PLAN_READY, TaskState.RUNNING, sequence, {"test_count": len(props.get("todos", []))})
+                    todos = props.get("todos")
+                    if not isinstance(todos, list):
+                        raise _MalformedSseEvent()
+                    yield self._event(handle, session, EventType.PLAN_READY, TaskState.RUNNING, sequence, {"test_count": len(todos)})
                 elif kind == "permission.asked":
                     yield self._event(handle, session, EventType.TOOL_REQUESTED, TaskState.AWAITING_APPROVAL, sequence,
-                                      {"tool_name": str(props.get("permission", "unknown")), "tool_call_id": str(props.get("id", "unknown"))})
+                                      {"tool_name": self._event_text(props.get("permission")),
+                                       "tool_call_id": self._event_text(props.get("id"))})
                 elif kind == "message.part.updated":
-                    part = props.get("part", {}); state = part.get("state", {}) if isinstance(part, dict) else {}
-                    tool = str(part.get("tool", "unknown")) if isinstance(part, dict) else "unknown"
-                    call_id = str(part.get("callID", "unknown")) if isinstance(part, dict) else "unknown"
-                    status = state.get("status") if isinstance(state, dict) else None
-                    metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
-                    exit_code = metadata.get("exit", 0) if isinstance(metadata, dict) else 0
+                    part = props.get("part")
+                    if not isinstance(part, dict):
+                        raise _MalformedSseEvent()
+                    state = part.get("state")
+                    if not isinstance(state, dict):
+                        raise _MalformedSseEvent()
+                    tool = self._event_text(part.get("tool"))
+                    call_id = self._event_text(part.get("callID"))
+                    status = self._event_text(state.get("status"))
+                    metadata = state.get("metadata", {})
+                    if not isinstance(metadata, dict):
+                        raise _MalformedSseEvent()
+                    exit_code = metadata.get("exit", 0)
+                    if type(exit_code) is not int:
+                        raise _MalformedSseEvent()
                     event_type = EventType.TEST_COMPLETED if tool == "test" and status == "completed" else (
                         EventType.TOOL_COMPLETED if status == "completed" else EventType.TOOL_REQUESTED
                     )
                     event_state = TaskState.RUNNING if status == "completed" else TaskState.AWAITING_APPROVAL
                     yield self._event(handle, session, event_type, event_state, sequence,
-                                      {"tool_name": tool, "tool_call_id": call_id, "exit_code": int(exit_code)})
+                                      {"tool_name": tool, "tool_call_id": call_id, "exit_code": exit_code})
                 elif kind == "session.diff":
+                    diff = props.get("diff")
+                    if not isinstance(diff, list):
+                        raise _MalformedSseEvent()
                     yield self._event(handle, session, EventType.ARTIFACT_CREATED, TaskState.RUNNING, sequence,
-                                      {"artifact_count": len(props.get("diff", []))})
+                                      {"artifact_count": len(diff)})
                 elif kind == "session.error":
                     yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
                                       {"reason_code": LifecycleReasonCode.OPENCODE_ERROR.value})
@@ -367,20 +481,19 @@ class OpenCodeProvider:
                     yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.SUCCEEDED, sequence, {"result_state": "succeeded"})
                     return
             self._abort_quietly(handle, session, live)
-            sequence += 1
-            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence,
-                              {"reason_code": LifecycleReasonCode.PROVIDER_TIMEOUT.value})
-            sequence += 1
-            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
-                              {"reason_code": LifecycleReasonCode.PROVIDER_TIMEOUT.value})
+            yield from self._failed_events(
+                handle, session, sequence, LifecycleReasonCode.PROVIDER_TIMEOUT,
+            )
+        except _MalformedSseEvent:
+            self._abort_quietly(handle, session, live)
+            yield from self._failed_events(
+                handle, session, sequence, LifecycleReasonCode.OPENCODE_ERROR,
+            )
         except (requests.RequestException, ValueError):
             self._abort_quietly(handle, session, live)
-            sequence += 1
-            yield self._event(handle, session, EventType.TASK_BLOCKED, TaskState.BLOCKED, sequence,
-                              {"reason_code": LifecycleReasonCode.PROVIDER_NETWORK.value})
-            sequence += 1
-            yield self._event(handle, session, EventType.TASK_FINISHED, TaskState.FAILED, sequence,
-                              {"reason_code": LifecycleReasonCode.PROVIDER_NETWORK.value})
+            yield from self._failed_events(
+                handle, session, sequence, LifecycleReasonCode.PROVIDER_NETWORK,
+            )
         finally:
             self._tasks.pop(session.session_id, None)
 

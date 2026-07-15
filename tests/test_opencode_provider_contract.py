@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import signal
+import socket
 import threading
+import time
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,8 @@ from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskS
 from skillify.agent.providers.opencode import (
     OpenCodeError,
     OpenCodeProvider,
+    ProviderCleanupPending,
+    ProviderCleanupUnrecoverable,
     ProviderCrashed,
     ProviderTimeout,
     RequestsTransport,
@@ -57,7 +61,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture()
-def fake_server():
+def fake_server(monkeypatch):
+    monkeypatch.setattr(socket, "getfqdn", lambda name: name)
     Handler.events = []; Handler.requests = []
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -101,6 +106,33 @@ def _provider(fake_server, monkeypatch, process=None, monotonic=None):
         group_members=lambda pgid: _fake_group_members(process, pgid),
     )
     return provider, captured, killed, process
+
+
+def _memory_provider(monkeypatch, *, events=()):
+    process = FakeProcess(); killed = []
+    class MemoryTransport:
+        requests = []
+        def request_json(self, method, url, **kwargs):
+            self.requests.append((method, url))
+            if url.endswith("/global/health"):
+                return {"healthy": True, "version": "1.15.11"}
+            if url.endswith("/session"):
+                return {"id": "session-1"}
+            return {}
+        def iter_sse(self, *args, **kwargs):
+            yield from events
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    provider = OpenCodeProvider(
+        transport=MemoryTransport(), popen=lambda argv, **kwargs: process,
+        port_factory=lambda: 32123, password_factory=lambda: "temporary-password",
+        monotonic=lambda: 0.0, sleep=lambda value: None,
+        killpg=lambda pgid, sig: killed.append((pgid, sig)), getpgid=lambda pid: 4242,
+        process_start_token=lambda pid: "100", process_uid=lambda pid: __import__("os").getuid(),
+        process_session_id=lambda pid: 4242,
+        process_executable=lambda pid: "/opt/skillify/opencode",
+        group_members=lambda pgid: _fake_group_members(process, pgid),
+    )
+    return provider, killed, process
 
 
 def test_requests_transport_ignores_hostile_ambient_proxy(fake_server, monkeypatch):
@@ -224,6 +256,39 @@ def test_provider_stop_retains_live_state_when_group_exit_is_unconfirmed(
     assert handle.handle_id in provider._live
 
 
+@pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGKILL])
+@pytest.mark.parametrize("disappears", [True, False])
+def test_provider_signal_lookup_race_only_succeeds_after_group_is_confirmed_empty(
+    tmp_path, monkeypatch, signal_number, disappears
+):
+    provider, killed, process = _memory_provider(monkeypatch)
+    handle = provider.start(_spec(tmp_path)); process.returncode = 0
+    child = type("Member", (), {
+        "pid": 5000, "pgid": 4242, "sid": 4242,
+        "uid": __import__("os").getuid(), "start_token": "101",
+    })()
+    members = [child]
+    provider.group_members = lambda pgid: tuple(members)
+    provider._wait_owned_group_gone = lambda live, timeout: False
+
+    def raced_killpg(pgid, sig):
+        killed.append((pgid, sig))
+        if sig == signal_number:
+            if disappears:
+                members.clear()
+            raise ProcessLookupError()
+
+    provider.killpg = raced_killpg
+    if disappears:
+        assert provider.stop(handle).state is TaskState.SUCCEEDED
+        assert handle.handle_id not in provider._live
+    else:
+        with pytest.raises(OpenCodeError, match="process group"):
+            provider.stop(handle)
+        assert handle.handle_id in provider._live
+    assert (4242, signal_number) in killed
+
+
 def test_timeout_emits_blocked_then_failed(tmp_path, fake_server, monkeypatch):
     Handler.events = []
     values = iter((0.0, 0.0, 2.0))
@@ -252,7 +317,8 @@ def test_continuous_sse_heartbeats_cannot_extend_absolute_task_deadline(
         def __enter__(self): return self
         def __exit__(self, *args): return False
         def raise_for_status(self): return None
-        def iter_lines(self, decode_unicode=True):
+        def iter_lines(self, chunk_size=None, decode_unicode=True):
+            assert chunk_size == 1
             yield ": heartbeat-1"
             yield ": heartbeat-2"
             raise AssertionError("transport failed to return control before more heartbeats")
@@ -273,6 +339,58 @@ def test_continuous_sse_heartbeats_cannot_extend_absolute_task_deadline(
         "PROVIDER_TIMEOUT", "PROVIDER_TIMEOUT",
     ]
     assert Handler.requests[-1][1] == "/session/session-1/abort"
+
+
+def test_real_open_sse_heartbeats_honor_absolute_deadline_and_abort(tmp_path, monkeypatch):
+    monkeypatch.setattr(socket, "getfqdn", lambda name: name)
+    class OpenHeartbeatHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        aborted = threading.Event()
+        def log_message(self, format, *args): return
+        def _json(self, value, status=200):
+            body = json.dumps(value).encode()
+            self.send_response(status); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if self.path == "/global/health":
+                return self._json({"healthy": True, "version": "1.15.11"})
+            if self.path != "/event":
+                return self._json({}, 404)
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache"); self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(b": h\n\n"); self.wfile.flush(); time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0")); self.rfile.read(length)
+            if self.path == "/session": return self._json({"id": "session-1"})
+            if self.path.endswith("/prompt_async"):
+                self.send_response(204); self.end_headers(); return
+            if self.path.endswith("/abort"):
+                type(self).aborted.set(); return self._json(True)
+            if self.path == "/instance/dispose": return self._json(True)
+            return self._json({}, 404)
+
+    OpenHeartbeatHandler.aborted = threading.Event()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OpenHeartbeatHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        provider, _, _, _ = _provider(server, monkeypatch, monotonic=time.monotonic)
+        handle = provider.start(_spec(tmp_path)); session = provider.create_session(
+            handle, TaskSpec("task-heartbeat-real", "private", timeout_seconds=0.15)
+        )
+        started = time.monotonic()
+        events = list(provider.stream_events(handle, session))
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.8
+        assert [event.details["reason_code"] for event in events[-2:]] == [
+            "PROVIDER_TIMEOUT", "PROVIDER_TIMEOUT",
+        ]
+        assert OpenHeartbeatHandler.aborted.wait(0.5)
+    finally:
+        server.shutdown(); thread.join(timeout=2); server.server_close()
 
 
 def test_unhealthy_startup_deadline_terminates_process_group(tmp_path, monkeypatch):
@@ -367,6 +485,66 @@ def test_start_interrupt_cleans_child_after_group_leader_exits(tmp_path, monkeyp
     assert members == [] and provider._live == {}
 
 
+def test_unconfirmed_start_interrupt_raises_typed_recovery_handle_and_clears_password(
+    tmp_path, monkeypatch
+):
+    process = FakeProcess(); killed = []
+    leader = type("Member", (), {"pid": 4242, "pgid": 4242, "sid": 4242,
+            "uid": __import__("os").getuid(), "start_token": "100"})()
+    child = type("Member", (), {"pid": 5000, "pgid": 4242, "sid": 4242,
+            "uid": __import__("os").getuid(), "start_token": "101"})()
+    members = [leader, child]
+    class Interrupted:
+        def request_json(self, *args, **kwargs): raise KeyboardInterrupt()
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    provider = OpenCodeProvider(
+        transport=Interrupted(), popen=lambda argv, **kwargs: process,
+        port_factory=lambda: 32123, password_factory=lambda: "temporary-password",
+        monotonic=lambda: 0.0, sleep=lambda value: None,
+        killpg=lambda pgid, sig: killed.append((pgid, sig)), getpgid=lambda pid: 4242,
+        process_start_token=lambda pid: "100", process_uid=lambda pid: __import__("os").getuid(),
+        process_session_id=lambda pid: 4242,
+        process_executable=lambda pid: "/opt/skillify/opencode",
+        group_members=lambda pgid: tuple(members),
+    )
+    provider._wait_owned_group_gone = lambda live, timeout: False
+    with pytest.raises(ProviderCleanupPending) as captured:
+        provider.start(_spec(tmp_path))
+    handle = captured.value.handle
+    assert provider.ownership(handle) == {
+        "pid": 4242, "pgid": 4242, "sid": 4242, "start_token": "100",
+        "uid": __import__("os").getuid(), "executable": "/opt/skillify/opencode",
+    }
+    assert handle.handle_id in provider._live
+    assert provider._live[handle.handle_id].password == ""
+    assert "temporary-password" not in repr(captured.value)
+    assert killed == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
+def test_incomplete_start_identity_never_creates_fake_recovery_handle(tmp_path, monkeypatch):
+    class StuckProcess(FakeProcess):
+        def wait(self, timeout=None):
+            raise __import__("subprocess").TimeoutExpired("opencode", timeout)
+    process = StuckProcess(); killed = []
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    provider = OpenCodeProvider(
+        transport=object(), popen=lambda argv, **kwargs: process,
+        port_factory=lambda: 32123, password_factory=lambda: "temporary-password",
+        monotonic=lambda: 0.0, sleep=lambda value: None,
+        killpg=lambda pgid, sig: killed.append((pgid, sig)), getpgid=lambda pid: 4242,
+        process_start_token=lambda pid: (_ for _ in ()).throw(OSError("identity unavailable")),
+        process_uid=lambda pid: __import__("os").getuid(), process_session_id=lambda pid: 4242,
+        process_executable=lambda pid: "/opt/skillify/opencode",
+        group_members=lambda pgid: (object(),),
+    )
+    with pytest.raises(ProviderCleanupUnrecoverable) as captured:
+        provider.start(_spec(tmp_path))
+    assert not hasattr(captured.value, "handle")
+    assert provider._live == {}
+    assert "temporary-password" not in repr(captured.value)
+    assert killed == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
 def test_sse_network_error_is_redacted_failed_result_and_aborts(tmp_path, fake_server, monkeypatch):
     provider, _, _, _ = _provider(fake_server, monkeypatch)
     handle = provider.start(_spec(tmp_path)); session = provider.create_session(handle, TaskSpec("task-1", "private"))
@@ -381,6 +559,32 @@ def test_sse_network_error_is_redacted_failed_result_and_aborts(tmp_path, fake_s
     assert [event.details["reason_code"] for event in events[-2:]] == ["PROVIDER_NETWORK", "PROVIDER_NETWORK"]
     assert "secret network detail" not in repr(events)
     assert Handler.requests[-1][1] == "/session/session-1/abort"
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "todo.updated", "properties": {"sessionID": "session-1", "todos": None}},
+    {"type": "session.diff", "properties": {"sessionID": "session-1", "diff": 7}},
+    {"type": "message.part.updated", "properties": {"sessionID": "session-1", "part": []}},
+    {"type": "message.part.updated", "properties": {"sessionID": "session-1", "part": {
+        "tool": "test", "callID": "call-1", "state": {
+            "status": "completed", "metadata": {"exit": "PRIVATE_REMOTE_VALUE"},
+        },
+    }}},
+])
+def test_malformed_same_session_event_is_safe_aborted_and_cleared(
+    tmp_path, monkeypatch, event
+):
+    provider, _, _ = _memory_provider(monkeypatch, events=(event,))
+    handle = provider.start(_spec(tmp_path)); session = provider.create_session(
+        handle, TaskSpec("task-1", "private")
+    )
+    events = list(provider.stream_events(handle, session))
+    assert [item.details["reason_code"] for item in events[-2:]] == [
+        "OPENCODE_ERROR", "OPENCODE_ERROR",
+    ]
+    assert "PRIVATE_REMOTE_VALUE" not in repr(events)
+    assert provider.transport.requests[-1][1].endswith("/session/session-1/abort")
+    assert provider._tasks == {}
 
 
 def test_foreign_session_events_are_ignored(tmp_path, fake_server, monkeypatch):
@@ -685,6 +889,53 @@ def test_run_local_task_cleans_start_and_stream_failures(tmp_path, monkeypatch):
         agent_cmd._run_local_task(workspace, "private prompt", paths, config)
     assert captured.value.code is agent_cmd.AgentErrorCode.PROVIDER_FAILED
     assert not paths.runtime_path.exists()
+
+
+def test_run_local_task_persists_password_free_cleanup_pending_start_recovery(
+    tmp_path, monkeypatch
+):
+    from skillify.agent.provider import ProviderHandle
+    from skillify.cli import agent_cmd
+    from skillify.cli.agent_cmd import AgentCommandFailure
+    from skillify.common.config import AgentLocalConfig, load_agent_paths
+
+    handle = ProviderHandle("recovery-handle", "opencode", "unknown", "http://127.0.0.1:32123", 4242)
+    calls = []; installed = []; previous = object()
+    class PendingStartProvider:
+        def start(self, spec):
+            calls.append("start")
+            raise ProviderCleanupPending(handle)
+        def ownership(self, value):
+            assert value is handle
+            assert installed[-1] is signal.SIG_IGN
+            return {"pid": 4242, "pgid": 4242, "sid": 4242, "start_token": "100",
+                    "uid": __import__("os").getuid(), "executable": "/opt/skillify/opencode"}
+        def stop(self, value):
+            calls.append("stop")
+            raise AssertionError("foreground cleanup must not erase handed-off recovery state")
+    monkeypatch.setattr(agent_cmd, "_build_provider", lambda: PendingStartProvider())
+    monkeypatch.setattr(agent_cmd.signal, "getsignal", lambda sig: previous)
+    monkeypatch.setattr(agent_cmd.signal, "signal", lambda sig, handler: installed.append(handler))
+    monkeypatch.setenv("MODEL_KEY", "top-secret")
+    paths = load_agent_paths({"SKILLIFY_AGENT_STATE_DIR": str(tmp_path / "state"),
+                              "SKILLIFY_AGENT_LOG_DIR": str(tmp_path / "log")}, home=tmp_path)
+    workspace = (tmp_path / "repo").resolve(); workspace.mkdir()
+    config = AgentLocalConfig(
+        allowed_workspaces=(str(workspace),), model_endpoint="https://model.intranet.example/v1",
+        model_provider="internal", model_name="code-1", allowed_model_hosts=("model.intranet.example",),
+        credential_env_names=("MODEL_KEY",),
+    )
+    with pytest.raises(AgentCommandFailure) as captured:
+        agent_cmd._run_local_task(workspace, "private", paths, config)
+    assert captured.value.code is agent_cmd.AgentErrorCode.PROVIDER_FAILED
+    runtime = agent_cmd.read_runtime_state(paths)
+    assert runtime is not None
+    assert runtime.state == "cleanup_pending" and runtime.session_id == ""
+    assert runtime.pid == 4242 and runtime.pgid == 4242
+    text = paths.runtime_path.read_text(encoding="utf-8")
+    assert "password" not in text and "temporary-password" not in text and "top-secret" not in text
+    assert calls == ["start"]
+    assert installed[-1] is previous
 
 
 def test_log_write_failure_never_skips_provider_cleanup_or_runtime_decision(tmp_path, monkeypatch):

@@ -23,6 +23,7 @@ from skillify.agent.providers.opencode import (
     LifecycleReasonCode,
     OpenCodeError,
     OpenCodeProvider,
+    ProviderCleanupPending,
     ProviderCrashed,
     ProviderTimeout,
     linux_process_group_members,
@@ -127,8 +128,9 @@ def read_runtime_state(paths: AgentPaths) -> AgentRuntimeState | None:
         if (state.schema_version != 1 or state.pid <= 0 or state.pgid <= 0 or
                 state.process_session_id <= 0):
             raise ValueError("runtime identity fields are invalid")
-        if ((state.state == "starting" and state.session_id != "") or
-                (state.state != "starting" and not state.session_id)):
+        sessionless_states = {"starting", "cleanup_pending"}
+        if ((state.state in sessionless_states and state.session_id != "") or
+                (state.state not in sessionless_states and not state.session_id)):
             raise ValueError("runtime session fields are invalid")
         return state
     except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
@@ -338,6 +340,7 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     provider = _build_provider(); handle = None; session = None
     terminal = "failed"; task_id = uuid.uuid4().hex
     previous_sigterm = None; sigterm_installed = False; stop_error = None
+    cleanup_handed_off = False
     try:
         runtime = _runtime_config(config)
     except AgentCommandFailure:
@@ -381,6 +384,28 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
             if event.type is EventType.TASK_FINISHED: terminal = event.state.value
             elif event.type is EventType.TASK_BLOCKED: terminal = "blocked"
         return terminal
+    except ProviderCleanupPending as exc:
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        handle = exc.handle
+        owned = provider.ownership(handle)
+        write_runtime_state(paths, AgentRuntimeState(
+            schema_version=1, owner_uid=owned["uid"], pid=owned["pid"], pgid=owned["pgid"],
+            process_session_id=owned["sid"], process_start_token=owned["start_token"],
+            executable=owned["executable"],
+            workspace_hash=hashlib.sha256(str(workspace).encode()).hexdigest(),
+            task_id=task_id, session_id="", provider_version=handle.provider_version,
+            started_at=datetime.now(timezone.utc).isoformat(), state="cleanup_pending",
+        ))
+        cleanup_handed_off = True
+        terminal = "cleanup_pending"
+        append_agent_log(
+            paths, "start.cleanup_pending", task_id=task_id, state=terminal,
+            reason_code=LifecycleReasonCode.STOP_UNCONFIRMED.value,
+        )
+        raise AgentCommandFailure(
+            AgentErrorCode.PROVIDER_FAILED, "provider cleanup is pending",
+        ) from exc
     except (KeyboardInterrupt, _TerminationRequested):
         terminal = "cancelled"; return terminal
     except Exception as exc:
@@ -391,13 +416,13 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
         try:
             if sigterm_installed:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            if handle is not None and session is not None:
+            if not cleanup_handed_off and handle is not None and session is not None:
                 try: provider.cancel(handle, session)
                 except Exception: append_agent_log(
                     paths, "abort.error", task_id=task_id, state=terminal,
                     reason_code=LifecycleReasonCode.ABORT_FAILED.value,
                 )
-            if handle is not None:
+            if not cleanup_handed_off and handle is not None:
                 try:
                     provider.stop(handle)
                 except Exception as exc:
@@ -406,7 +431,7 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
                         paths, "stop.error", task_id=task_id, state=terminal,
                         reason_code=LifecycleReasonCode.STOP_UNCONFIRMED.value,
                     )
-            if handle is None or stop_error is None:
+            if not cleanup_handed_off and (handle is None or stop_error is None):
                 paths.runtime_path.unlink(missing_ok=True)
             append_agent_log(paths, "run.stop", task_id=task_id, state=terminal)
             if stop_error is not None:
@@ -517,12 +542,18 @@ def status(output: str = typer.Option("text", "--format")) -> None:
         paths, _ = _config(); state = read_runtime_state(paths)
         if state is None:
             data = {"state": "stopped"}
-        elif validate_owned_process(state, LinuxProcessInspector()):
-            data = {"state": state.state, "task_id": state.task_id}
-            if state.session_id:
-                data["session_id"] = state.session_id
         else:
-            paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
+            members = _confirmed_owned_group(state, LinuxProcessInspector())
+            if members == ():
+                paths.runtime_path.unlink(missing_ok=True); data = {"state": "stopped"}
+            else:
+                leader_present = bool(members) and any(
+                    member.pid == state.pid for member in members
+                )
+                visible_state = state.state if leader_present else "degraded"
+                data = {"state": visible_state, "task_id": state.task_id}
+                if state.session_id:
+                    data["session_id"] = state.session_id
         _emit(ok=True, code=AgentErrorCode.OK, message=str(data["state"]), data=data, output=output)
     except AgentCommandFailure as exc:
         _fail(exc, output)
