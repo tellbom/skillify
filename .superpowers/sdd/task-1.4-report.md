@@ -44,3 +44,21 @@ The runbook marks real disconnected upgrade/downgrade, exact target platform,
 internal model/MCP, localhost listener, cancellation/SIGTERM, and residual-process
 checks as `[test-env]`. These require an approved Linux target and were not run
 on this macOS development host.
+
+## Formal review corrections
+
+- `verify_artifact()` now converts missing and unreadable paths to
+  `ArtifactNotFound`. RED: two native `OSError` failures; GREEN: `2 passed`.
+- A shared distribution helper now owns path resolution, platform/version
+  probing, and staged manifest/platform/version/checksum diagnostics. RED: seven
+  missing-helper failures; GREEN: `7 passed` with stage-specific detail/hints.
+- `skillctl agent doctor --format json` now includes distribution checks when
+  configured. Success preserves exit 0/`OK`; distribution failure preserves exit
+  12/`AGENT_PROVIDER_UNAVAILABLE`, the four-key envelope, and exposes diagnostic
+  data. RED: missing distribution data and corrupt artifact incorrectly exited
+  0; GREEN: `2 passed`.
+- The runbook now explicitly installs the manifest at the configured parent path
+  and the selected artifact in the v1.15.11 directory. RED: missing command
+  assertion; GREEN: `1 passed`.
+- Post-correction compileall exited 0 and focused S1 regression reported
+  `143 passed, 1 skipped in 10.48s`.

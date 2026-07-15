@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -181,6 +182,81 @@ def test_agent_doctor_and_run_need_no_skillify_server(
     doctor = runner.invoke(agent_app, ["doctor", "--format", "json"], env=_env(tmp_path))
     assert doctor.exit_code == 12
     assert _json(doctor)["code"] == "AGENT_PROVIDER_UNAVAILABLE"
+
+
+def _configured_distribution_env(tmp_path: Path, *, corrupt: bool = False) -> dict[str, str]:
+    payload = b"approved opencode bundle"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest_data = {
+        "schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0",
+        "artifacts": [{
+            "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux",
+            "arch": "x86_64", "libc": "glibc", "cpu": "avx2", "sha256": digest,
+            "license": "MIT",
+            "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",
+            "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz",
+        }],
+    }
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"; artifacts.mkdir()
+    (artifacts / "opencode-linux-x64.tar.gz").write_bytes(b"corrupt" if corrupt else payload)
+    config_dir = tmp_path / "config"; config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        yaml.safe_dump({
+            "opencode_manifest_path": str(manifest),
+            "opencode_artifact_root": str(artifacts),
+        }),
+        encoding="utf-8",
+    )
+    return _env(tmp_path)
+
+
+def test_agent_doctor_json_exposes_offline_distribution_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _configured_distribution_env(tmp_path)
+    monkeypatch.setattr(agent_cmd.shutil, "which", lambda name: "/bin/opencode")
+    monkeypatch.setattr(
+        agent_cmd, "detect_opencode_platform",
+        lambda: ("linux", "x86_64", "glibc", "avx2"), raising=False,
+    )
+    monkeypatch.setattr(agent_cmd, "opencode_version", lambda argv: "1.15.11\n", raising=False)
+
+    result = runner.invoke(agent_app, ["doctor", "--format", "json"], env=env)
+
+    assert result.exit_code == 0
+    payload = _json(result)
+    assert set(payload) == {"ok", "code", "message", "data"}
+    checks = payload["data"]["distribution"]
+    assert [check["name"] for check in checks] == [
+        "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+    ]
+    assert all(check["ok"] for check in checks)
+
+
+def test_agent_doctor_distribution_failure_preserves_envelope_and_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _configured_distribution_env(tmp_path, corrupt=True)
+    monkeypatch.setattr(agent_cmd.shutil, "which", lambda name: "/bin/opencode")
+    monkeypatch.setattr(
+        agent_cmd, "detect_opencode_platform",
+        lambda: ("linux", "x86_64", "glibc", "avx2"), raising=False,
+    )
+    monkeypatch.setattr(agent_cmd, "opencode_version", lambda argv: "1.15.11\n", raising=False)
+
+    result = runner.invoke(agent_app, ["doctor", "--format", "json"], env=env)
+
+    assert result.exit_code == 12
+    payload = _json(result)
+    assert set(payload) == {"ok", "code", "message", "data"}
+    assert payload["ok"] is False
+    assert payload["code"] == "AGENT_PROVIDER_UNAVAILABLE"
+    failed = [check for check in payload["data"]["distribution"] if not check["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["name"] == "opencode-checksum"
+    assert failed[0]["hint"]
 
 
 @pytest.mark.parametrize(

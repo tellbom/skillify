@@ -11,8 +11,10 @@ On an internet-connected staging host, select the manifest entry matching the
 target's architecture, libc, and CPU. For an x86-64 glibc host without AVX2:
 
 ```bash
-mkdir -p /var/tmp/opencode-1.15.11
-cd /var/tmp/opencode-1.15.11
+install -d -m 0755 /var/tmp/skillify-opencode/v1.15.11
+install -m 0644 infra/offline/opencode-manifest.json \
+  /var/tmp/skillify-opencode/opencode-manifest.json
+cd /var/tmp/skillify-opencode/v1.15.11
 curl -fL --proto '=https' --tlsv1.2 \
   -o opencode-linux-x64-baseline.tar.gz \
   https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64-baseline.tar.gz
@@ -27,15 +29,27 @@ The check output and independently recomputed digest must both equal
 Perform malware scanning and OSS/security approval, retain the upstream MIT
 license notice beside the bundle, and record approver, scanner version, scan
 result, source URL, and digest. Publish the approved bytes to immutable internal
-storage without renaming them. Copy the repository manifest unchanged beside
-the bundle set. Never publish a mutable `latest` alias.
+storage without renaming them. The staging commands copy the repository manifest
+unchanged to the root of the transfer tree, with versioned artifacts below it.
+Never publish a mutable `latest` alias.
 
 ## Transfer and disconnected install
 
-Transfer the approved directory through the controlled media gateway to
-`/opt/skillify/offline/opencode/v1.15.11/`. Before extracting, run the same
-`sha256sum --check --strict` command using the selected manifest digest. A
-failure stops installation.
+Transfer `/var/tmp/skillify-opencode/` through the controlled media gateway and
+mount or copy it at `/media/skillify-opencode/` on the disconnected endpoint.
+Install the manifest and selected artifact explicitly into the layout referenced
+by their configured paths:
+
+```bash
+install -d -m 0755 /opt/skillify/offline/opencode/v1.15.11
+install -m 0644 /media/skillify-opencode/opencode-manifest.json \
+  /opt/skillify/offline/opencode/opencode-manifest.json
+install -m 0644 /media/skillify-opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz \
+  /opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64-baseline.tar.gz
+```
+
+Before extracting, run the same `sha256sum --check --strict` command using the
+selected manifest digest. A failure stops installation.
 
 ```bash
 install -d -m 0755 /opt/skillify/opencode/1.15.11/bin

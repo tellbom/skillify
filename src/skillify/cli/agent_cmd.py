@@ -35,6 +35,12 @@ from skillify.common.config import (
     load_agent_paths,
     save_agent_local_config,
 )
+from skillify.install.opencode_distribution import (
+    check_opencode_distribution,
+    detect_opencode_platform,
+    opencode_version,
+    resolve_distribution_paths,
+)
 
 agent_app = typer.Typer(
     name="agent",
@@ -449,15 +455,42 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
 def doctor(output: str = typer.Option("text", "--format")) -> None:
     """Check local endpoint-agent prerequisites."""
     try:
-        _config()
+        _, config = _config()
         executable = shutil.which("opencode")
         if executable is None:
             raise AgentCommandFailure(AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed")
+        data: dict[str, Any] = {"opencode": executable}
+        try:
+            distribution_paths = resolve_distribution_paths(
+                config.opencode_manifest_path, config.opencode_artifact_root,
+            )
+        except ValueError as exc:
+            raise AgentCommandFailure(
+                AgentErrorCode.CONFIG_INVALID, "OpenCode distribution config is invalid",
+            ) from exc
+        if distribution_paths is not None:
+            manifest_path, artifact_root = distribution_paths
+            checks = check_opencode_distribution(
+                manifest_path=manifest_path,
+                artifact_root=artifact_root,
+                platform_detector=detect_opencode_platform,
+                version_runner=opencode_version,
+            )
+            data["distribution"] = [asdict(check) for check in checks]
+            if not all(check.ok for check in checks):
+                _emit(
+                    ok=False,
+                    code=AgentErrorCode.PROVIDER_UNAVAILABLE,
+                    message="offline OpenCode distribution check failed",
+                    data=data,
+                    output=output,
+                )
+                raise typer.Exit(int(AgentExit.PROVIDER_UNAVAILABLE))
         _emit(
             ok=True,
             code=AgentErrorCode.OK,
             message="local prerequisites available",
-            data={"opencode": executable},
+            data=data,
             output=output,
         )
     except AgentCommandFailure as exc:
