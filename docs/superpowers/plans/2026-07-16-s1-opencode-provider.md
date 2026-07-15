@@ -31,7 +31,7 @@ The exact macOS sync is blocked by the existing DM wheels. Use these focused com
 ```bash
 uv sync --no-install-package dmpython --no-install-package dmsqlalchemy
 uv run --no-sync python -m compileall -q src
-uv run --no-sync pytest tests/test_cli_agent.py tests/test_provider_contract.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py tests/test_opencode_distribution.py -q
+uv run --no-sync pytest tests/test_cli_agent.py tests/test_cli_doctor.py tests/test_provider_contract.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py tests/test_opencode_distribution.py -q
 ```
 
 At the final S1 gate, also run the full fallback backend suite and compare with the recorded `319 passed, 1 failed, 1 skipped`; no new failure is allowed. S1 does not modify `web/`, but final regression evidence includes `npm run type-check`, `npm test`, and `npm run build` with the existing footer failure identified separately.
@@ -105,6 +105,8 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_AGENT_MODEL_ENDPOINT": "model_endpoint",
         "SKILLIFY_AGENT_MODEL_PROVIDER": "model_provider",
         "SKILLIFY_AGENT_MODEL_NAME": "model_name",
+        "SKILLIFY_OPENCODE_MANIFEST_PATH": "opencode_manifest_path",
+        "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
     }
     for env_name, key in scalar_overrides.items():
         if env_name in os.environ: data[key] = os.environ[env_name]
@@ -2376,6 +2378,7 @@ git commit -m "feat(agent): add opencode provider"
 **Files:**
 - Modify: `src/skillify/cli/doctor_cmd.py`
 - Modify: `src/skillify/common/config.py`
+- Modify/Test: `tests/test_cli_doctor.py`
 - Create: `src/skillify/install/opencode_distribution.py`
 - Create: `infra/offline/opencode-manifest.json`
 - Create: `tests/test_opencode_distribution.py`
@@ -2477,7 +2480,7 @@ def test_verifies_matching_sha256_and_rejects_corruption(tmp_path: Path) -> None
 Run:
 
 ```bash
-uv run --no-sync pytest tests/test_opencode_distribution.py -q
+uv run --no-sync pytest tests/test_opencode_distribution.py tests/test_cli_doctor.py -q
 ```
 
 Expected: import failure for `skillify.install.opencode_distribution` and missing repository manifest.
@@ -2639,19 +2642,114 @@ def test_doctor_verifies_manifest_platform_version_and_checksum(tmp_path: Path) 
     assert all(check.ok for check in checks)
 ```
 
-Run `uv run --no-sync pytest tests/test_opencode_distribution.py -q`; expected:
-`ImportError: cannot import name '_check_opencode_distribution'`.
+Apply these imports and append the two doctor integration tests to
+`tests/test_cli_doctor.py`:
+
+```diff
++import hashlib
++import json
+ import threading
+@@
+-from skillify.common.config import SkillifyConfig
++from skillify.common.config import (
++    AgentLocalConfig, SkillifyConfig, load_agent_paths,
++)
+```
+
+```python
+def _isolated_green_config(tmp_path: Path, fake_server: str) -> SkillifyConfig:
+    from skillify.install.agent_defaults import ensure_default_agent_configs
+    cfg = SkillifyConfig(
+        forgejo_url=fake_server, forgejo_token="good-token",
+        devpi_index_url=fake_server, home=tmp_path / "skillify-home",
+    )
+    cfg.ensure_dirs(); ensure_default_agent_configs(cfg.agents_dir)
+    for agent in ("claude", "opencode"):
+        root = tmp_path / f"{agent}-doctor-root"; root.mkdir()
+        (cfg.agents_dir / f"{agent}.yaml").write_text(
+            f"agent: {agent}\ntargetDirTemplate: '{(root / '{namespace}__{name}').as_posix()}'\nlinkMode: auto\n",
+            encoding="utf-8",
+        )
+    return cfg
+
+
+def test_doctor_unconfigured_distribution_preserves_green_baseline_without_user_home(
+    tmp_path: Path, fake_server: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _isolated_green_config(tmp_path, fake_server)
+    paths = load_agent_paths({}, home=tmp_path / "isolated-agent-home")
+    monkeypatch.setattr(Path, "home", classmethod(
+        lambda cls: (_ for _ in ()).throw(AssertionError("real user home must not be read"))
+    ))
+    def unexpected_platform():
+        raise AssertionError("unconfigured distribution must be skipped")
+    ok = run_doctor(
+        console=_NullConsole(), config=cfg, agent_paths=paths,
+        agent_config=AgentLocalConfig(), platform_detector=unexpected_platform,
+        version_runner=lambda argv: (_ for _ in ()).throw(AssertionError("version must not run")),
+    )
+    assert ok is True
+
+
+def test_doctor_configured_temporary_distribution_is_green(
+    tmp_path: Path, fake_server: str,
+) -> None:
+    cfg = _isolated_green_config(tmp_path, fake_server)
+    payload = b"approved opencode bundle"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest_data = {
+        "schemaVersion": 1, "opencodeVersion": "1.15.11", "skillctlVersion": "0.1.0",
+        "artifacts": [{
+            "version": "1.15.11", "skillctlVersion": "0.1.0", "os": "linux",
+            "arch": "x86_64", "libc": "glibc", "cpu": "avx2", "sha256": digest,
+            "license": "MIT",
+            "sourceUrl": "https://github.com/anomalyco/opencode/releases/download/v1.15.11/opencode-linux-x64.tar.gz",
+            "intranetUri": "file:///opt/skillify/offline/opencode/v1.15.11/opencode-linux-x64.tar.gz",
+        }],
+    }
+    manifest = tmp_path / "manifest.json"; manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"; artifacts.mkdir()
+    (artifacts / "opencode-linux-x64.tar.gz").write_bytes(payload)
+    paths = load_agent_paths({}, home=tmp_path / "isolated-agent-home")
+    agent_config = AgentLocalConfig(
+        opencode_manifest_path=str(manifest), opencode_artifact_root=str(artifacts),
+    )
+    seen: list[str] = []
+    class RecordingConsole:
+        def print(self, *args, **kwargs):
+            if args: seen.append(str(args[0]))
+    ok = run_doctor(
+        console=RecordingConsole(), config=cfg, agent_paths=paths, agent_config=agent_config,
+        platform_detector=lambda: ("linux", "x86_64", "glibc", "avx2"),
+        version_runner=lambda argv: "1.15.11\n",
+    )
+    assert ok is True
+    output = "\n".join(seen)
+    assert all(name in output for name in (
+        "opencode-manifest", "opencode-platform", "opencode-version", "opencode-checksum",
+    ))
+```
+
+Run:
+
+```bash
+uv run --no-sync pytest tests/test_opencode_distribution.py tests/test_cli_doctor.py -q
+```
+
+Expected RED: `_check_opencode_distribution` is absent and `run_doctor()` rejects
+the new injected dependency keywords. No test may read the real user home.
 
 Then add these imports to `doctor_cmd.py`:
 
 ```python
-import os
 import platform
 import subprocess
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from skillify.common.config import (
-    SkillifyConfig, load_agent_local_config, load_agent_paths, load_config,
+    AgentLocalConfig, AgentPaths, SkillifyConfig,
+    load_agent_local_config, load_agent_paths, load_config,
 )
 from skillify.install.opencode_distribution import (
     DistributionError, load_manifest, select_artifact, verify_artifact,
@@ -2680,18 +2778,20 @@ def _opencode_version(argv: list[str]) -> str:
     return completed.stdout
 
 
-def _opencode_distribution_paths() -> tuple[Path, Path]:
-    local = load_agent_local_config(load_agent_paths())
-    manifest = os.environ.get("SKILLIFY_OPENCODE_MANIFEST_PATH") or local.opencode_manifest_path
-    artifacts = os.environ.get("SKILLIFY_OPENCODE_ARTIFACT_ROOT") or local.opencode_artifact_root
-    if not manifest: raise ValueError("SKILLIFY_OPENCODE_MANIFEST_PATH or opencode_manifest_path is required")
-    if not artifacts: raise ValueError("SKILLIFY_OPENCODE_ARTIFACT_ROOT or opencode_artifact_root is required")
-    return Path(manifest).expanduser().resolve(), Path(artifacts).expanduser().resolve()
+def _opencode_distribution_paths(config: AgentLocalConfig) -> tuple[Path, Path] | None:
+    manifest, artifacts = config.opencode_manifest_path, config.opencode_artifact_root
+    if manifest is None and artifacts is None: return None
+    if not manifest or not artifacts:
+        raise ValueError("opencode_manifest_path and opencode_artifact_root must be configured together")
+    manifest_path, artifact_root = Path(manifest), Path(artifacts)
+    if not manifest_path.is_absolute() or not artifact_root.is_absolute():
+        raise ValueError("OpenCode distribution paths must be absolute")
+    return manifest_path.resolve(), artifact_root.resolve()
 
 
 def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
-                                 platform_detector=_detect_opencode_platform,
-                                 version_runner=_opencode_version) -> list[CheckResult]:
+                                 platform_detector: Callable[[], tuple[str, str, str, str]],
+                                 version_runner: Callable[[list[str]], str]) -> list[CheckResult]:
     try:
         os_name, arch, libc, cpu = platform_detector()
         data = load_manifest(manifest_path)
@@ -2711,25 +2811,59 @@ def _check_opencode_distribution(*, manifest_path: Path, artifact_root: Path,
         return [CheckResult("opencode-manifest", False, str(exc), "install the approved offline bundle")]
 ```
 
-Finally, insert this exact call site in `run_doctor()` immediately after
-`checks += [_check_binary(b) for b in REQUIRED_BINARIES]`; all existing checks
-below it remain unchanged:
+Finally, replace the `run_doctor()` signature and insert the dependency-resolution
+block shown here. The existing checks after this block remain unchanged:
 
 ```python
+def run_doctor(
+    *,
+    console: Console,
+    config: SkillifyConfig | None = None,
+    agent_paths: AgentPaths | None = None,
+    agent_config: AgentLocalConfig | None = None,
+    platform_detector: Callable[[], tuple[str, str, str, str]] = _detect_opencode_platform,
+    version_runner: Callable[[list[str]], str] = _opencode_version,
+) -> bool:
+    config_was_injected = config is not None
+    cfg = config or load_config()
+
+    checks: list[CheckResult] = [_check_python()]
+    checks += [_check_binary(b) for b in REQUIRED_BINARIES]
     try:
-        manifest_path, artifact_root = _opencode_distribution_paths()
-        checks += _check_opencode_distribution(
-            manifest_path=manifest_path,
-            artifact_root=artifact_root,
-        )
-    except (OSError, ValueError) as exc:
+        local_config = agent_config
+        if local_config is None:
+            resolved_paths = agent_paths
+            if resolved_paths is None:
+                # Injected SkillifyConfig tests remain under cfg.home and never
+                # fall through to the real XDG/user home. Normal CLI execution
+                # still resolves the normal endpoint-agent XDG paths.
+                resolved_paths = (
+                    load_agent_paths({}, home=cfg.home)
+                    if config_was_injected else load_agent_paths()
+                )
+            local_config = load_agent_local_config(resolved_paths)
+        distribution_paths = _opencode_distribution_paths(local_config)
+        if distribution_paths is not None:
+            manifest_path, artifact_root = distribution_paths
+            checks += _check_opencode_distribution(
+                manifest_path=manifest_path,
+                artifact_root=artifact_root,
+                platform_detector=platform_detector,
+                version_runner=version_runner,
+            )
+    except (OSError, TypeError, ValueError) as exc:
         checks.append(CheckResult(
             "opencode-manifest", False, str(exc), "configure the approved offline OpenCode bundle",
         ))
 ```
 
-Run `uv run --no-sync pytest tests/test_opencode_distribution.py -q`; expected:
-all tests pass, with no network calls.
+The unconfigured policy is an intentional skip: when both distribution paths
+are absent, no OpenCode distribution result is appended, the detector and
+version runner are not called, and every pre-existing doctor result is
+unchanged. A partially configured pair remains a local failure.
+
+Run `uv run --no-sync pytest tests/test_opencode_distribution.py tests/test_cli_doctor.py -q`;
+expected: all tests pass, with no public network calls or real-user-home reads.
 
 - [ ] **Step 6: Write the offline deployment runbook**
 
@@ -2852,7 +2986,7 @@ Run:
 
 ```bash
 uv run --no-sync python -m compileall -q src
-uv run --no-sync pytest tests/test_cli_agent.py tests/test_provider_contract.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py tests/test_opencode_distribution.py -q
+uv run --no-sync pytest tests/test_cli_agent.py tests/test_cli_doctor.py tests/test_provider_contract.py tests/test_opencode_provider_contract.py tests/test_opencode_provider_smoke.py tests/test_opencode_distribution.py -q
 ```
 
 Expected: compileall exits 0; every offline test passes; only `tests/test_opencode_provider_smoke.py` skips for `requires test-env:`.
@@ -2860,7 +2994,7 @@ Expected: compileall exits 0; every offline test passes; only `tests/test_openco
 - [ ] **Step 8: Commit Task 1.4**
 
 ```bash
-git add src/skillify/cli/doctor_cmd.py src/skillify/common/config.py src/skillify/install/opencode_distribution.py infra/offline/opencode-manifest.json tests/test_opencode_distribution.py docs/deployment/offline-opencode.md
+git add src/skillify/cli/doctor_cmd.py src/skillify/common/config.py src/skillify/install/opencode_distribution.py infra/offline/opencode-manifest.json tests/test_cli_doctor.py tests/test_opencode_distribution.py docs/deployment/offline-opencode.md
 git commit -m "build(agent): add offline opencode distribution"
 ```
 
@@ -2869,7 +3003,7 @@ git commit -m "build(agent): add offline opencode distribution"
 ## S1 Dev-DoD and G1 Handoff
 
 - [ ] Run fallback compileall; expected exit 0.
-- [ ] Run all five focused S1 test modules; expected all offline tests pass and only the real smoke test skips with `requires test-env:`.
+- [ ] Run all six focused S1 test modules; expected all offline tests pass and only the real smoke test skips with `requires test-env:`.
 - [ ] Run fallback full pytest and compare to the recorded baseline; expected no new failure beyond `tests/test_projector.py::test_project_uses_symlink_when_forced` and no new unplanned skip.
 - [ ] Run `cd web && npm run type-check`; expected pass.
 - [ ] Run `cd web && npm test`; expected no regression beyond the recorded `appFooter.spec.js` failure.
