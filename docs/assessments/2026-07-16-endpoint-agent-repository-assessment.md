@@ -29,6 +29,46 @@ The development host is macOS/x86_64, not a target Linux endpoint. No target Ope
 
 ### 2.1 Tracked-file distribution
 
+This inventory is pinned to the pre-assessment baseline commit
+`9c8fd0e5c569ebeb8d005f436780994c5af66024`. It is reproducible and complete:
+
+```bash
+git ls-tree -r --name-only 9c8fd0e5c569ebeb8d005f436780994c5af66024
+git ls-tree -r --name-only 9c8fd0e5c569ebeb8d005f436780994c5af66024 | wc -l
+git ls-tree -r --name-only 9c8fd0e5c569ebeb8d005f436780994c5af66024 | sha256sum
+git ls-tree -r --name-only 9c8fd0e5c569ebeb8d005f436780994c5af66024 |
+  awk -F/ '{count[$1]++} END {for (area in count) print area, count[area]}' | sort
+```
+
+Expected evidence:
+
+```text
+tracked files: 300
+sorted path-stream SHA-256: 641d7b65372f54eac38446634fb757d339cb5e73955ba5b627034828ad7c5e56
+.gitignore 1
+Dockerfile 1
+PLAN.md 1
+README.md 1
+TASKS.md 1
+docs 41
+examples 10
+infra 10
+pyproject.toml 1
+scripts 2
+spec 2
+src 71
+tests 45
+uv.lock 1
+web 112
+```
+
+The first command is the full tracked-file inventory artifact: it prints every
+path in the audited tree, not a working-directory glob. The count, digest, and
+area totals make omissions or later drift detectable without copying a stale
+300-line path list into this assessment. The two Task 0.1 documents are absent
+from that baseline by definition and are the only files added by commit
+`72015d49a4699656a9e4ca242ebf5cadeda489ee`.
+
 | Top-level area | Tracked files | Relevant responsibility |
 | --- | ---: | --- |
 | `src/` | 71 | Python CLI, installer, publisher, index, web, webhook, validation |
@@ -58,22 +98,34 @@ The development host is macOS/x86_64, not a target Linux endpoint. No target Ope
 | Database | `src/skillify/index/`, `infra/dm8-init/` | S1 has no database dependency; tests must not require DM8. |
 | Frontend | `web/` | S1 makes no frontend changes. Existing frontend failures are unrelated and remain baseline debt. |
 
-### 2.3 Required keyword search
+### 2.3 Required full-repository keyword search
 
-Counts below are files under `src/` and `tests/` matched case-insensitively. Broad terms such as `agent` include comments and projection code; counts are discovery signals, not feature-completeness claims.
+The required search was run across every tracked text file at the same baseline
+commit, including root files, docs, examples, infra, source, tests, lockfiles,
+and web content. These commands are independently auditable and print the exact
+matching path set for each term:
 
-| Keyword | Matching files | What exists | S1 conclusion |
-| --- | ---: | --- | --- |
-| `skillctl` | 27 | Typer command, installer/publisher messages, CLI tests | Extend the existing entry point. |
-| `agent` | 33 | Primarily Skill target projection and comments | No execution contract; add a focused `skillify.agent` package. |
-| `opencode` | 8 | Projection defaults, doctor target-directory checks, tests | Projection only; Provider is new. |
-| `claude` | 26 | Projection target/default and test fixtures | Do not build a Claude Code Provider before G1 `[test-env]`. |
-| `mcp` | 0 | No Python implementation/test match | S1 only probes configured MCP status through OpenCode; it does not create an MCP runtime. |
-| `orchestration` | 10 | Manifest/index passthrough | No orchestration engine; do not add one in S1. |
-| `runtime` | 17 | Manifest/runtime validation and web build data | Not an endpoint execution runtime. |
-| `permissions` | 5 | Manifest/build validation | No local runtime permission merger yet; S1 enforces explicit workspace allowlisting only. |
-| `devpi` | 11 | Doctor, configuration, dependency install tests | Preserve; do not use public package installation at runtime. |
-| `Forgejo` | 53 | Publisher, resolver, index, webhook, fakes | Preserve immutable artifact source; endpoint execution stays local. |
+```bash
+for term in skillctl agent opencode claude mcp orchestration runtime permissions devpi Forgejo; do
+  git grep -I -i -l -e "$term" 9c8fd0e5c569ebeb8d005f436780994c5af66024 -- .
+done
+```
+
+The `src/` + `tests/` column is retained only to distinguish executable/test
+evidence from planning and deployment references.
+
+| Keyword | All tracked files | `src/` + `tests/` | What exists | S1 conclusion |
+| --- | ---: | ---: | --- | --- |
+| `skillctl` | 54 | 27 | CLI, docs, deployment and tests | Extend the existing entry point. |
+| `agent` | 76 | 33 | Mostly plans, Skill projection and comments | No execution contract; add `skillify.agent`. |
+| `opencode` | 22 | 8 | Plans plus projection defaults/doctor/tests | Projection only; Provider is new. |
+| `claude` | 55 | 26 | Plans, target defaults and fixtures | Do not build a Claude Code Provider before G1 `[test-env]`. |
+| `mcp` | 9 | 0 | Documentation/planning references only | No Python MCP implementation; S1 does not create one. |
+| `orchestration` | 25 | 10 | Plans and manifest/index passthrough | No engine; do not add one in S1. |
+| `runtime` | 44 | 17 | Plans, manifest validation and web build data | No endpoint execution runtime. |
+| `permissions` | 23 | 5 | Plans and manifest/build validation | No local merger; S1 enforces workspace allowlisting. |
+| `devpi` | 41 | 11 | Deployment docs/config/doctor/install tests | Preserve; no public package runtime access. |
+| `Forgejo` | 93 | 53 | Artifact chain, deployment, index, webhook, fakes | Preserve; endpoint execution stays local. |
 
 Additional focused search found no `provider` or `mcp` implementation under `src/`/`tests/`. The S1 Provider contract is therefore a genuinely new boundary, while a second CLI, second installer, private Agent loop, or private MCP client would overlap existing or upstream responsibilities and is rejected.
 
