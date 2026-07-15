@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from skillify.install.resolver import ResolveError, resolve_release_artifact
+from skillify.install.resolver import (
+    CapabilityIntegrityError,
+    CapabilityResolveError,
+    Coordinate,
+    ReleaseRecord,
+    ResolveError,
+    resolve_capability_graph,
+    resolve_release_artifact,
+    verify_locked_artifact,
+)
 from skillify.publish.forgejo_client import ForgejoClient
 from tests.fake_forgejo import fake_forgejo  # noqa: F401
 
@@ -90,3 +99,113 @@ def test_resolver_accepts_consistent_artifact_manifest(tmp_path: Path, fake_forg
 
     artifact = resolve_release_artifact(client, "excel", "excel", "pivot-analysis", "0.1.0")
     assert artifact.version == "0.1.0"
+
+
+class FakeReleaseCatalog:
+    def __init__(self, records: tuple[ReleaseRecord, ...]) -> None:
+        self._records = {record.coordinate: record for record in records}
+        self.calls: list[Coordinate] = []
+
+    def get(self, coordinate: Coordinate) -> ReleaseRecord | None:
+        self.calls.append(coordinate)
+        return self._records.get(coordinate)
+
+
+def _release(
+    kind: str,
+    identifier: str,
+    version: str,
+    *dependencies: Coordinate,
+    checksum: str = "a" * 64,
+) -> ReleaseRecord:
+    return ReleaseRecord(
+        coordinate=Coordinate(kind, identifier, version),
+        forgejo_release=f"v{version}",
+        commit="1" * 40,
+        checksum=checksum,
+        dependencies=dependencies,
+    )
+
+
+def test_capability_graph_is_dependency_first_and_peer_deterministic() -> None:
+    root = _release(
+        "workflow",
+        "dev/feature",
+        "1.0.0",
+        Coordinate("skill", "ns/zeta", "1.0.0"),
+        Coordinate("skill", "ns/alpha", "1.0.0"),
+    )
+    alpha = _release("skill", "ns/alpha", "1.0.0", Coordinate("mcp", "tools/shared", "2.0.0"))
+    zeta = _release("skill", "ns/zeta", "1.0.0", Coordinate("mcp", "tools/shared", "2.0.0"))
+    shared = _release("mcp", "tools/shared", "2.0.0")
+    catalog = FakeReleaseCatalog((root, zeta, shared, alpha))
+
+    resolved = resolve_capability_graph(root.coordinate, catalog)
+
+    assert [record.coordinate.identifier for record in resolved] == [
+        "tools/shared", "ns/alpha", "ns/zeta", "dev/feature",
+    ]
+    assert catalog.calls.count(shared.coordinate) == 1
+
+
+def test_resolver_rejects_conflicting_dependency_versions_deterministically() -> None:
+    root = _release(
+        "workflow", "dev/feature", "1.0.0",
+        Coordinate("skill", "ns/a", "1.0.0"),
+        Coordinate("skill", "ns/b", "1.0.0"),
+    )
+    a = _release("skill", "ns/a", "1.0.0", Coordinate("mcp", "tools/shared", "1.0.0"))
+    b = _release("skill", "ns/b", "1.0.0", Coordinate("mcp", "tools/shared", "2.0.0"))
+    shared1 = _release("mcp", "tools/shared", "1.0.0")
+    shared2 = _release("mcp", "tools/shared", "2.0.0")
+
+    with pytest.raises(
+        CapabilityResolveError,
+        match=r"version conflict for mcp:tools/shared: 1\.0\.0 != 2\.0\.0",
+    ):
+        resolve_capability_graph(root.coordinate, FakeReleaseCatalog((root, b, shared2, a, shared1)))
+
+
+def test_resolver_rejects_cycle_with_ordered_path() -> None:
+    a = _release("skill", "ns/a", "1.0.0", Coordinate("skill", "ns/b", "1.0.0"))
+    b = _release("skill", "ns/b", "1.0.0", Coordinate("skill", "ns/a", "1.0.0"))
+
+    with pytest.raises(
+        CapabilityResolveError,
+        match=r"cycle: skill:ns/a@1\.0\.0 -> skill:ns/b@1\.0\.0 -> skill:ns/a@1\.0\.0",
+    ):
+        resolve_capability_graph(a.coordinate, FakeReleaseCatalog((b, a)))
+
+
+def test_resolver_rejects_missing_release() -> None:
+    coordinate = Coordinate("mcp", "tools/echo", "1.0.0")
+    with pytest.raises(CapabilityResolveError, match="missing immutable release: mcp:tools/echo@1.0.0"):
+        resolve_capability_graph(coordinate, FakeReleaseCatalog(()))
+
+
+@pytest.mark.parametrize("version", ["latest", "^1.0.0", "1.0", "1.0.0-01"])
+def test_coordinate_rejects_non_exact_versions(version: str) -> None:
+    with pytest.raises(CapabilityResolveError, match="exact semantic version"):
+        Coordinate("skill", "ns/a", version)
+
+
+def test_release_record_rejects_mutable_or_mismatched_identity() -> None:
+    coordinate = Coordinate("skill", "ns/a", "1.0.0")
+    with pytest.raises(CapabilityResolveError, match="immutable Forgejo release"):
+        ReleaseRecord(coordinate, "latest", "1" * 40, "a" * 64, ())
+    with pytest.raises(CapabilityResolveError, match="40-hex"):
+        ReleaseRecord(coordinate, "v1.0.0", "bad", "a" * 64, ())
+
+
+def test_verify_locked_artifact_rejects_tampering(tmp_path: Path) -> None:
+    artifact = tmp_path / "bundle.tar.gz"
+    artifact.write_bytes(b"tampered")
+    with pytest.raises(CapabilityIntegrityError, match="checksum"):
+        verify_locked_artifact(artifact, "a" * 64)
+
+
+def test_verify_locked_artifact_returns_verified_checksum(tmp_path: Path) -> None:
+    artifact = tmp_path / "bundle.tar.gz"
+    artifact.write_bytes(b"trusted")
+    checksum = __import__("hashlib").sha256(b"trusted").hexdigest()
+    assert verify_locked_artifact(artifact, checksum) == checksum

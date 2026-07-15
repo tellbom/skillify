@@ -9,9 +9,21 @@ against the `.artifact.json` sidecar's own declared identity/checksum when prese
 
 from __future__ import annotations
 
+import hmac
 import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Protocol, TypeVar
 
+from skillify.agent.capability_lock import (
+    CapabilityKind,
+    CapabilityLockError,
+    _coerce_enum,
+    _validate_exact_version,
+    _validate_hex,
+    _validate_identifier,
+)
+from skillify.install.extract import sha256_file
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
 
 
@@ -24,6 +36,155 @@ class ResolvedArtifact:
     version: str
     tarball_url: str
     checksum_url: str | None
+
+
+class CapabilityResolveError(ValueError):
+    """An immutable release graph cannot be resolved safely."""
+
+
+class CapabilityIntegrityError(ValueError):
+    """A downloaded artifact does not match its locked identity."""
+
+
+_T = TypeVar("_T")
+
+
+def _resolve_validation(operation: Callable[[], _T]) -> _T:
+    try:
+        return operation()
+    except CapabilityLockError as exc:
+        raise CapabilityResolveError(str(exc)) from exc
+
+
+@dataclass(frozen=True)
+class Coordinate:
+    kind: CapabilityKind
+    identifier: str
+    version: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "kind", _resolve_validation(lambda: _coerce_enum(self.kind, CapabilityKind, "kind"))
+        )
+        object.__setattr__(
+            self, "identifier", _resolve_validation(lambda: _validate_identifier(self.identifier))
+        )
+        object.__setattr__(
+            self, "version", _resolve_validation(lambda: _validate_exact_version(self.version))
+        )
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}:{self.identifier}@{self.version}"
+
+
+@dataclass(frozen=True)
+class ReleaseRecord:
+    coordinate: Coordinate
+    forgejo_release: str
+    commit: str
+    checksum: str
+    dependencies: tuple[Coordinate, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.coordinate, Coordinate):
+            raise CapabilityResolveError("release coordinate must be a Coordinate")
+        if type(self.forgejo_release) is not str or self.forgejo_release != f"v{self.coordinate.version}":
+            raise CapabilityResolveError("release must use an immutable Forgejo release v<exact-version> tag")
+        object.__setattr__(
+            self,
+            "commit",
+            _resolve_validation(lambda: _validate_hex(self.commit, 40, "commit")),
+        )
+        object.__setattr__(
+            self,
+            "checksum",
+            _resolve_validation(lambda: _validate_hex(self.checksum, 64, "checksum")),
+        )
+        if not isinstance(self.dependencies, (tuple, list)) or not all(
+            isinstance(item, Coordinate) for item in self.dependencies
+        ):
+            raise CapabilityResolveError("release dependencies must contain exact Coordinates")
+        dependencies = tuple(
+            sorted(self.dependencies, key=lambda item: (item.kind.value, item.identifier, item.version))
+        )
+        if len(set(dependencies)) != len(dependencies):
+            raise CapabilityResolveError("release contains a duplicate dependency coordinate")
+        object.__setattr__(self, "dependencies", dependencies)
+
+
+class ReleaseCatalog(Protocol):
+    def get(self, coordinate: Coordinate) -> ReleaseRecord | None:
+        """Return the exact immutable release or ``None`` without selecting a version."""
+        raise NotImplementedError
+
+
+class _GraphResolver:
+    def __init__(self, catalog: ReleaseCatalog) -> None:
+        self._catalog = catalog
+        self._selected: dict[tuple[CapabilityKind, str], str] = {}
+        self._resolved: set[Coordinate] = set()
+        self._stack: list[Coordinate] = []
+        self._result: list[ReleaseRecord] = []
+
+    def resolve(self, root: Coordinate) -> tuple[ReleaseRecord, ...]:
+        if not isinstance(root, Coordinate):
+            raise CapabilityResolveError("root must be an exact Coordinate")
+        self._visit(root)
+        return tuple(self._result)
+
+    def _visit(self, coordinate: Coordinate) -> None:
+        if coordinate in self._stack:
+            start = self._stack.index(coordinate)
+            cycle = self._stack[start:] + [coordinate]
+            raise CapabilityResolveError(f"dependency cycle: {' -> '.join(map(str, cycle))}")
+
+        identity = (coordinate.kind, coordinate.identifier)
+        selected = self._selected.get(identity)
+        if selected is not None and selected != coordinate.version:
+            raise CapabilityResolveError(
+                f"version conflict for {coordinate.kind.value}:{coordinate.identifier}: "
+                f"{selected} != {coordinate.version}"
+            )
+        if coordinate in self._resolved:
+            return
+        self._selected[identity] = coordinate.version
+
+        record = self._catalog.get(coordinate)
+        if record is None:
+            raise CapabilityResolveError(f"missing immutable release: {coordinate}")
+        if not isinstance(record, ReleaseRecord) or record.coordinate != coordinate:
+            raise CapabilityResolveError(f"catalog returned mismatched release for {coordinate}")
+
+        self._stack.append(coordinate)
+        try:
+            for dependency in record.dependencies:
+                self._visit(dependency)
+        finally:
+            self._stack.pop()
+        self._resolved.add(coordinate)
+        self._result.append(record)
+
+
+def resolve_capability_graph(root: Coordinate, catalog: ReleaseCatalog) -> tuple[ReleaseRecord, ...]:
+    """Resolve exact metadata depth-first, dependency-before-parent, without installing."""
+    return _GraphResolver(catalog).resolve(root)
+
+
+def verify_locked_artifact(path: Path, expected_checksum: str) -> str:
+    """Verify a local artifact against its immutable lock and return its checksum."""
+    try:
+        expected = _validate_hex(expected_checksum, 64, "checksum")
+    except CapabilityLockError as exc:
+        raise CapabilityIntegrityError(str(exc)) from exc
+    try:
+        actual = sha256_file(path)
+    except OSError as exc:
+        raise CapabilityIntegrityError(f"cannot verify locked artifact: {exc}") from exc
+    if not hmac.compare_digest(actual, expected):
+        raise CapabilityIntegrityError(
+            f"artifact checksum mismatch: expected sha256={expected}, got {actual}"
+        )
+    return actual
 
 
 def resolve_release_artifact(
