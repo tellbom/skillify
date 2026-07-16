@@ -133,6 +133,27 @@ def test_local_mcp_rejects_shell_commands(command: object) -> None:
         ["/opt/skillify/mcp/echo/bin/server", "config=file://runtime/package"],
         ["/opt/skillify/mcp/echo/bin/server", "--download=data:text/plain,payload"],
         ["/opt/skillify/mcp/echo/bin/server", "--download=//public.example/archive"],
+        ["/opt/skillify/mcp/echo/bin/uv3", "run", "server"],
+        ["/opt/skillify/mcp/echo/bin/uv", "tool", "run", "server"],
+        ["/opt/skillify/mcp/echo/bin/uv", "--with", "package", "run", "server"],
+        ["/opt/skillify/mcp/echo/bin/bun", "x", "package"],
+        ["/opt/skillify/mcp/echo/bin/go", "run", "server.go"],
+        ["/opt/skillify/mcp/echo/bin/pypy3.10-v7.3.15", "-m", "pip"],
+        ["/opt/skillify/mcp/echo/bin/python3.11m", "-m", "pip"],
+        ["/opt/skillify/mcp/echo/bin/python3.11d", "-c", "payload"],
+        ["/opt/skillify/mcp/echo/bin/node-v20.12.1", "-e", "payload"],
+        ["/opt/skillify/mcp/echo/bin/python3.11-dbg", "-m", "pip"],
+        ["/opt/skillify/mcp/echo/bin/node20-debug", "-e", "payload"],
+        ["/opt/skillify/mcp/echo/bin/server", "--registry-url", "internal.example/index"],
+        ["/opt/skillify/mcp/echo/bin/server", "--downloadURL", "internal.example/archive"],
+        ["/opt/skillify/mcp/echo/bin/server", "--registryUrl", "internal.example/index"],
+        ["/opt/skillify/mcp/echo/bin/server", "--repositoryURL", "internal.example/repo"],
+        ["/opt/skillify/mcp/echo/bin/server", "--indexURL", "internal.example/simple"],
+        ["/opt/skillify/mcp/echo/bin/server", "-i", "internal.example/simple"],
+        ["/opt/skillify/mcp/echo/bin/server", "--proxy", "internal.example"],
+        ["/opt/skillify/mcp/echo/bin/server", "--upstream", "internal.example"],
+        ["/opt/skillify/mcp/echo/bin/server", "--host", "internal.example"],
+        ["/opt/skillify/mcp/echo/bin/server", "--origin", "internal.example"],
         ["/bin/server", "--token", "literal-secret"],
         ["/bin/server", "--token=literal-secret"],
     ],
@@ -158,7 +179,7 @@ def test_local_mcp_allows_sensitive_assignment_environment_reference() -> None:
 
 
 def test_local_mcp_does_not_treat_download_env_reference_as_secret_reference() -> None:
-    with pytest.raises(McpRegistryError, match="download"):
+    with pytest.raises(McpRegistryError, match="location"):
         load_mcp_artifact(local_artifact(
             command=["/opt/skillify/mcp/echo/bin/server", "--download={env:MCP_URL}"],
             environment=["MCP_URL"],
@@ -167,11 +188,88 @@ def test_local_mcp_does_not_treat_download_env_reference_as_secret_reference() -
 
 @pytest.mark.parametrize("flag", ["--download", "--url", "--source", "--registry"])
 def test_local_mcp_rejects_split_runtime_location_environment_reference(flag: str) -> None:
-    with pytest.raises(McpRegistryError, match="download"):
+    with pytest.raises(McpRegistryError, match="location"):
         load_mcp_artifact(local_artifact(
             command=["/opt/skillify/mcp/echo/bin/server", flag, "{env:MCP_URL}"],
             environment=["MCP_URL"],
         ))
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--token", "--api-key", "--password", "--auth-token", "--client-secret"],
+)
+@pytest.mark.parametrize("assignment", [False, True])
+def test_local_mcp_allows_only_explicit_credential_environment_flags(
+    flag: str, assignment: bool
+) -> None:
+    command = ["/opt/skillify/mcp/echo/bin/server"]
+    if assignment:
+        command.append(f"{flag}={{env:MCP_CREDENTIAL}}")
+    else:
+        command.extend([flag, "{env:MCP_CREDENTIAL}"])
+    artifact = load_mcp_artifact(local_artifact(
+        command=command, environment=["MCP_CREDENTIAL"]
+    ))
+    assert "MCP_CREDENTIAL" in artifact.environment
+
+
+def test_local_mcp_allows_only_explicit_safe_non_location_options() -> None:
+    artifact = load_mcp_artifact(local_artifact(command=[
+        "/opt/skillify/mcp/echo/bin/server",
+        "--stdio",
+        "--read-only",
+        "--log-level=info",
+    ]))
+    assert artifact.command[-1] == "--log-level=info"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--read-only=false"],
+        ["--read-only", "false"],
+        ["--stdio=false"],
+        ["--stdio", "false"],
+        ["--no-color=false"],
+        ["--quiet=false"],
+        ["--log-level"],
+        ["--log-level=download"],
+        ["--log-level", "download"],
+    ],
+)
+def test_local_mcp_rejects_noncanonical_safe_option_shapes(arguments: list[str]) -> None:
+    with pytest.raises(McpRegistryError, match="option"):
+        load_mcp_artifact(local_artifact(command=[
+            "/opt/skillify/mcp/echo/bin/server",
+            *arguments,
+        ]))
+
+
+def test_local_mcp_allows_bounded_split_log_level() -> None:
+    artifact = load_mcp_artifact(local_artifact(command=[
+        "/opt/skillify/mcp/echo/bin/server",
+        "--log-level",
+        "warning",
+    ]))
+    assert artifact.command[-2:] == ("--log-level", "warning")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["/opt/skillify/mcp/echo/bin/server", "-u", "{env:MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--repository", "{env:MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--mode", "download", "{env:MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "{env:MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--config={env:MCP_LOCATION}"],
+    ],
+)
+def test_local_mcp_rejects_environment_references_outside_credential_flags(
+    command: list[str],
+) -> None:
+    with pytest.raises(McpRegistryError, match="environment reference|location|option"):
+        load_mcp_artifact(local_artifact(command=command, environment=["MCP_LOCATION"]))
 
 
 @pytest.mark.parametrize(

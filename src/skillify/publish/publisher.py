@@ -224,9 +224,14 @@ def publish_mcp_artifact(
         # must create a new version rather than silently repairing it in place.
         raise AlreadyPublishedError(org, repo, tag)
     expected_assets = {path.name: path for path in asset_paths}
+    existing_asset_names: set[str] = set()
     if recovered:
         asset_names = [asset.name for asset in release.assets]
-        if len(asset_names) != len(expected_assets) or set(asset_names) != set(expected_assets):
+        existing_asset_names = set(asset_names)
+        if (
+            len(asset_names) != len(existing_asset_names)
+            or not existing_asset_names.issubset(expected_assets)
+        ):
             raise AlreadyPublishedError(org, repo, tag)
         with tempfile.TemporaryDirectory(prefix="skillify-mcp-recovery-") as temporary:
             for asset in release.assets:
@@ -237,8 +242,9 @@ def publish_mcp_artifact(
                 client.download(asset.browser_download_url, downloaded)
                 if not hmac.compare_digest(sha256_file(downloaded), sha256_file(expected)):
                     raise AlreadyPublishedError(org, repo, tag)
-    else:
-        for asset_path in asset_paths:
+    # No Forgejo mutation occurs until every present asset has been authenticated.
+    for asset_path in asset_paths:
+        if asset_path.name not in existing_asset_names:
             client.upload_release_asset(org, repo, release.id, asset_path)
     if release.draft:
         release = client.update_release(

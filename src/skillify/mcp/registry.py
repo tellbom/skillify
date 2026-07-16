@@ -59,6 +59,33 @@ _SENSITIVE_ARG_RE = re.compile(
     re.IGNORECASE,
 )
 _ENV_REFERENCE_RE = re.compile(r"\{env:([A-Z_][A-Z0-9_]{0,127})\}\Z")
+_CREDENTIAL_FLAGS = frozenset(
+    {"--api-key", "--auth-token", "--authorization", "--client-secret", "--password", "--token"}
+)
+_BOOLEAN_SAFE_LOCAL_FLAGS = frozenset(
+    {"--no-color", "--quiet", "--read-only", "--readonly", "--stdio", "--verbose"}
+)
+_BOOLEAN_VALUES = frozenset({"0", "1", "false", "no", "off", "on", "true", "yes"})
+_LOG_LEVELS = frozenset({"critical", "debug", "error", "info", "trace", "warning"})
+
+
+def _executable_family(value: str) -> str:
+    executable = value.casefold()
+    for suffix in (".exe", ".cmd", ".bat", ".com"):
+        executable = executable.removesuffix(suffix)
+    prefix_families = (("python", "python"), ("pypy", "pypy"), ("node", "node"))
+    for family, prefix in prefix_families:
+        if executable.startswith(prefix):
+            return family
+    families = (
+        ("py", r"py(?:\d+(?:\.\d+)*)?[a-z]*"),
+        ("uv", r"uv(?:\d+(?:\.\d+)*)?"),
+        ("go", r"go(?:\d+(?:\.\d+)*)?"),
+    )
+    for family, pattern in families:
+        if re.fullmatch(pattern, executable):
+            return family
+    return re.sub(r"(?:[-_.]?v?\d+(?:\.\d+)*)$", "", executable)
 
 
 @dataclass(frozen=True)
@@ -323,12 +350,9 @@ def load_mcp_artifact(
             or len(executable_parts) <= len(approved_prefix)
         ):
             raise McpRegistryError("command executable must be inside the governed MCP artifact")
-        executable = Path(command_tuple[0]).name.casefold()
-        for suffix in (".exe", ".cmd", ".bat", ".com"):
-            executable = executable.removesuffix(suffix)
-        executable_family = re.sub(r"(?:[-_.]?\d+(?:\.\d+)*)$", "", executable)
+        executable_family = _executable_family(Path(command_tuple[0]).name)
         runtime_launcher = re.fullmatch(
-            r"(?:busybox|bunx|cargo|composer|corepack|curl|env|gem|npm|npx|pip|pipx|pnpm|pnpx|toybox|uvx|wget|yarn)",
+            r"(?:busybox|bunx|cargo|composer|corepack|curl|env|gem|npm|npx|pip|pipx|pnpm|pnpx|toybox|uv|uvx|wget|yarn)",
             executable_family,
         )
         if runtime_launcher:
@@ -338,9 +362,13 @@ def load_mcp_artifact(
             executable_family,
         )
         if interpreter and any(
-            argument in {"-c", "-e", "--eval", "-m"} for argument in command_tuple[1:]
+            argument in {"-c", "-e", "--eval", "-m"}
+            or (executable_family == "bun" and argument == "x")
+            for argument in command_tuple[1:]
         ):
             raise McpRegistryError("interpreter code and module launchers are forbidden")
+        if executable_family == "go" and "run" in command_tuple[1:]:
+            raise McpRegistryError("runtime compiler launchers are forbidden")
         shell_launcher = re.fullmatch(
             r"(?:(?:ba|da|z|fi)?sh|cmd|powershell|pwsh)", executable_family
         )
@@ -354,45 +382,52 @@ def load_mcp_artifact(
         if any(type(name) is not str or not _ENV_RE.fullmatch(name) for name in environment):
             raise McpRegistryError("environment must contain names, never values")
         environment_names = set(environment)
-        for index, argument in enumerate(command_tuple):
-            if _ENV_REFERENCE_RE.fullmatch(argument):
+        credential_reference_indexes: set[int] = set()
+        safe_value_indexes: set[int] = set()
+        for index, argument in enumerate(command_tuple[1:], start=1):
+            if index in credential_reference_indexes or index in safe_value_indexes:
                 continue
-            if not _SENSITIVE_ARG_RE.search(argument):
-                continue
-            if "=" in argument:
-                sensitive_value = argument.split("=", 1)[1]
-            elif argument.startswith("-") and index + 1 < len(command_tuple):
-                sensitive_value = command_tuple[index + 1]
-            else:
-                raise McpRegistryError("secret-bearing command arguments are forbidden")
-            match = _ENV_REFERENCE_RE.fullmatch(sensitive_value)
-            if match is None or match.group(1) not in environment_names:
-                raise McpRegistryError("sensitive argv values must use an allowed environment reference")
-
-        runtime_location_flag = re.compile(
-            r"(?i)(?:download|endpoint|fetch|mirror|package|registry|remote|source|uri|url)"
-        )
-
-        def is_allowed_environment_reference(index: int, argument: str) -> bool:
-            direct = _ENV_REFERENCE_RE.fullmatch(argument)
-            if direct is not None:
-                previous = command_tuple[index - 1] if index > 0 else ""
-                return (
-                    direct.group(1) in environment_names
-                    and runtime_location_flag.search(previous) is None
+            flag, separator, assigned = argument.partition("=")
+            normalized_flag = flag.casefold()
+            if normalized_flag in _CREDENTIAL_FLAGS:
+                candidate = assigned if separator else (
+                    command_tuple[index + 1] if index + 1 < len(command_tuple) else ""
                 )
-            if "=" not in argument:
-                return False
-            flag, candidate = argument.split("=", 1)
-            reference = _ENV_REFERENCE_RE.fullmatch(candidate)
-            return (
-                reference is not None
-                and reference.group(1) in environment_names
-                and runtime_location_flag.search(flag) is None
-            )
+                reference = _ENV_REFERENCE_RE.fullmatch(candidate)
+                if reference is None or reference.group(1) not in environment_names:
+                    raise McpRegistryError(
+                        "credential flags require an allowed environment reference"
+                    )
+                credential_reference_indexes.add(index if separator else index + 1)
+                continue
+            if normalized_flag in _BOOLEAN_SAFE_LOCAL_FLAGS:
+                following = command_tuple[index + 1] if index + 1 < len(command_tuple) else ""
+                if separator or following.casefold() in _BOOLEAN_VALUES:
+                    raise McpRegistryError("boolean safety options must be exact bare tokens")
+                continue
+            if normalized_flag == "--log-level":
+                candidate = assigned if separator else (
+                    command_tuple[index + 1] if index + 1 < len(command_tuple) else ""
+                )
+                if candidate.casefold() not in _LOG_LEVELS:
+                    raise McpRegistryError("log-level option must use an allowed value")
+                if not separator:
+                    safe_value_indexes.add(index + 1)
+                continue
+            if normalized_flag.startswith("-"):
+                raise McpRegistryError(
+                    "unapproved option control or runtime location in MCP argv"
+                )
+            if "{env:" in argument or _ENV_REFERENCE_RE.fullmatch(argument):
+                if index not in credential_reference_indexes:
+                    raise McpRegistryError(
+                        "environment references are allowed only after explicit credential flags"
+                    )
+            if _SENSITIVE_ARG_RE.search(argument):
+                raise McpRegistryError("secret-bearing command arguments are forbidden")
 
         if any(
-            not is_allowed_environment_reference(index, argument)
+            index not in credential_reference_indexes
             and ("//" in argument or re.search(r"(?i)[a-z][a-z0-9+.-]*:", argument))
             for index, argument in enumerate(command_tuple[1:], start=1)
         ):

@@ -247,7 +247,6 @@ def test_publish_mcp_rejects_source_or_organization_coordinate_before_network(
     [
         ("wrong", "artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
         ("echo 1.2.3", "artifactKind=skill\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
-        ("echo 1.2.3", "artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
     ],
 )
 def test_publish_mcp_rejects_nonexact_or_incomplete_draft_without_mutation(
@@ -284,9 +283,9 @@ def test_publish_mcp_rejects_nonexact_or_incomplete_draft_without_mutation(
     assert after["id"] == release.id and after["assets"] == []
 
 
-@pytest.mark.parametrize("corrupt_sidecar", [False, True])
-def test_publish_mcp_recovers_only_complete_byte_exact_draft(
-    fake_forgejo, tmp_path: Path, corrupt_sidecar: bool
+@pytest.mark.parametrize("existing_asset_count", [0, 1, 2, 3])
+def test_publish_mcp_resumes_exact_draft_from_any_valid_asset_prefix(
+    fake_forgejo, tmp_path: Path, existing_asset_count: int
 ) -> None:
     archive = tmp_path / "mcp.tar.gz"
     archive.write_bytes(b"approved mcp")
@@ -311,20 +310,58 @@ def test_publish_mcp_recovers_only_complete_byte_exact_draft(
         draft=True,
     )
     assets = [packed.tarball_path, packed.checksum_path, packed.artifact_manifest_path]
-    if corrupt_sidecar:
-        corrupt = tmp_path / packed.artifact_manifest_path.name
-        corrupt.write_text('{"artifactKind":"skill"}\n', encoding="utf-8")
-        assets[-1] = corrupt
-    for asset in assets:
+    for asset in assets[:existing_asset_count]:
         client.upload_release_asset("approved", "echo", release.id, asset)
 
-    if corrupt_sidecar:
-        with pytest.raises(AlreadyPublishedError):
-            publish_mcp_artifact(artifact, archive, cfg)
-        unchanged = client.find_release_by_tag("approved", "echo", "v1.2.3")
-        assert unchanged is not None and unchanged.draft is True
+    result = publish_mcp_artifact(artifact, archive, cfg)
+    assert result.recovered is True
+    published = client.find_release_by_tag("approved", "echo", "v1.2.3")
+    assert published is not None and published.draft is False
+    assert {asset.name for asset in published.assets} == {
+        "approved-echo-1.2.3.tar.gz",
+        "approved-echo-1.2.3.sha256",
+        "approved-echo-1.2.3.artifact.json",
+    }
+
+
+@pytest.mark.parametrize("invalid_assets", ["unexpected", "duplicate"])
+def test_publish_mcp_rejects_unexpected_or_duplicate_draft_assets_without_mutation(
+    fake_forgejo, tmp_path: Path, invalid_assets: str
+) -> None:
+    archive = tmp_path / "mcp.tar.gz"
+    archive.write_bytes(b"approved mcp")
+    checksum = sha256_file(archive)
+    base = f"http://127.0.0.1:{fake_forgejo.server_port}"
+    metadata = {
+        "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
+        "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
+        "checksum": checksum, "license": "MIT",
+        "source": f"{base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"], "environment": [],
+        "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []}, "enabled": True,
+    }
+    artifact = load_mcp_artifact(metadata, approved_forgejo_base=base)
+    packed = pack_mcp(artifact, archive, tmp_path / "prepared")
+    client = ForgejoClient(base, "tok")
+    client.ensure_org_repo("approved", "echo")
+    release = client.create_release(
+        "approved", "echo", tag_name="v1.2.3", name="echo 1.2.3",
+        body=f"artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}",
+        draft=True,
+    )
+    if invalid_assets == "unexpected":
+        unexpected = tmp_path / "unexpected.bin"
+        unexpected.write_bytes(b"unexpected")
+        client.upload_release_asset("approved", "echo", release.id, unexpected)
     else:
-        result = publish_mcp_artifact(artifact, archive, cfg)
-        assert result.recovered is True
-        published = client.find_release_by_tag("approved", "echo", "v1.2.3")
-        assert published is not None and published.draft is False
+        client.upload_release_asset("approved", "echo", release.id, packed.tarball_path)
+        client.upload_release_asset("approved", "echo", release.id, packed.tarball_path)
+    before_release = repr(fake_forgejo.state.releases["approved/echo/v1.2.3"])
+    before_asset_bytes = dict(fake_forgejo.state.asset_bytes)
+    cfg = SkillifyConfig(home=tmp_path / "home", forgejo_url=base, forgejo_token="tok")
+
+    with pytest.raises(AlreadyPublishedError):
+        publish_mcp_artifact(artifact, archive, cfg)
+
+    assert repr(fake_forgejo.state.releases["approved/echo/v1.2.3"]) == before_release
+    assert fake_forgejo.state.asset_bytes == before_asset_bytes
