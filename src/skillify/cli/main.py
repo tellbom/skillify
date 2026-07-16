@@ -29,8 +29,10 @@ app = typer.Typer(
 )
 
 from skillify.cli.agent_cmd import agent_app
+from skillify.cli.map_cmd import map_app
 
 app.add_typer(agent_app, name="agent")
+app.add_typer(map_app, name="map")
 
 console = Console()
 err_console = Console(stderr=True)

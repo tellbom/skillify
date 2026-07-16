@@ -118,7 +118,7 @@
 - **[test-env]**：无（离线可完整验证）。
 - commit：`feat(codemap): define graph schema and incremental store`
 
-### - [ ] Task 3.3 CLI/MCP/只读视图 — Owner: Claude Code
+### - [x] Task 3.3 CLI/MCP/只读视图 — Owner: Claude Code
 - 锚点：`+src/skillify/cli/map_cmd.py`、`+src/skillify/codemap/mcp_server.py`、`web/`（**Mermaid/markmap/Vue Flow，禁止把 React Flow 引入 Vue 项目**）
 - `skillctl map build/status/query/export`；MCP 返回证据位置非整仓源码；Web 首版只读。
 - **Dev-DoD**：`compileall` + `vue-tsc` + `vitest`/`build` 过；五类查询对样本仓离线返回证据位置；前端视图对固定 `code-map.json` 渲染单测。
@@ -126,6 +126,7 @@
 - commit：`feat(codemap): expose cli mcp and read-only views`
 
 > **门禁 G3** — Dev：3.1–3.3 Dev-DoD 过。**[test-env] G3**：真实中型仓库首次+增量索引达 S0 性能预算；五类查询跳真实代码证据；解析失败有降级。
+> **状态（2026-07-16）**：Dev G3 固定仓库索引、图模型、六类证据查询、CLI/MCP 与只读视图已通过；**[test-env] G3 待真实中型仓库性能与证据跳转验证**。
 
 ---
 
@@ -281,7 +282,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [ ] G3 Dev　- [ ] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [ ] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]
