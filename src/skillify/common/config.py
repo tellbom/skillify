@@ -41,6 +41,7 @@ class AgentPaths:
 class AgentLocalConfig:
     provider: str = "opencode"
     allowed_workspaces: tuple[str, ...] = ()
+    workspace_aliases: dict[str, str] = field(default_factory=dict)
     model_endpoint: str | None = None
     model_provider: str | None = None
     model_name: str | None = None
@@ -98,6 +99,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     config = AgentLocalConfig(
         provider=str(data.get("provider", "opencode")),
         allowed_workspaces=tuple(data.get("allowed_workspaces", ())),
+        workspace_aliases=dict(data.get("workspace_aliases", {})),
         model_endpoint=data.get("model_endpoint"),
         model_provider=data.get("model_provider"),
         model_name=data.get("model_name"),
@@ -107,12 +109,15 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         opencode_artifact_root=data.get("opencode_artifact_root"),
         opencode_user_config_path=data.get("opencode_user_config_path"),
     )
-    if config.provider != "opencode":
-        raise ValueError("provider must be opencode")
+    if config.provider not in {"opencode", "claude-code"}:
+        raise ValueError("provider must be opencode or claude-code")
     if any(not Path(value).is_absolute() for value in config.allowed_workspaces):
         raise ValueError("allowed workspaces must be absolute")
     if len(set(config.allowed_workspaces)) != len(config.allowed_workspaces):
         raise ValueError("allowed workspaces must be unique")
+    if any(not isinstance(alias, str) or not Path(path).is_absolute()
+           for alias, path in config.workspace_aliases.items()):
+        raise ValueError("workspace aliases must map names to absolute paths")
     if (config.opencode_user_config_path is not None and
             not Path(config.opencode_user_config_path).is_absolute()):
         raise ValueError("OpenCode user config path must be absolute")

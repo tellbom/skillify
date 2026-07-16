@@ -17,7 +17,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 EVENT_TYPES = frozenset({
     "task.received", "task.confirmed", "task.started", "test.completed",
     "artifact.created", "task.succeeded", "task.failed", "task.rejected",
-    "task.rolled_back",
+    "task.cancelled", "task.rolled_back",
 })
 
 
@@ -88,6 +88,8 @@ def build_task_event(
     diff_stats: DiffStats | None = None,
     artifacts: tuple[ArtifactReference, ...] = (),
     reason_code: str | None = None,
+    nonce: str | None = None,
+    state_version: int | None = None,
 ) -> dict[str, Any]:
     """Construct a closed payload with no free-form prompt, source, path, or secret field."""
     identifiers = (event_id, task_id, workflow_id, provider)
@@ -118,6 +120,10 @@ def build_task_event(
         payload["artifacts"] = [artifact.as_dict() for artifact in artifacts]
     if reason_code is not None:
         payload["reasonCode"] = reason_code
+    if nonce is not None:
+        payload["nonce"] = nonce
+    if state_version is not None:
+        payload["stateVersion"] = state_version
     return payload
 
 
@@ -139,7 +145,7 @@ class HttpEventEndpoint:
                 json=payload,
                 timeout=10,
             )
-            return response.status_code in {200, 201, 202, 204, 409}
+            return response.status_code in {200, 201, 202, 204}
         except requests.RequestException:
             return False
 

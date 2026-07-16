@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 import requests
 import typer
 
-from skillify.common.config import load_agent_paths, load_config
+from skillify.common.config import load_agent_local_config, load_agent_paths, load_config
 
 
 bridge_app = typer.Typer(help="Manage the opt-in outbound endpoint bridge.", no_args_is_help=True)
@@ -26,6 +26,15 @@ class BridgeTransportError(RuntimeError):
 
 class BridgeTransport(Protocol):
     def pull(self, cursor: str | None) -> tuple[list[dict[str, Any]], str | None]: ...
+    def confirm(self, task_id: str, nonce: str, state_version: int) -> int: ...
+
+
+class BridgeRunner(Protocol):
+    def run(self, envelope, *, state_version: int) -> int: ...
+
+
+class BridgeReporter(Protocol):
+    def flush(self) -> int: ...
 
 
 class HttpBridgeTransport:
@@ -53,6 +62,18 @@ class HttpBridgeTransport:
             return tasks, next_cursor
         except (requests.RequestException, ValueError, TypeError) as exc:
             raise BridgeTransportError("endpoint task pull failed") from exc
+
+    def confirm(self, task_id: str, nonce: str, state_version: int) -> int:
+        try:
+            response = self.session.post(
+                f"{self.server_url}/api/endpoint/tasks/{task_id}/confirm",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"nonce": nonce, "stateVersion": state_version}, timeout=10,
+            )
+            response.raise_for_status()
+            return int(response.json()["stateVersion"])
+        except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+            raise BridgeTransportError("endpoint task confirmation failed") from exc
 
 
 class LocalOutbox:
@@ -107,6 +128,8 @@ class BridgeLoop:
         self,
         transport: BridgeTransport,
         outbox: LocalOutbox,
+        runner: BridgeRunner,
+        reporter: BridgeReporter,
         *,
         sleeper: Callable[[float], None] = time.sleep,
         initial_backoff: float = 1.0,
@@ -114,11 +137,14 @@ class BridgeLoop:
     ) -> None:
         self.transport = transport
         self.outbox = outbox
+        self.runner = runner
+        self.reporter = reporter
         self.sleeper = sleeper
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
         self.cursor: str | None = None
         self._next_backoff = initial_backoff
+        self._executed: set[str] = set()
 
     def poll(self) -> bool:
         try:
@@ -130,14 +156,18 @@ class BridgeLoop:
             return False
         self._next_backoff = self.initial_backoff
         self.cursor = cursor
+        from skillify.tasks.protocol import TaskEnvelope
         for task in tasks:
-            task_id = task.get("taskId")
-            if type(task_id) is not str or not task_id:
-                raise ValueError("pulled task requires taskId")
-            self.outbox.enqueue(
-                f"task-received:{task_id}",
-                {"type": "task.received", "taskId": task_id},
+            envelope = TaskEnvelope.from_dict(task)
+            if envelope.task_id in self._executed:
+                self.reporter.flush()
+                continue
+            state_version = self.transport.confirm(
+                envelope.task_id, envelope.nonce, envelope.state_version,
             )
+            self.runner.run(envelope, state_version=state_version)
+            self._executed.add(envelope.task_id)
+            self.reporter.flush()
         return True
 
     def run(self, *, max_polls: int | None = None) -> None:
@@ -193,13 +223,49 @@ def connect(
     state = BridgeRuntimeState(os.getpid(), server_url, datetime.now(timezone.utc).isoformat())
     _write_state(state_path, state)
     try:
-        BridgeLoop(HttpBridgeTransport(server_url, token), LocalOutbox(outbox_path)).run(
+        transport = HttpBridgeTransport(server_url, token)
+        outbox = LocalOutbox(outbox_path)
+        BridgeLoop(
+            transport, outbox, _build_runner(outbox), _build_reporter(server_url, token, outbox),
+        ).run(
             max_polls=1 if once else None,
         )
     except KeyboardInterrupt:
         pass
     finally:
         state_path.unlink(missing_ok=True)
+
+
+def _build_runner(outbox: LocalOutbox):
+    from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
+    from skillify.agent.providers.opencode import OpenCodeProvider
+    from skillify.agent.runner import TaskRunner
+    from skillify.tasks.protocol import TaskEnvelope
+
+    paths = load_agent_paths(); config = load_agent_local_config(paths)
+    aliases = dict(config.workspace_aliases)
+    for raw in config.allowed_workspaces:
+        aliases.setdefault(Path(raw).name, raw)
+    runtime = ModelRuntimeConfig(
+        config.model_provider or "", config.model_endpoint or "", config.model_name or "",
+        config.allowed_model_hosts, config.credential_env_names,
+    )
+
+    def start_spec(envelope: TaskEnvelope) -> ProviderStartSpec:
+        raw = aliases.get(envelope.workspace_alias)
+        if raw is None:
+            raise ValueError("workspace alias is not configured on this endpoint")
+        workspace = Path(raw).resolve(strict=True)
+        return ProviderStartSpec(
+            workspace, (workspace,), paths.cache_dir / envelope.runtime / envelope.task_id, runtime,
+        )
+
+    return TaskRunner({"opencode": OpenCodeProvider()}, start_spec, outbox)
+
+
+def _build_reporter(server_url: str, token: str, outbox: LocalOutbox):
+    from skillify.tasks.reporting import HttpEventEndpoint, TaskEventReporter
+    return TaskEventReporter(outbox, HttpEventEndpoint(server_url, token))
 
 
 @bridge_app.command("start")
