@@ -10,6 +10,7 @@ dependencies = [
   "requests>=2.31",
   "packaging>=24.0",
   "rich>=13.7",
+  "mcp==1.28.1",
   "fastapi>=0.110",
   "uvicorn>=0.29",
   "sqlalchemy>=2.0",
