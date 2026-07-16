@@ -8,7 +8,8 @@ from skillify.index.models import EndpointBinding
 from skillify.tasks.lease import claim_next_task
 from skillify.tasks.protocol import TaskConflictError, TaskReplayError
 from skillify.tasks.web_store import (
-    dispatch_task, issue_task_envelope, record_task_event, verify_task_response,
+    confirm_work_packages, dispatch_task, issue_task_envelope, record_task_event,
+    verify_task_response,
 )
 
 
@@ -28,11 +29,12 @@ def _session() -> Session:
 
 
 def _claimed(session: Session):
-    dispatch_task(
+    task = dispatch_task(
         session, owner="jane", endpoint_id="endpoint-1", workflow_id="evidence-bugfix",
         workflow_version="1.0.0", workspace_alias="billing",
         inputs={"issueReference": "BUG-42"}, runtime="claude-code", now=NOW,
     )
+    confirm_work_packages(session, task)
     session.commit()
     return claim_next_task(session, endpoint_id="endpoint-1", lease_owner="bridge-1", now=NOW)
 
