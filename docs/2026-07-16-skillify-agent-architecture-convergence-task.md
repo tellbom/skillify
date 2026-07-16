@@ -5,6 +5,7 @@
 > 执行：Codex（主）/ GPT / Sonnet。每 Task 含：**依赖 / 文件 / 失败测试 / 最小实现 / 验证 / 删除项 / 完成证据 / commit / Gate**。
 > 环境前提：Dev-DoD 在 **Linux（Codex 环境）** 跑（本 macOS 机因 `dmpython` 无 macOS wheel 无法 `pytest`）。`[test-env]` 用例默认 `pytest.mark.skip`，接入测试环境销账。
 > 图例：`- [ ]` 未完成 `- [x]` 完成。**禁用表述**：“后续完善/适当处理/添加必要测试/类似上一任务/无路径无验证命令的笼统任务”。
+> **统一测试环境交付入口：** `docs/testing/2026-07-17-post-ba3-test-environment-handoff.md`。测试窗口以该文档汇总范围和当前架构裁决为准。
 
 ---
 

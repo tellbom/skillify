@@ -7,6 +7,7 @@
 > 每 Task 含：**依赖 / 文件 / 先失败测试 / 最小实现 / 删除项 / 验证命令 / 完成证据 / commit / Gate / 状态 / 指导意见**。
 > 状态三层：`implemented`（合入）· `dev_verified`（离线门禁过）· `env_verified`（[test-env] 销账）。三者独立，不可互推。
 > 禁用表述：后续完善 / 适当处理 / 添加必要测试 / 类似上一任务 / 无路径无验证命令。
+> **统一测试环境交付入口：** `docs/testing/2026-07-17-post-ba3-test-environment-handoff.md`。测试窗口以该文档汇总范围和当前架构裁决为准。
 
 > 执行结果（2026-07-16）：M1–M2、A1–A4、C1–C5、D1–D3 均为 `implemented=yes / dev_verified=yes / env_verified=pending`。E1 为 `env_verified=pending`，只在测试环境销账。
 
