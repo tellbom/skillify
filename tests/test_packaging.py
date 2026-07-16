@@ -35,6 +35,7 @@ def test_pack_skill_produces_expected_artifacts(tmp_path: Path) -> None:
     assert result.tarball_path.is_file()
     assert result.checksum_path.is_file()
     assert result.artifact_manifest_path.is_file()
+    assert result.sbom_path.is_file()
     assert result.namespace == "excel"
     assert result.name == "pivot-analysis"
     assert result.version == "0.1.0"
@@ -100,6 +101,8 @@ def test_artifact_manifest_embeds_skill_manifest(tmp_path: Path) -> None:
     assert data["sha256"] == result.sha256
     assert data["skillManifest"]["name"] == "pivot-analysis"
     assert data["artifactKind"] == "skill"
+    assert data["sbom"] == result.sbom_path.name
+    assert data["scan"]["blocked"] is False
 
 
 def _mcp_metadata(checksum: str) -> dict[str, object]:

@@ -258,7 +258,7 @@
 
 ## S8 · 质量、安全与社区增长
 
-### - [ ] Task 8.1 供应链与静态扫描 — Owner: Codex
+### - [x] Task 8.1 供应链与静态扫描 — Owner: Codex
 - 锚点：`+src/skillify/security/scan.py`、发布链路
 - 复用 Cisco Skill Scanner/NVIDIA SkillSpector/Syft/Grype/Cosign；发布生成 SBOM+扫描+签名/来源；阻断与警告分离。
 - **Dev-DoD**：扫描规则 + 阻断/警告分级 对样本构件离线单测；SBOM 生成逻辑单测。

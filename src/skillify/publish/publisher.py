@@ -157,7 +157,9 @@ def publish_skill_dir(
     elif _release_checksum(release.body) != result.sha256:
         raise AlreadyPublishedError(org, repo, tag)
 
-    asset_paths = (result.tarball_path, result.checksum_path, result.artifact_manifest_path)
+    asset_paths = (
+        result.tarball_path, result.checksum_path, result.artifact_manifest_path, result.sbom_path,
+    )
     existing_asset_names = {asset.name for asset in release.assets}
     missing_assets = [path for path in asset_paths if path.name not in existing_asset_names]
     if recovered and not release.draft and not missing_assets:

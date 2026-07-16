@@ -16,6 +16,7 @@ import yaml
 
 from skillify import __version__
 from skillify.mcp.registry import McpArtifact, mcp_artifact_as_dict
+from skillify.security.scan import generate_sbom, scan_artifact, write_sbom
 from skillify.validator import ValidationResult, validate_skill_dir
 
 _EXCLUDED_DIR_NAMES = {".git", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache"}
@@ -34,6 +35,7 @@ class PackResult:
     tarball_path: Path
     checksum_path: Path
     artifact_manifest_path: Path
+    sbom_path: Path
     sha256: str
     size_bytes: int
     file_count: int
@@ -122,6 +124,13 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
     if not result.ok:
         raise PackagingError(result)
 
+    scan = scan_artifact(skill_dir)
+    for finding in scan.findings:
+        if finding.level.value == "block":
+            result.add(f"security:{finding.path}", finding.message)
+    if not result.ok:
+        raise PackagingError(result)
+
     namespace, name, version = manifest["namespace"], manifest["name"], manifest["version"]
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -129,6 +138,7 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
     tarball_path = output_dir / f"{base}.tar.gz"
     checksum_path = output_dir / f"{base}.sha256"
     artifact_manifest_path = output_dir / f"{base}.artifact.json"
+    sbom_path = output_dir / f"{base}.sbom.json"
 
     build_tarball(skill_dir, tarball_path)
     digest = sha256_file(tarball_path)
@@ -136,6 +146,7 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
     file_count = len(_collect_files(skill_dir))
 
     checksum_path.write_text(f"{digest}  {tarball_path.name}\n", encoding="utf-8")
+    write_sbom(generate_sbom(skill_dir, name=f"{namespace}/{name}", version=version), sbom_path)
 
     artifact_manifest = {
         "artifactSchemaVersion": 1,
@@ -149,6 +160,8 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
         "fileCount": file_count,
         "tarball": tarball_path.name,
         "packagedBy": f"skillctl {__version__}",
+        "sbom": sbom_path.name,
+        "scan": scan.as_dict(),
         "skillManifest": manifest,
     }
     artifact_manifest_path.write_text(
@@ -159,6 +172,7 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
         tarball_path=tarball_path,
         checksum_path=checksum_path,
         artifact_manifest_path=artifact_manifest_path,
+        sbom_path=sbom_path,
         sha256=digest,
         size_bytes=size_bytes,
         file_count=file_count,

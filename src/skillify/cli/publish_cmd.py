@@ -33,6 +33,7 @@ def run_publish(*, skill_dir: Path, dry_run: bool, console: Console, err_console
         console.print(f"  tarball:  {result.tarball_path}")
         console.print(f"  checksum: {result.checksum_path}")
         console.print(f"  artifact: {result.artifact_manifest_path}")
+        console.print(f"  sbom:     {result.sbom_path}")
         console.print("[yellow]--dry-run: skipping upload[/yellow]")
         raise typer.Exit(code=0)
 
@@ -70,6 +71,7 @@ def run_publish(*, skill_dir: Path, dry_run: bool, console: Console, err_console
     console.print(f"  tarball:  {result.tarball_path}")
     console.print(f"  checksum: {result.checksum_path}")
     console.print(f"  artifact: {result.artifact_manifest_path}")
+    console.print(f"  sbom:     {result.sbom_path}")
     action = "Recovered" if publish_result.recovered else "Published"
     console.print(
         f"[green]{action}[/green] {publish_result.org}/{publish_result.repo}@{publish_result.tag} "
