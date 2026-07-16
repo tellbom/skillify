@@ -1,0 +1,29 @@
+manifestVersion: 1
+namespace: skillify
+name: feature
+version: 1.0.0
+description: Deliver a scoped feature through clarification, planning, TDD, and review.
+author: Skillify Team
+license: Apache-2.0
+runtime: custom
+targets: [opencode, codex, project]
+entrypoints:
+  commands:
+    feature: workflow.yaml
+permissions:
+  readPaths: ["*"]
+  writePaths: ["*"]
+  commands:
+    "pytest *": allow
+    "npm test *": allow
+    "git diff *": allow
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [write, command]
+tags: [workflow, feature, tdd]
+orchestration:
+  definition: workflow.yaml
+reporting:
+  enabled: false

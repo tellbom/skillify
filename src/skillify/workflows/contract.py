@@ -26,6 +26,7 @@ class WorkflowGate:
     id: str
     before_role: str
     required_by_default: bool
+    required_for_web: bool
 
 
 @dataclass(frozen=True)
@@ -102,8 +103,32 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
         gate_id, before_role = gate.get("id"), gate.get("beforeRole")
         if type(gate_id) is not str or not gate_id or before_role not in role_ids:
             raise ValueError("workflow gates require an id and existing beforeRole")
-        gates.append(WorkflowGate(gate_id, before_role, gate.get("requiredByDefault") is True))
+        gates.append(WorkflowGate(
+            gate_id, before_role,
+            gate.get("requiredByDefault") is True,
+            gate.get("webRequired") is True,
+        ))
     return WorkflowPack(root, workflow_id, mode, tuple(roles), artifacts, tuple(gates))
+
+
+def approval_required(
+    pack: WorkflowPack,
+    gate_id: str,
+    *,
+    origin: str,
+    override: bool | None = None,
+) -> bool:
+    """Resolve a configurable approval gate, with Web defaults declared by the pack."""
+    if origin not in {"local", "web"}:
+        raise ValueError("workflow origin must be local or web")
+    if override is not None and type(override) is not bool:
+        raise ValueError("approval override must be a boolean")
+    gate = next((item for item in pack.gates if item.id == gate_id), None)
+    if gate is None:
+        raise ValueError(f"unknown workflow gate: {gate_id}")
+    if override is not None:
+        return override
+    return gate.required_for_web if origin == "web" else gate.required_by_default
 
 
 def execute_workflow(

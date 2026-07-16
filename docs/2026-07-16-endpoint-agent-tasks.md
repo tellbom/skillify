@@ -146,7 +146,7 @@
 - **[test-env]**：真实 bug 仓端到端。
 - commit：`feat(workflows): add evidence-driven bugfix pack`
 
-### - [ ] Task 4.3 Feature Pack
+### - [x] Task 4.3 Feature Pack
 - 锚点：`+workflows/feature/`
 - 串行角色（澄清→定位→计划→TDD→Review）；计划审批为可配置门禁（Web 任务默认审批后写码）。
 - **Dev-DoD**：Pack 结构 + 审批门禁开关逻辑离线单测。
