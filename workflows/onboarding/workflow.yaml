@@ -1,0 +1,19 @@
+workflowVersion: 1
+id: project-onboarding
+execution: serial
+mode: read-only
+roles:
+  - id: repository-analysis
+    prompt: Identify repository purpose, languages, modules, and documented entry points. Cite Code Map file and line evidence.
+    output: artifacts/repository-analysis.md
+    requiresEvidence: true
+  - id: architecture-summary
+    prompt: Summarize module boundaries, dependency direction, and runtime entry points from verified evidence.
+    output: artifacts/architecture-summary.md
+    requiresEvidence: true
+  - id: risk-and-test-entry
+    prompt: Record evidence-backed risks and the commands or files that provide the first useful test entry points.
+    output: artifacts/risk-and-tests.md
+    requiresEvidence: true
+artifacts:
+  - project-brief.md

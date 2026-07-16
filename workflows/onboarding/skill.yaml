@@ -1,0 +1,26 @@
+manifestVersion: 1
+namespace: skillify
+name: onboarding
+version: 1.0.0
+description: Build an evidence-linked project brief for an unfamiliar repository.
+author: Skillify Team
+license: Apache-2.0
+runtime: custom
+targets: [opencode, codex, project]
+entrypoints:
+  commands:
+    onboarding: workflow.yaml
+permissions:
+  readPaths: ["*"]
+  writePaths: []
+  commands: {}
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: []
+tags: [workflow, onboarding, code-map]
+orchestration:
+  definition: workflow.yaml
+reporting:
+  enabled: false

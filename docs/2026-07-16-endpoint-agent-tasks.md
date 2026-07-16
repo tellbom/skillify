@@ -132,7 +132,7 @@
 
 ## S4 · 代码开发 Workflow Packs（全 Owner: Claude Code）
 
-### - [ ] Task 4.1 Project Onboarding Pack
+### - [x] Task 4.1 Project Onboarding Pack
 - 锚点：`+workflows/onboarding/`
 - 串行角色（分析→架构摘要→风险/测试入口）；只读；输出 `project-brief.md`+Code Map 引用。
 - **Dev-DoD**：Pack 结构过 Skillify validator；三仓 golden tests **离线** 跑通（FakeProvider 驱动）。
