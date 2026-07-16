@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "codegraphVersion": "0.9.6",
+  "artifacts": [
+    {
+      "version": "0.9.6",
+      "os": "linux",
+      "arch": "x64",
+      "filename": "codegraph-linux-x64.tar.gz",
+      "sha256": "7c2f1d1c28c630747794cc3354c4d00828399a20266d492ec33d80f9b700a02e",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.6/codegraph-linux-x64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/codegraph/v0.9.6/codegraph-linux-x64.tar.gz"
+    },
+    {
+      "version": "0.9.6",
+      "os": "linux",
+      "arch": "arm64",
+      "filename": "codegraph-linux-arm64.tar.gz",
+      "sha256": "da9f27a26f3a0bb7dbbe3c2fd600c9bce898d032a0d25d6c4bb419f06127e896",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.6/codegraph-linux-arm64.tar.gz",
+      "intranetUri": "file:///opt/skillify/offline/codegraph/v0.9.6/codegraph-linux-arm64.tar.gz"
+    }
+  ]
+}

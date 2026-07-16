@@ -15,6 +15,7 @@ from skillify.common.config import (
     AgentLocalConfig, AgentPaths, SkillifyConfig,
     load_agent_local_config, load_agent_paths, load_config,
 )
+from skillify.agent.codegraph import CodeGraphError, codegraph_version
 from skillify.install.agent_defaults import RESERVED_UNIMPLEMENTED_AGENTS, ensure_default_agent_configs
 from skillify.install.opencode_distribution import (
     check_opencode_distribution,
@@ -51,6 +52,21 @@ def _check_binary(name: str) -> CheckResult:
     if path:
         return CheckResult(name, True, path)
     return CheckResult(name, False, "not found on PATH", f"install `{name}` and ensure it's on PATH")
+
+
+def _check_codegraph() -> CheckResult:
+    executable = shutil.which("codegraph")
+    if executable is None:
+        return CheckResult(
+            "codegraph", False, "not found on PATH",
+            "install the approved offline CodeGraph bundle; native grep/read remains available",
+            required=False,
+        )
+    try:
+        version = codegraph_version(executable)
+    except CodeGraphError as exc:
+        return CheckResult("codegraph", False, str(exc), "use the approved CodeGraph version", required=False)
+    return CheckResult("codegraph", True, f"CodeGraph {version} at {executable}", required=False)
 
 
 def _check_skills_dir_writable(cfg: SkillifyConfig) -> CheckResult:
@@ -188,6 +204,7 @@ def run_doctor(
 
     checks: list[CheckResult] = [_check_python()]
     checks += [_check_binary(b) for b in REQUIRED_BINARIES]
+    checks.append(_check_codegraph())
     try:
         local_config = agent_config
         if local_config is None:
