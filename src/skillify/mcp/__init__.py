@@ -3,9 +3,11 @@
 from skillify.mcp.registry import (
     McpArtifact,
     McpInstallPreview,
+    McpNetworkTarget,
     McpRegistry,
     McpRegistryError,
     McpTransport,
+    McpToolSummary,
     load_mcp_artifact,
     mcp_artifact_as_dict,
     render_opencode_mcp,
@@ -14,9 +16,11 @@ from skillify.mcp.registry import (
 __all__ = [
     "McpArtifact",
     "McpInstallPreview",
+    "McpNetworkTarget",
     "McpRegistry",
     "McpRegistryError",
     "McpTransport",
+    "McpToolSummary",
     "load_mcp_artifact",
     "mcp_artifact_as_dict",
     "render_opencode_mcp",

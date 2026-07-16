@@ -32,6 +32,20 @@ class McpTransport(str, Enum):
     REMOTE = "remote"
 
 
+@dataclass(frozen=True)
+class McpNetworkTarget:
+    host: str
+    port: int
+    protocol: str
+
+
+@dataclass(frozen=True)
+class McpToolSummary:
+    name: str
+    summary: str
+    context_budget: int
+
+
 _ENV_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,127}\Z")
 _LICENSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}\Z")
 _HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
@@ -98,6 +112,12 @@ class McpArtifact:
     auth_env: str | None = None
     tls_required: bool = True
     timeout_seconds: float = 15.0
+    args: tuple[str, ...] = ()
+    auth_profile: str | None = None
+    credential_ref: str | None = None
+    network: tuple[McpNetworkTarget, ...] = ()
+    scopes: tuple[str, ...] = ()
+    tools: tuple[McpToolSummary, ...] = ()
 
     def __post_init__(self, _validation_token: object) -> None:
         if _validation_token is not _VALIDATED_ARTIFACT_TOKEN:
@@ -145,7 +165,7 @@ class McpInstallPreview:
 
     @classmethod
     def from_artifact(cls, artifact: McpArtifact) -> "McpInstallPreview":
-        command = list(artifact.command)
+        command = list((*artifact.command, *artifact.args))
         redact_next = False
         for index, argument in enumerate(command):
             sensitive_flag = any(word in argument.casefold() for word in ("token", "secret", "password", "authorization"))
@@ -239,6 +259,68 @@ def _required_text(data: Mapping[str, object], key: str) -> str:
     if type(value) is not str or not value:
         raise McpRegistryError(f"{key} must be a non-empty string")
     return value
+
+
+def _load_extended(data: Mapping[str, object]) -> dict[str, object]:
+    auth_profile = data.get("auth_profile")
+    if auth_profile is not None and (
+        type(auth_profile) is not str
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", auth_profile) is None
+    ):
+        raise McpRegistryError("auth_profile must be a stable identifier")
+    credential_ref = data.get("credential_ref")
+    if credential_ref is not None and (
+        type(credential_ref) is not str
+        or re.fullmatch(r"(?:local|env)://[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", credential_ref) is None
+    ):
+        raise McpRegistryError("credential_ref must be a non-secret local or env reference")
+
+    network_value = data.get("network", [])
+    if type(network_value) is not list:
+        raise McpRegistryError("network must be an allowlist")
+    network: list[McpNetworkTarget] = []
+    for item in network_value:
+        if type(item) is not dict or set(item) != {"host", "port", "protocol"}:
+            raise McpRegistryError("network targets require host, port and protocol")
+        host, port, protocol = item["host"], item["port"], item["protocol"]
+        if (
+            type(host) is not str or _HOST_RE.fullmatch(host) is None
+            or type(port) is not int or isinstance(port, bool) or not 1 <= port <= 65535
+            or protocol not in {"https", "http"}
+        ):
+            raise McpRegistryError("network target is invalid")
+        network.append(McpNetworkTarget(host, port, protocol))
+
+    scopes_value = data.get("scopes", [])
+    if type(scopes_value) is not list or any(
+        type(scope) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", scope) is None
+        for scope in scopes_value
+    ):
+        raise McpRegistryError("scopes must contain stable identifiers")
+
+    tools_value = data.get("tools", [])
+    if type(tools_value) is not list:
+        raise McpRegistryError("tools must be a list")
+    tools: list[McpToolSummary] = []
+    for item in tools_value:
+        if type(item) is not dict or set(item) != {"name", "summary", "contextBudget"}:
+            raise McpRegistryError("tool summaries require name, summary and contextBudget")
+        if (
+            type(item["name"]) is not str or not item["name"]
+            or type(item["summary"]) is not str or not item["summary"]
+            or type(item["contextBudget"]) is not int
+            or isinstance(item["contextBudget"], bool)
+            or not 1 <= item["contextBudget"] <= 100_000
+        ):
+            raise McpRegistryError("tool summary is invalid")
+        tools.append(McpToolSummary(item["name"], item["summary"], item["contextBudget"]))
+    return {
+        "auth_profile": auth_profile,
+        "credential_ref": credential_ref,
+        "network": tuple(network),
+        "scopes": tuple(scopes_value),
+        "tools": tuple(tools),
+    }
 
 
 def _validate_intranet_source(
@@ -346,9 +428,11 @@ def load_mcp_artifact(
     base_fields = {
         "schemaVersion", "artifactKind", "namespace", "name", "version", "forgejoRelease",
         "commit", "checksum", "license", "source", "transport", "permissions", "enabled",
+        "auth_profile", "credential_ref", "network", "scopes", "tools",
     }
+    extended = _load_extended(data)
     if transport is McpTransport.STDIO:
-        allowed = base_fields | {"command", "environment", "timeoutSeconds"}
+        allowed = base_fields | {"command", "args", "environment", "timeoutSeconds"}
         unknown = set(data) - allowed
         if unknown:
             raise McpRegistryError(f"unknown local MCP fields: {sorted(unknown)}")
@@ -357,7 +441,12 @@ def load_mcp_artifact(
             raise McpRegistryError("command must be a bounded argv array")
         if any(type(arg) is not str or not arg or len(arg.encode()) > _MAX_ARG for arg in command):
             raise McpRegistryError("command argv contains an invalid argument")
-        command_tuple = tuple(command)
+        args = data.get("args", [])
+        if type(args) is not list or any(type(arg) is not str or not arg for arg in args):
+            raise McpRegistryError("args must be a bounded argv array")
+        if args and len(command) != 1:
+            raise McpRegistryError("separate args require command to contain only the executable")
+        command_tuple = (*tuple(command), *tuple(args))
         if not Path(command_tuple[0]).is_absolute():
             raise McpRegistryError("command executable must be an absolute argv path")
         executable_parts = PurePosixPath(command_tuple[0]).parts
@@ -487,9 +576,11 @@ def load_mcp_artifact(
             enabled=enabled,
             approved_forgejo_base=approved_base,
             _validation_token=_VALIDATED_ARTIFACT_TOKEN,
-            command=command_tuple,
+            command=tuple(command),
+            args=tuple(args),
             environment=tuple(sorted(credential_environment_names)),
             timeout_seconds=timeout_seconds,
+            **extended,
         )
 
     allowed = base_fields | {"url", "allowedHost", "authEnv", "tlsRequired", "timeoutSeconds"}
@@ -546,6 +637,7 @@ def load_mcp_artifact(
         auth_env=auth_env,
         tls_required=True,
         timeout_seconds=float(timeout),
+        **extended,
     )
 
 
@@ -573,7 +665,7 @@ def render_opencode_mcp(artifact: McpArtifact) -> dict[str, object]:
         raise McpRegistryError("only validated MCP artifacts can be rendered")
     if artifact.transport is McpTransport.STDIO:
         rendered: dict[str, object] = {
-            "type": "local", "command": list(artifact.command), "enabled": artifact.enabled,
+            "type": "local", "command": list((*artifact.command, *artifact.args)), "enabled": artifact.enabled,
             "timeout": _validate_timeout(artifact.timeout_seconds)[1],
         }
         if artifact.environment:
@@ -615,6 +707,8 @@ def mcp_artifact_as_dict(artifact: McpArtifact) -> dict[str, object]:
             environment=list(artifact.environment),
             timeoutSeconds=artifact.timeout_seconds,
         )
+        if artifact.args:
+            value["args"] = list(artifact.args)
     else:
         value.update(
             url=artifact.url,
@@ -623,4 +717,20 @@ def mcp_artifact_as_dict(artifact: McpArtifact) -> dict[str, object]:
             tlsRequired=artifact.tls_required,
             timeoutSeconds=artifact.timeout_seconds,
         )
+    if artifact.auth_profile is not None:
+        value["auth_profile"] = artifact.auth_profile
+    if artifact.credential_ref is not None:
+        value["credential_ref"] = artifact.credential_ref
+    if artifact.network:
+        value["network"] = [
+            {"host": item.host, "port": item.port, "protocol": item.protocol}
+            for item in artifact.network
+        ]
+    if artifact.scopes:
+        value["scopes"] = list(artifact.scopes)
+    if artifact.tools:
+        value["tools"] = [
+            {"name": item.name, "summary": item.summary, "contextBudget": item.context_budget}
+            for item in artifact.tools
+        ]
     return value

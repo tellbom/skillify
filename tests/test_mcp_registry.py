@@ -79,6 +79,32 @@ def test_local_mcp_requires_argv_checksum_and_intranet_source() -> None:
     assert artifact.coordinate.identifier == "approved/echo"
 
 
+def test_extended_auth_network_scope_and_tool_metadata_is_backward_compatible() -> None:
+    legacy = load_mcp_artifact(local_artifact())
+    assert legacy.credential_ref is None
+    assert legacy.network == ()
+
+    artifact = load_mcp_artifact(local_artifact(
+        auth_profile="orders-user-oidc",
+        credential_ref="local://orders/current-user",
+        network=[{"host": "orders.internal", "port": 8443, "protocol": "https"}],
+        scopes=["orders.read"],
+        tools=[{"name": "get_order", "summary": "Read one order", "contextBudget": 1200}],
+    ))
+
+    assert artifact.auth_profile == "orders-user-oidc"
+    assert artifact.credential_ref == "local://orders/current-user"
+    assert artifact.network[0].host == "orders.internal"
+    assert artifact.scopes == ("orders.read",)
+    assert artifact.tools[0].context_budget == 1200
+
+
+@pytest.mark.parametrize("credential_ref", ["secret-token", "local://user:password@orders", "https://orders/token"])
+def test_credential_ref_accepts_references_not_secret_values(credential_ref: str) -> None:
+    with pytest.raises(McpRegistryError, match="credential_ref"):
+        load_mcp_artifact(local_artifact(credential_ref=credential_ref))
+
+
 @pytest.mark.parametrize(
     "source",
     [
