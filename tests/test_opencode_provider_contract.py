@@ -219,6 +219,20 @@ def test_normal_completion_maps_only_safe_events(tmp_path, fake_server, monkeypa
     assert provider._tasks == {}
 
 
+def test_resume_existing_session_streams_without_resubmitting_prompt(tmp_path, fake_server, monkeypatch):
+    Handler.events = [{"type": "session.idle", "properties": {"sessionID": "session-existing"}}]
+    provider, _, _, _ = _provider(fake_server, monkeypatch)
+    handle = provider.start(_spec(tmp_path))
+    requests_before = list(Handler.requests)
+    session = provider.resume_session(
+        handle, task_id="task-resume", session_id="session-existing", timeout_seconds=10,
+    )
+    events = list(provider.stream_events(handle, session))
+    new_posts = [item for item in Handler.requests[len(requests_before):] if item[0] == "POST"]
+    assert new_posts == []
+    assert events[-1].state is TaskState.SUCCEEDED
+
+
 def test_cancel_timeout_crash_and_stop_cleanup(tmp_path, fake_server, monkeypatch):
     provider, _, killed, process = _provider(fake_server, monkeypatch)
     handle = provider.start(_spec(tmp_path)); session = provider.create_session(handle, TaskSpec("task-1", "private"))

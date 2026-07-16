@@ -468,6 +468,21 @@ class OpenCodeProvider:
         self._tasks[session.session_id] = _TaskRuntime(handle.handle_id, spec.timeout_seconds)
         return session
 
+    def resume_session(
+        self,
+        handle: ProviderHandle,
+        *,
+        task_id: str,
+        session_id: str,
+        timeout_seconds: float = 900.0,
+    ) -> ProviderSession:
+        """Resume the event stream for an existing OpenCode session without resubmitting its prompt."""
+        if handle.handle_id not in self._live or not task_id or not session_id or timeout_seconds <= 0:
+            raise OpenCodeError("OpenCode session resume parameters are invalid")
+        session = ProviderSession(task_id, session_id, handle.handle_id)
+        self._tasks.setdefault(session_id, _TaskRuntime(handle.handle_id, timeout_seconds))
+        return session
+
     def _event(self, handle, session, kind, state, sequence, details=None):
         values = {"sequence": sequence}; values.update(details or {})
         return TaskEvent(session.task_id, session.session_id, "opencode", handle.provider_version, 1, 1,
