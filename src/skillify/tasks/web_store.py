@@ -12,8 +12,10 @@ from sqlalchemy.orm import Session
 
 from skillify.index.models import (
     EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
+    WorkPackageRecord,
 )
 from skillify.tasks.protocol import TaskConflictError, TaskEnvelope, TaskReplayError
+from skillify.tasks.work_package import WorkPackage
 
 
 WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -95,6 +97,14 @@ def dispatch_task(
         updated_at=timestamp,
     )
     session.add(task)
+    session.flush()
+    summary = next((value for value in inputs.values() if isinstance(value, str)), workflow_id)
+    session.add(WorkPackageRecord(
+        package_id=uuid.uuid4().hex, task_id=task.task_id,
+        objective=f"Complete {workflow_id}: {summary}", allowed_paths=["**/*"],
+        dependencies=[], access="write", recommended_skills=[], recommended_mcp=["codegraph"],
+        acceptance_commands=[], parallelizable=False, confirmed=False,
+    ))
     session.flush()
     return task
 
@@ -234,3 +244,47 @@ def task_events(session: Session, task_id: str) -> list[EndpointTaskEventRecord]
         select(EndpointTaskEventRecord).where(EndpointTaskEventRecord.task_id == task_id)
         .order_by(EndpointTaskEventRecord.occurred_at, EndpointTaskEventRecord.id)
     ))
+
+
+def list_work_packages(session: Session, task_id: str) -> list[WorkPackageRecord]:
+    return list(session.scalars(
+        select(WorkPackageRecord).where(WorkPackageRecord.task_id == task_id)
+        .order_by(WorkPackageRecord.id)
+    ))
+
+
+def replace_work_packages(
+    session: Session, task: EndpointTaskRecord, packages: tuple[WorkPackage, ...]
+) -> list[WorkPackageRecord]:
+    if task.state != "awaiting_confirmation":
+        raise TaskConflictError("work packages can only be edited before endpoint confirmation")
+    existing = list_work_packages(session, task.task_id)
+    for item in existing:
+        session.delete(item)
+    session.flush()
+    records = []
+    for package in packages:
+        if package.task_id != task.task_id:
+            raise ValueError("work package taskId does not match route task")
+        record = WorkPackageRecord(
+            package_id=package.package_id, task_id=package.task_id,
+            objective=package.objective, allowed_paths=list(package.allowed_paths),
+            dependencies=list(package.dependencies), access=package.access,
+            recommended_skills=list(package.recommended_skills),
+            recommended_mcp=list(package.recommended_mcp),
+            acceptance_commands=list(package.acceptance_commands),
+            parallelizable=package.parallelizable, confirmed=False,
+        )
+        session.add(record); records.append(record)
+    session.flush()
+    return records
+
+
+def confirm_work_packages(session: Session, task: EndpointTaskRecord) -> list[WorkPackageRecord]:
+    packages = list_work_packages(session, task.task_id)
+    if not packages:
+        raise ValueError("task requires at least one work package")
+    for package in packages:
+        package.confirmed = True
+    session.flush()
+    return packages

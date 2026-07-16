@@ -48,6 +48,7 @@ from skillify.web.schemas import (
     EndpointTaskCreateIn,
     EndpointTaskEventOut,
     EndpointTaskOut,
+    WorkPackageIn,
     ExternalScanOut,
     ExternalSelectionIn,
     ExternalSelectionOut,
@@ -923,7 +924,9 @@ def my_subscriptions(claims: dict = Depends(require_keycloak_user)) -> list[MySu
 
 
 def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
+    from skillify.tasks.web_store import list_work_packages
     events = task_events(session, task.task_id)
+    packages = list_work_packages(session, task.task_id)
     return EndpointTaskOut(
         taskId=task.task_id,
         endpointId=task.endpoint_id,
@@ -944,6 +947,13 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
             artifacts=event.artifacts,
             failureReason=event.failure_reason,
         ) for event in events],
+        workPackages=[WorkPackageIn(
+            packageId=item.package_id, taskId=item.task_id, objective=item.objective,
+            allowedPaths=item.allowed_paths, dependencies=item.dependencies, access=item.access,
+            recommendedSkills=item.recommended_skills, recommendedMcp=item.recommended_mcp,
+            acceptanceCommands=item.acceptance_commands, parallelizable=item.parallelizable,
+            confirmed=item.confirmed,
+        ) for item in packages],
     )
 
 

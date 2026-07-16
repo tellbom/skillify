@@ -2,12 +2,17 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import EndpointTasksView from '../src/views/EndpointTasksView.vue'
-import { dispatchEndpointTask, getEndpointTasks, getMyEndpoints } from '../src/lib/api.js'
+import {
+  confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
+  updateTaskWorkPackages,
+} from '../src/lib/api.js'
 
 vi.mock('../src/lib/api.js', () => ({
   getMyEndpoints: vi.fn(),
   getEndpointTasks: vi.fn(),
   dispatchEndpointTask: vi.fn(),
+  updateTaskWorkPackages: vi.fn(),
+  confirmTaskWorkPackages: vi.fn(),
 }))
 
 const endpoint = {
@@ -22,6 +27,12 @@ describe('EndpointTasksView', () => {
     getEndpointTasks.mockResolvedValue([{
       taskId: 'task-old', endpointId: 'endpoint-1', workflowId: 'evidence-review',
       runtime: 'opencode',
+      workPackages: [{
+        packageId: 'wp-1', taskId: 'task-old', objective: 'Review parser',
+        allowedPaths: ['src/parser/**'], dependencies: [], access: 'read',
+        recommendedSkills: [], recommendedMcp: ['codegraph'], acceptanceCommands: [],
+        parallelizable: true, confirmed: false,
+      }],
       state: 'failed', events: [{
         eventType: 'task.failed', occurredAt: '2026-07-16T10:02:00Z',
         failureReason: 'TEST_FAILED',
@@ -42,8 +53,34 @@ describe('EndpointTasksView', () => {
     expect(wrapper.text()).toContain('12 passed · 1 failed · 2 skipped')
     expect(wrapper.text()).toContain('3 files · +24 / -7')
     expect(wrapper.text()).toContain('test-report:artifact-1')
+    expect(wrapper.get('[data-testid="package-objective"]').element.value).toBe('Review parser')
     expect(wrapper.find('[name="prompt"]').exists()).toBe(false)
     expect(wrapper.find('[name="shell"]').exists()).toBe(false)
+  })
+
+  it('edits and confirms work packages instead of roles', async () => {
+    updateTaskWorkPackages.mockResolvedValue({ packages: [{
+      packageId: 'wp-1', taskId: 'task-old', objective: 'Review changed parser',
+      allowedPaths: ['src/parser/**'], dependencies: [], access: 'read',
+      recommendedSkills: [], recommendedMcp: ['codegraph'], acceptanceCommands: [],
+      parallelizable: true, confirmed: false,
+    }] })
+    confirmTaskWorkPackages.mockResolvedValue({ packages: [{
+      packageId: 'wp-1', taskId: 'task-old', objective: 'Review changed parser',
+      allowedPaths: ['src/parser/**'], dependencies: [], access: 'read',
+      recommendedSkills: [], recommendedMcp: ['codegraph'], acceptanceCommands: [],
+      parallelizable: true, confirmed: true,
+    }] })
+    const wrapper = mount(EndpointTasksView)
+    await flushPromises()
+    await wrapper.get('[data-testid="package-objective"]').setValue('Review changed parser')
+    await wrapper.get('.package-actions button').trigger('click')
+    await flushPromises()
+    expect(updateTaskWorkPackages).toHaveBeenCalled()
+    await wrapper.get('[data-testid="confirm-packages"]').trigger('click')
+    await flushPromises()
+    expect(confirmTaskWorkPackages).toHaveBeenCalledWith('task-old')
+    expect(wrapper.text()).toContain('已确认')
   })
 
   it('dispatches only the selected fixed form payload', async () => {

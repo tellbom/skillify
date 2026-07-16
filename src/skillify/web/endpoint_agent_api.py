@@ -13,13 +13,84 @@ from skillify.index.models import EndpointBinding, EndpointTaskRecord
 from skillify.tasks.lease import LeaseError, claim_next_task, heartbeat_task
 from skillify.tasks.protocol import TaskConflictError, TaskProtocolError
 from skillify.tasks.web_store import (
-    issue_task_envelope, record_task_event, transition_task, verify_task_response,
+    confirm_work_packages, issue_task_envelope, list_work_packages, record_task_event,
+    replace_work_packages, transition_task, verify_task_response,
 )
+from skillify.tasks.work_package import WorkPackage, validate_delegation_result
+from skillify.web.auth import require_keycloak_user
+from skillify.web.schemas import WorkPackageListIn
 from skillify.web.endpoint_auth import require_endpoint_machine
 from skillify.web.schemas import EndpointEventIn, EndpointTaskLifecycleIn
 
 
 router = APIRouter()
+
+
+def _web_owner(claims: dict) -> str:
+    return str(claims.get("preferred_username") or claims.get("sub") or "")
+
+
+def _owned_task(session: Session, task_id: str, owner: str) -> EndpointTaskRecord:
+    task = session.get(EndpointTaskRecord, task_id)
+    if task is None or task.owner_username != owner:
+        raise HTTPException(status_code=404, detail="task not found")
+    return task
+
+
+def _package_dict(item) -> dict:
+    return {
+        "packageId": item.package_id, "taskId": item.task_id, "objective": item.objective,
+        "allowedPaths": item.allowed_paths, "dependencies": item.dependencies,
+        "access": item.access, "recommendedSkills": item.recommended_skills,
+        "recommendedMcp": item.recommended_mcp,
+        "acceptanceCommands": item.acceptance_commands,
+        "parallelizable": item.parallelizable, "confirmed": item.confirmed,
+    }
+
+
+@router.get("/api/endpoint-tasks/{task_id}/work-packages")
+def get_work_packages(task_id: str, claims: dict = Depends(require_keycloak_user)) -> dict:
+    session = _session()
+    try:
+        _owned_task(session, task_id, _web_owner(claims))
+        return {"packages": [_package_dict(item) for item in list_work_packages(session, task_id)]}
+    finally:
+        session.close()
+
+
+@router.put("/api/endpoint-tasks/{task_id}/work-packages")
+def put_work_packages(
+    task_id: str, payload: WorkPackageListIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> dict:
+    session = _session()
+    try:
+        task = _owned_task(session, task_id, _web_owner(claims))
+        packages = tuple(WorkPackage.from_dict(item.model_dump()) for item in payload.packages)
+        validate_delegation_result("suggested", packages)
+        records = replace_work_packages(session, task, packages)
+        session.commit()
+        return {"packages": [_package_dict(item) for item in records]}
+    except (ValueError, TaskProtocolError) as exc:
+        session.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.post("/api/endpoint-tasks/{task_id}/work-packages/confirm")
+def confirm_task_work_packages(
+    task_id: str, claims: dict = Depends(require_keycloak_user),
+) -> dict:
+    session = _session()
+    try:
+        task = _owned_task(session, task_id, _web_owner(claims))
+        records = confirm_work_packages(session, task)
+        session.commit()
+        return {"packages": [_package_dict(item) for item in records]}
+    except ValueError as exc:
+        session.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
 
 
 def _session() -> Session:

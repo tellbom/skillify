@@ -274,6 +274,24 @@ class EndpointTaskEventOut(BaseModel):
     failureReason: str | None = None
 
 
+class WorkPackageIn(BaseModel):
+    packageId: str
+    taskId: str
+    objective: str
+    allowedPaths: list[str]
+    dependencies: list[str] = Field(default_factory=list)
+    access: str
+    recommendedSkills: list[str] = Field(default_factory=list)
+    recommendedMcp: list[str] = Field(default_factory=list)
+    acceptanceCommands: list[str] = Field(default_factory=list)
+    parallelizable: bool = False
+    confirmed: bool = False
+
+
+class WorkPackageListIn(BaseModel):
+    packages: list[WorkPackageIn]
+
+
 class EndpointTaskOut(BaseModel):
     taskId: str
     endpointId: str
@@ -286,6 +304,7 @@ class EndpointTaskOut(BaseModel):
     createdAt: datetime
     updatedAt: datetime
     events: list[EndpointTaskEventOut] = Field(default_factory=list)
+    workPackages: list[WorkPackageIn] = Field(default_factory=list)
 
 
 class EndpointTaskLifecycleIn(BaseModel):

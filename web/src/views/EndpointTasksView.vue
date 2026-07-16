@@ -1,6 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { dispatchEndpointTask, getEndpointTasks, getMyEndpoints } from '../lib/api.js'
+import {
+  confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
+  updateTaskWorkPackages,
+} from '../lib/api.js'
 
 const WORKFLOWS = [
   { id: 'project-onboarding', label: 'Project Onboarding', field: 'focus', fieldLabel: '关注范围（可选）', required: false },
@@ -16,6 +19,15 @@ const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
 const form = reactive({ endpointId: '', workspaceAlias: '', runtime: 'opencode', workflowId: 'evidence-bugfix', value: '' })
+
+function editableTask(task) {
+  return {
+    ...task,
+    workPackages: (task.workPackages || []).map((item) => ({
+      ...item, pathsText: (item.allowedPaths || []).join(', '),
+    })),
+  }
+}
 
 const selectedEndpoint = computed(() => endpoints.value.find((item) => item.endpointId === form.endpointId))
 const selectedWorkflow = computed(() => WORKFLOWS.find((item) => item.id === form.workflowId))
@@ -35,7 +47,7 @@ async function load() {
   try {
     const [endpointRows, taskRows] = await Promise.all([getMyEndpoints(), getEndpointTasks()])
     endpoints.value = endpointRows
-    tasks.value = taskRows
+    tasks.value = taskRows.map(editableTask)
     form.endpointId = endpointRows.find((item) => item.online)?.endpointId || endpointRows[0]?.endpointId || ''
   } catch (err) {
     error.value = err.message
@@ -60,12 +72,37 @@ async function submit() {
       workflowVersion: '1.0.0',
       inputs,
     })
-    tasks.value.unshift(task)
+    tasks.value.unshift(editableTask(task))
     form.value = ''
   } catch (err) {
     error.value = err.message
   } finally {
     submitting.value = false
+  }
+}
+
+async function savePackages(task) {
+  error.value = ''
+  try {
+    const packages = task.workPackages.map(({ pathsText, ...item }) => ({
+      ...item,
+      allowedPaths: pathsText.split(',').map((value) => value.trim()).filter(Boolean),
+      confirmed: false,
+    }))
+    const result = await updateTaskWorkPackages(task.taskId, packages)
+    task.workPackages = editableTask({ workPackages: result.packages }).workPackages
+  } catch (err) {
+    error.value = err.message
+  }
+}
+
+async function confirmPackages(task) {
+  error.value = ''
+  try {
+    const result = await confirmTaskWorkPackages(task.taskId)
+    task.workPackages = editableTask({ workPackages: result.packages }).workPackages
+  } catch (err) {
+    error.value = err.message
   }
 }
 
@@ -123,6 +160,22 @@ onMounted(load)
             <div><strong>{{ task.workflowId }}</strong><small>{{ task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
           </div>
+          <section v-if="task.workPackages?.length" class="work-packages">
+            <header><strong>委派工作包</strong><span>确认后由执行器原生管理子 Agent</span></header>
+            <div v-for="item in task.workPackages" :key="item.packageId" class="work-package">
+              <label>目标<input v-model="item.objective" data-testid="package-objective"></label>
+              <label>允许路径<input v-model="item.pathsText" data-testid="package-paths"></label>
+              <label>权限
+                <select v-model="item.access"><option value="read">只读</option><option value="write">读写</option></select>
+              </label>
+              <label class="parallel"><input v-model="item.parallelizable" type="checkbox">可并行</label>
+            </div>
+            <div class="package-actions">
+              <button type="button" @click="savePackages(task)">保存工作包</button>
+              <button v-if="task.workPackages.some((item) => !item.confirmed)" type="button" data-testid="confirm-packages" @click="confirmPackages(task)">确认委派</button>
+              <span v-else>已确认</span>
+            </div>
+          </section>
           <ol v-if="task.events?.length" class="timeline">
             <li v-for="event in task.events" :key="`${event.eventType}-${event.occurredAt}`">
               <div><strong>{{ event.eventType }}</strong><time>{{ event.occurredAt }}</time></div>
@@ -173,6 +226,14 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .status-dot.succeeded { background: #80cbc4; }
 .status-dot.failed, .status-dot.rejected { background: #ef8d8d; }
 .state-pill { padding: 4px 7px; border: 1px solid #333; border-radius: 999px; color: #999; font: 600 9px ui-monospace, monospace; text-transform: uppercase; }
+.work-packages { margin: 14px 0 0 17px; padding: 12px; border: 1px solid #2d3d3b; border-radius: 8px; background: #151b1a; }
+.work-packages header { display: flex; justify-content: space-between; margin-bottom: 10px; color: #80cbc4; font-size: 11px; }
+.work-packages header span { color: #777; }
+.work-package { display: grid; grid-template-columns: 2fr 2fr 1fr auto; align-items: end; gap: 8px; }
+.parallel { display: flex; align-items: center; min-height: 36px; }.parallel input { width: auto; min-height: 0; }
+.package-actions { display: flex; justify-content: end; margin-top: 9px; gap: 8px; }
+.package-actions button { padding: 6px 10px; border: 1px solid #3a4d4a; border-radius: 5px; color: #b9d9d6; background: #1b2927; cursor: pointer; }
+.package-actions span { color: #80cbc4; font-size: 10px; }
 .timeline { margin: 14px 0 0 3px; padding-left: 19px; border-left: 1px solid #333; list-style: none; }
 .timeline li { position: relative; padding: 0 0 13px 4px; }
 .timeline li::before { position: absolute; top: 4px; left: -24px; width: 7px; height: 7px; border: 2px solid #181818; border-radius: 50%; background: #666; content: ''; }
