@@ -28,7 +28,6 @@ class SkillGovernance(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     scanStatus: str = "not-reported"
     examples: list[str] = Field(default_factory=list)
-    codeMapReferences: list[str] = Field(default_factory=list)
     successRate: float | None = None
     testPassRate: float | None = None
     sampleSize: int = 0

@@ -7,7 +7,7 @@
 
 ## Root cause
 
-- Code Map reference:
+- CodeGraph reference:
 
 ## Patch
 

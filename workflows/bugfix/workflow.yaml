@@ -8,7 +8,7 @@ roles:
     output: artifacts/reproduction.md
     requiresEvidence: true
   - id: root-cause
-    prompt: Trace the failure to the smallest evidence-backed root cause and cite relevant Code Map positions.
+    prompt: Trace the failure to the smallest evidence-backed root cause and cite relevant CodeGraph positions.
     output: artifacts/root-cause.md
     requiresEvidence: true
   - id: implementation

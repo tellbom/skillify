@@ -13,7 +13,6 @@ const governance = {
   permissions: ['workspace:read', 'tests:run'],
   scanStatus: 'passed',
   examples: ['修复可复现的解析错误'],
-  codeMapReferences: ['src/parser.py:42'],
   successRate: 0.8,
   testPassRate: 0.95,
   sampleSize: 10,
@@ -24,12 +23,12 @@ const governance = {
 describe('community governance display', () => {
   beforeEach(() => { vi.clearAllMocks(); reportSkillSignal.mockResolvedValue(null) })
 
-  it('renders compatibility, MCP, permissions, scan, Code Map, examples, and acceptance data', () => {
+  it('renders compatibility, MCP, permissions, scan, examples, and acceptance data', () => {
     const wrapper = mount(SkillGovernancePanel, {
       props: { namespace: 'skillify', name: 'bugfix', version: '1.0.0', governance },
     })
     const text = wrapper.text()
-    for (const value of ['OpenCode 1.15.11', 'forgejo-read', 'workspace:read', 'passed', 'src/parser.py:42', '80%', '10 次']) {
+    for (const value of ['OpenCode 1.15.11', 'forgejo-read', 'workspace:read', 'passed', '80%', '10 次']) {
       expect(text).toContain(value)
     }
     expect(text).toContain('任务内容默认不采集：是')

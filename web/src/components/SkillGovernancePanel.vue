@@ -24,7 +24,6 @@ async function signal(eventType, success) {
       <div><h3>执行器</h3><span v-for="item in governance.compatibleExecutors" :key="item" class="chip">{{ item }}</span><em v-if="!governance.compatibleExecutors.length">未报告</em></div>
       <div><h3>所需 MCP</h3><span v-for="item in governance.requiredMcp" :key="item" class="chip">{{ item }}</span><em v-if="!governance.requiredMcp.length">无</em></div>
       <div><h3>权限摘要</h3><span v-for="item in governance.permissions" :key="item" class="chip permission">{{ item }}</span><em v-if="!governance.permissions.length">未报告</em></div>
-      <div><h3>Code Map</h3><code v-for="item in governance.codeMapReferences" :key="item">{{ item }}</code><em v-if="!governance.codeMapReferences.length">无证据引用</em></div>
     </div>
     <div class="acceptance">
       <template v-if="governance.sampleSize > 0">

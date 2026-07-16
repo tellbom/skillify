@@ -4,7 +4,7 @@ execution: serial
 mode: read-only
 roles:
   - id: repository-analysis
-    prompt: Identify repository purpose, languages, modules, and documented entry points. Cite Code Map file and line evidence.
+    prompt: Identify repository purpose, languages, modules, and documented entry points. Cite CodeGraph file and line evidence.
     output: artifacts/repository-analysis.md
     requiresEvidence: true
   - id: architecture-summary

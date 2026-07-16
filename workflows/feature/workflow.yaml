@@ -7,7 +7,7 @@ roles:
     prompt: Convert the request into bounded acceptance criteria and record unresolved blockers without inventing scope.
     output: artifacts/acceptance-criteria.md
   - id: localization
-    prompt: Locate the smallest relevant code surface and cite Code Map evidence positions.
+    prompt: Locate the smallest relevant code surface and cite CodeGraph evidence positions.
     output: artifacts/code-locations.md
     requiresEvidence: true
   - id: plan

@@ -12,6 +12,6 @@ Describe module boundaries and dependency direction.
 
 List evidence-backed risks and the first useful test commands or files.
 
-## Code Map evidence
+## CodeGraph evidence
 
-Every conclusion must include a relative `path:line` reference from Code Map.
+Every conclusion must include a relative `path:line` reference from CodeGraph.

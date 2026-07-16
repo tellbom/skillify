@@ -19,7 +19,7 @@ permissions:
   databaseResources: []
   unattended: false
   confirm: []
-tags: [workflow, onboarding, code-map]
+tags: [workflow, onboarding, codegraph]
 orchestration:
   definition: workflow.yaml
 reporting:
