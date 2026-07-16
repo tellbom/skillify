@@ -25,12 +25,14 @@ Options:
   --help                Show this message and exit.
 
 Commands:
-  doctor  Check local endpoint-agent prerequisites.
-  init    Register an explicit workspace.
-  run     Run an endpoint-agent task locally.
-  status  Show local endpoint-agent state.
-  stop    Stop the owned local provider process.
-  logs    Read redacted local lifecycle logs.
+  connect  Connect this endpoint to the Skillify control plane using...
+  doctor   Check local endpoint-agent prerequisites.
+  init     Register an explicit workspace.
+  run      Run an endpoint-agent task locally.
+  status   Show local endpoint-agent state.
+  stop     Stop the owned local provider process.
+  logs     Read redacted local lifecycle logs.
+  bridge   Manage the opt-in outbound endpoint bridge.
 """
 
 

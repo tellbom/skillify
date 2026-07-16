@@ -51,6 +51,11 @@ agent_app = typer.Typer(
     rich_markup_mode=None,
 )
 
+from skillify.cli.bridge_cmd import bridge_app, connect
+
+agent_app.add_typer(bridge_app, name="bridge")
+agent_app.command("connect")(connect)
+
 
 class AgentErrorCode(str, Enum):
     OK = "OK"

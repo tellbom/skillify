@@ -174,7 +174,7 @@
 - **[test-env]**：DM8 上的 `06-endpoint-tasks.sql` 建表与并发 compare-and-set。
 - commit：`feat(tasks): define endpoint task protocol`
 
-### - [ ] Task 5.2 Bridge/daemon 模式 — Owner: Claude Code
+### - [x] Task 5.2 Bridge/daemon 模式 — Owner: Claude Code
 - 锚点：`+src/skillify/cli/bridge_cmd.py`
 - `agent connect|bridge start|status|stop`；复用 skillctl 认证；出站拉取+指数退避+本地 outbox；默认前台，systemd user service 可选不需 root。
 - **Dev-DoD**：拉取循环 / 退避 / outbox 入队 对 fake HTTP 离线单测；`compileall` 过。
