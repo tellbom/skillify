@@ -239,6 +239,7 @@ def connect(
 def _build_runner(outbox: LocalOutbox):
     from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
     from skillify.agent.providers.opencode import OpenCodeProvider
+    from skillify.agent.providers.claudecode import ClaudeCodeProvider
     from skillify.agent.runner import TaskRunner
     from skillify.tasks.protocol import TaskEnvelope
 
@@ -260,7 +261,10 @@ def _build_runner(outbox: LocalOutbox):
             workspace, (workspace,), paths.cache_dir / envelope.runtime / envelope.task_id, runtime,
         )
 
-    return TaskRunner({"opencode": OpenCodeProvider()}, start_spec, outbox)
+    return TaskRunner(
+        {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()},
+        start_spec, outbox,
+    )
 
 
 def _build_reporter(server_url: str, token: str, outbox: LocalOutbox):
