@@ -13,6 +13,7 @@ from skillify.validator import validate_skill_dir
 
 
 SUPPORTED_RUNTIMES = frozenset({"opencode", "claude-code"})
+DELEGATION_MODES = frozenset({"adaptive", "suggested", "required"})
 
 
 @dataclass(frozen=True)
@@ -23,16 +24,25 @@ class WorkflowGate:
 
 
 @dataclass(frozen=True)
+class DelegationConfig:
+    mode: str = "suggested"
+    user_approval: str = "required"
+    executor_managed: bool = True
+
+
+@dataclass(frozen=True)
 class WorkflowPack:
     path: Path
     id: str
     runtimes: tuple[str, ...]
     entry_agent: str
     skills: tuple[str, ...]
+    mcp: tuple[str, ...]
     mode: str
     artifacts: tuple[str, ...]
     gates: tuple[WorkflowGate, ...]
     permissions: PermissionManifest
+    delegation: DelegationConfig
 
 
 def _safe_relative(value: object) -> str:
@@ -82,6 +92,8 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
     if not set(runtimes) <= SUPPORTED_RUNTIMES:
         raise ValueError("workflow runtime is unsupported")
     skills = _string_list(document.get("skills"), "skills")
+    mcp_value = document.get("mcp", [])
+    mcp = () if mcp_value == [] else _string_list(mcp_value, "mcp")
     artifacts = tuple(_safe_relative(item) for item in document.get("artifacts", []))
     if not artifacts:
         raise ValueError("workflow artifacts are required")
@@ -97,9 +109,22 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
             gate.get("webRequired") is True,
         ))
     permission_value = manifest.get("permissions") or {}
+    raw_delegation = document.get("delegation") or {}
+    delegation = _mapping(raw_delegation, "delegation")
+    delegation_config = DelegationConfig(
+        mode=delegation.get("mode", "suggested"),
+        user_approval=delegation.get("user_approval", "required"),
+        executor_managed=delegation.get("executor_managed", True),
+    )
+    if (
+        delegation_config.mode not in DELEGATION_MODES
+        or delegation_config.user_approval not in {"required", "optional"}
+        or delegation_config.executor_managed is not True
+    ):
+        raise ValueError("workflow delegation configuration is unsupported")
     return WorkflowPack(
-        root, workflow_id, runtimes, entry_agent, skills, mode, artifacts, tuple(gates),
-        PermissionManifest.from_value(f"workflow:{workflow_id}", permission_value),
+        root, workflow_id, runtimes, entry_agent, skills, mcp, mode, artifacts, tuple(gates),
+        PermissionManifest.from_value(f"workflow:{workflow_id}", permission_value), delegation_config,
     )
 
 

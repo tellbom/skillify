@@ -283,3 +283,21 @@ class EndpointTaskNonce(Base):
     nonce: Mapped[str] = mapped_column(String(128), primary_key=True)
     task_id: Mapped[str] = mapped_column(String(128), index=True)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class WorkPackageRecord(Base):
+    __tablename__ = "endpoint_work_packages"
+    __table_args__ = (UniqueConstraint("task_id", "package_id", name="uq_work_package_identity"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    package_id: Mapped[str] = mapped_column(String(128))
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    objective: Mapped[str] = mapped_column(String(1000))
+    allowed_paths: Mapped[list] = mapped_column(JSONText(), default=list)
+    dependencies: Mapped[list] = mapped_column(JSONText(), default=list)
+    access: Mapped[str] = mapped_column(String(16))
+    recommended_skills: Mapped[list] = mapped_column(JSONText(), default=list)
+    recommended_mcp: Mapped[list] = mapped_column(JSONText(), default=list)
+    acceptance_commands: Mapped[list] = mapped_column(JSONText(), default=list)
+    parallelizable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
