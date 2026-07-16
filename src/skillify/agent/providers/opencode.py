@@ -253,6 +253,8 @@ class OpenCodeProvider:
                   "autoupdate": False, "share": "disabled", "model": f"{spec.runtime.provider}/{spec.runtime.model}",
                   "provider": {spec.runtime.provider: {"env": list(spec.runtime.credential_env_names),
                   "options": {"baseURL": spec.runtime.endpoint}}}}
+        if spec.mcp_servers:
+            config["mcp"] = dict(spec.mcp_servers)
         path = spec.config_dir / "opencode.json"
         temporary = spec.config_dir / f".opencode.{uuid.uuid4().hex}.tmp"
         try:

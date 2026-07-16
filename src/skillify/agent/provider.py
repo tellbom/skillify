@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Protocol
 from urllib.parse import urlsplit
@@ -69,6 +69,7 @@ class ProviderStartSpec:
     startup_timeout_seconds: float = 5.0
     shutdown_timeout_seconds: float = 5.0
     source_config_path: Path | None = None
+    mcp_servers: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:

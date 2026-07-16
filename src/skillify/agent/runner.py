@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
@@ -11,6 +12,7 @@ from skillify.agent.events import EventType, TaskEvent, TaskState
 from skillify.agent.provider import AgentProvider, ProviderStartSpec, TaskSpec
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import build_task_event
+from skillify.tasks.mcp_injection import McpPackageConfig, select_task_mcp
 
 
 class TaskRunnerError(RuntimeError):
@@ -44,10 +46,16 @@ class TaskRunner:
         providers: Mapping[str, AgentProvider],
         start_spec: Callable[[TaskEnvelope], ProviderStartSpec],
         outbox: EventOutbox,
+        mcp_catalog: Mapping[str, McpPackageConfig] | None = None,
+        per_task_mcp: Mapping[str, bool] | None = None,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self.providers = dict(providers)
         self.start_spec = start_spec
         self.outbox = outbox
+        self.mcp_catalog = dict(mcp_catalog or {})
+        self.per_task_mcp = dict(per_task_mcp or {})
+        self.log = log or (lambda message: None)
 
     def run(self, envelope: TaskEnvelope, *, state_version: int) -> int:
         provider = self.providers.get(envelope.runtime)
@@ -57,7 +65,16 @@ class TaskRunner:
             f"Execute published workflow {envelope.workflow_id}@{envelope.workflow_version}. "
             f"Fixed inputs: {json.dumps(dict(envelope.parameters), sort_keys=True, ensure_ascii=False)}"
         )
-        handle = provider.start(self.start_spec(envelope))
+        start_spec = self.start_spec(envelope)
+        plan = select_task_mcp(
+            envelope.mcp_packages, self.mcp_catalog, runtime=envelope.runtime,
+            workspace=start_spec.workspace,
+            per_task_supported=self.per_task_mcp.get(envelope.runtime, True),
+        )
+        if plan.log:
+            self.log(plan.log)
+        start_spec = replace(start_spec, mcp_servers=plan.servers)
+        handle = provider.start(start_spec)
         session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
         version = state_version
         try:

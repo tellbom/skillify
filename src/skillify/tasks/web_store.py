@@ -136,6 +136,10 @@ def issue_task_envelope(
         nonce=nonce,
         runtime=task.runtime,
         state_version=task.state_version,
+        mcp_packages=tuple(sorted({
+            name for package in list_work_packages(session, task.task_id) if package.confirmed
+            for name in package.recommended_mcp
+        })),
     ).sign(secret)
     task.envelope_json = envelope.to_dict()
     task.issued_at = now

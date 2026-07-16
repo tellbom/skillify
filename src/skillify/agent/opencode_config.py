@@ -1242,3 +1242,8 @@ def configure_codegraph_mcp(
         expected_sha256=None if original is None else _sha(original),
     )
     return True
+
+
+def render_task_mcp_config(servers: dict[str, dict[str, object]]) -> dict[str, object]:
+    """Render only the already-selected per-task MCP subset for OpenCode."""
+    return {"mcp": dict(servers)} if servers else {}

@@ -103,8 +103,13 @@ class ClaudeCodeProvider:
             raise ClaudeCodeError("unknown Claude Code handle")
         path, _ = self._probe()
         assert path is not None
+        from skillify.agent.claudecode_config import write_task_mcp_config
+        argv = [path, "-p", "--output-format", "stream-json", "--verbose", "--model", runtime.spec.runtime.model]
+        mcp_path = write_task_mcp_config(runtime.spec.config_dir, runtime.spec.mcp_servers)
+        if mcp_path is not None:
+            argv.extend(["--mcp-config", str(mcp_path)])
         process = self.popen(
-            [path, "-p", "--output-format", "stream-json", "--verbose", "--model", runtime.spec.runtime.model],
+            argv,
             cwd=str(runtime.spec.workspace), env=self._environment(runtime.spec),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, start_new_session=True,

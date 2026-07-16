@@ -242,6 +242,7 @@ def _build_runner(outbox: LocalOutbox):
     from skillify.agent.providers.claudecode import ClaudeCodeProvider
     from skillify.agent.runner import TaskRunner
     from skillify.tasks.protocol import TaskEnvelope
+    from skillify.tasks.mcp_injection import McpPackageConfig
 
     paths = load_agent_paths(); config = load_agent_local_config(paths)
     aliases = dict(config.workspace_aliases)
@@ -264,6 +265,11 @@ def _build_runner(outbox: LocalOutbox):
     return TaskRunner(
         {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()},
         start_spec, outbox,
+        mcp_catalog={"codegraph": McpPackageConfig(
+            "codegraph", "codegraph", ("serve", "--mcp"),
+            {"CODEGRAPH_NO_DOWNLOAD": "1", "CODEGRAPH_TELEMETRY": "0", "CODEGRAPH_PROJECT_ROOT": "{workspace}"},
+            ("codegraph_explore",), 4000,
+        )},
     )
 
 

@@ -1,0 +1,64 @@
+"""Select the smallest declared MCP subset for one endpoint task."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping
+
+
+@dataclass(frozen=True)
+class McpPackageConfig:
+    name: str
+    command: str
+    args: tuple[str, ...]
+    environment: Mapping[str, str]
+    tools: tuple[str, ...]
+    context_budget: int
+
+
+@dataclass(frozen=True)
+class McpInjectionPlan:
+    servers: dict[str, dict[str, object]]
+    downgraded: bool
+    log: str | None
+
+
+def select_task_mcp(
+    requested: tuple[str, ...],
+    catalog: Mapping[str, McpPackageConfig],
+    *,
+    runtime: str,
+    workspace: Path,
+    per_task_supported: bool = True,
+) -> McpInjectionPlan:
+    unknown = set(requested) - set(catalog)
+    if unknown:
+        raise ValueError(f"task requests unknown MCP packages: {sorted(unknown)}")
+    selected: dict[str, dict[str, object]] = {}
+    for name in requested:
+        package = catalog[name]
+        if not package.tools or package.context_budget < 1:
+            raise ValueError("MCP package requires tool summary and context budget")
+        environment = {
+            key: value.replace("{workspace}", str(workspace))
+            for key, value in package.environment.items()
+        }
+        if runtime == "opencode":
+            selected[name] = {
+                "type": "local", "command": [package.command, *package.args],
+                "environment": environment, "enabled": True,
+            }
+        elif runtime == "claude-code":
+            selected[name] = {
+                "type": "stdio", "command": package.command,
+                "args": list(package.args), "env": environment,
+            }
+        else:
+            raise ValueError("unsupported MCP injection runtime")
+    if per_task_supported:
+        return McpInjectionPlan(selected, False, None)
+    return McpInjectionPlan(
+        selected, True,
+        "executor lacks per-task MCP configuration; global installation remains permission-allowlisted",
+    )

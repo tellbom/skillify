@@ -86,6 +86,7 @@ class TaskEnvelope:
     expires_at: datetime
     nonce: str
     runtime: str = "opencode"
+    mcp_packages: tuple[str, ...] = ()
     state_version: int = 0
     signature: str = ""
     task_protocol_version: int = TASK_PROTOCOL_VERSION
@@ -103,6 +104,8 @@ class TaskEnvelope:
             raise TaskProtocolError("workspace_alias must be a relative configured alias")
         if self.runtime not in {"opencode", "claude-code"}:
             raise TaskProtocolError("task runtime is unsupported")
+        if any(type(name) is not str or not _IDENTIFIER.fullmatch(name) for name in self.mcp_packages):
+            raise TaskProtocolError("task MCP package names are invalid")
         if type(self.state_version) is not int or self.state_version < 0:
             raise TaskProtocolError("state_version must be a non-negative integer")
         if type(self.parameters) not in {dict, type(MappingProxyType({}))}:
@@ -134,6 +137,7 @@ class TaskEnvelope:
             "expiresAt": self.expires_at.isoformat(),
             "nonce": self.nonce,
             "runtime": self.runtime,
+            "mcpPackages": list(self.mcp_packages),
             "stateVersion": self.state_version,
         }
 
@@ -160,7 +164,7 @@ class TaskEnvelope:
             "taskProtocolVersion", "taskId", "endpointId", "workflowId",
             "workflowVersion", "workspaceAlias", "parameters", "issuedAt",
             "expiresAt", "nonce", "signature",
-            "runtime", "stateVersion",
+            "runtime", "mcpPackages", "stateVersion",
         }
         if set(value) != expected:
             raise TaskProtocolError("task envelope fields are invalid")
@@ -173,6 +177,7 @@ class TaskEnvelope:
                 expires_at=datetime.fromisoformat(value["expiresAt"]),
                 nonce=value["nonce"], signature=value["signature"],
                 runtime=value["runtime"], state_version=value["stateVersion"],
+                mcp_packages=tuple(value["mcpPackages"]),
                 task_protocol_version=value["taskProtocolVersion"],
             )
         except (KeyError, TypeError, ValueError) as exc:

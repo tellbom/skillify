@@ -58,3 +58,15 @@ def configure_codegraph_mcp(
         if os.path.exists(temporary):
             os.unlink(temporary)
     return True
+
+
+def write_task_mcp_config(config_dir: Path, servers: dict[str, dict[str, object]]) -> Path | None:
+    if not servers:
+        return None
+    root = Path(config_dir)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / ".mcp.json"
+    content = json.dumps({"mcpServers": servers}, ensure_ascii=False, sort_keys=True) + "\n"
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+    return path
