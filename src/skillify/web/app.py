@@ -928,6 +928,7 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
         workflowId=task.workflow_id,
         workflowVersion=task.workflow_version,
         workspaceAlias=task.workspace_alias,
+        runtime=task.runtime,
         state=task.state,
         approvalRequired=task.approval_required,
         createdAt=task.created_at,
@@ -985,6 +986,7 @@ def create_endpoint_task(
                 workflow_version=payload.workflowVersion,
                 workspace_alias=payload.workspaceAlias,
                 inputs=payload.inputs,
+                runtime=payload.runtime,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc

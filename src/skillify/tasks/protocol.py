@@ -85,6 +85,8 @@ class TaskEnvelope:
     issued_at: datetime
     expires_at: datetime
     nonce: str
+    runtime: str = "opencode"
+    state_version: int = 0
     signature: str = ""
     task_protocol_version: int = TASK_PROTOCOL_VERSION
 
@@ -99,6 +101,10 @@ class TaskEnvelope:
             raise TaskProtocolError("workflow_version is required")
         if type(self.workspace_alias) is not str or not _ALIAS.fullmatch(self.workspace_alias):
             raise TaskProtocolError("workspace_alias must be a relative configured alias")
+        if self.runtime not in {"opencode", "claude-code"}:
+            raise TaskProtocolError("task runtime is unsupported")
+        if type(self.state_version) is not int or self.state_version < 0:
+            raise TaskProtocolError("state_version must be a non-negative integer")
         if type(self.parameters) not in {dict, type(MappingProxyType({}))}:
             raise TaskProtocolError("parameters must be an object")
         copied = dict(self.parameters)
@@ -127,6 +133,8 @@ class TaskEnvelope:
             "issuedAt": self.issued_at.isoformat(),
             "expiresAt": self.expires_at.isoformat(),
             "nonce": self.nonce,
+            "runtime": self.runtime,
+            "stateVersion": self.state_version,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -152,6 +160,7 @@ class TaskEnvelope:
             "taskProtocolVersion", "taskId", "endpointId", "workflowId",
             "workflowVersion", "workspaceAlias", "parameters", "issuedAt",
             "expiresAt", "nonce", "signature",
+            "runtime", "stateVersion",
         }
         if set(value) != expected:
             raise TaskProtocolError("task envelope fields are invalid")
@@ -163,6 +172,7 @@ class TaskEnvelope:
                 issued_at=datetime.fromisoformat(value["issuedAt"]),
                 expires_at=datetime.fromisoformat(value["expiresAt"]),
                 nonce=value["nonce"], signature=value["signature"],
+                runtime=value["runtime"], state_version=value["stateVersion"],
                 task_protocol_version=value["taskProtocolVersion"],
             )
         except (KeyError, TypeError, ValueError) as exc:

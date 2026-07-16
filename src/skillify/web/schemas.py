@@ -261,6 +261,7 @@ class EndpointTaskCreateIn(BaseModel):
     workflowVersion: str
     workspaceAlias: str
     inputs: dict[str, Any]
+    runtime: str = "opencode"
 
 
 class EndpointTaskEventOut(BaseModel):
@@ -277,6 +278,7 @@ class EndpointTaskOut(BaseModel):
     workflowId: str
     workflowVersion: str
     workspaceAlias: str
+    runtime: str
     state: str
     approvalRequired: bool
     createdAt: datetime

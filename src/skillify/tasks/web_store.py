@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from skillify.index.models import EndpointBinding, EndpointTaskEventRecord, EndpointTaskRecord
+from skillify.index.models import (
+    EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
+)
+from skillify.tasks.protocol import TaskConflictError, TaskEnvelope, TaskReplayError
 
 
 WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -61,6 +64,7 @@ def dispatch_task(
     workflow_version: str,
     workspace_alias: str,
     inputs: dict[str, Any],
+    runtime: str = "opencode",
     now: datetime | None = None,
 ) -> EndpointTaskRecord:
     endpoint = session.get(EndpointBinding, endpoint_id)
@@ -72,6 +76,8 @@ def dispatch_task(
         raise ValueError("workspace alias is not registered by this endpoint")
     if not re.fullmatch(r"\d+\.\d+\.\d+", workflow_version):
         raise ValueError("workflow version must be a published semantic version")
+    if runtime not in {"opencode", "claude-code"}:
+        raise ValueError("runtime must be opencode or claude-code")
     _validate_inputs(workflow_id, inputs)
     timestamp = now or datetime.now(timezone.utc)
     task = EndpointTaskRecord(
@@ -82,6 +88,7 @@ def dispatch_task(
         workflow_version=workflow_version,
         workspace_alias=workspace_alias,
         inputs=dict(inputs),
+        runtime=runtime,
         state="awaiting_confirmation",
         approval_required=True,
         created_at=timestamp,
@@ -90,6 +97,126 @@ def dispatch_task(
     session.add(task)
     session.flush()
     return task
+
+
+def issue_task_envelope(
+    session: Session,
+    task: EndpointTaskRecord,
+    *,
+    secret: bytes,
+    now: datetime,
+) -> TaskEnvelope:
+    if task.envelope_json:
+        return TaskEnvelope.from_dict(task.envelope_json)
+    nonce = uuid.uuid4().hex
+    if session.get(EndpointTaskNonce, nonce) is not None:
+        raise TaskReplayError("task nonce has already been issued")
+    expires_at = task.lease_expires_at or now + timedelta(minutes=5)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    envelope = TaskEnvelope(
+        task_id=task.task_id,
+        endpoint_id=task.endpoint_id,
+        workflow_id=task.workflow_id,
+        workflow_version=task.workflow_version,
+        workspace_alias=task.workspace_alias,
+        parameters=task.inputs,
+        issued_at=now,
+        expires_at=expires_at,
+        nonce=nonce,
+        runtime=task.runtime,
+        state_version=task.state_version,
+    ).sign(secret)
+    task.envelope_json = envelope.to_dict()
+    task.issued_at = now
+    task.expires_at = expires_at
+    session.add(EndpointTaskNonce(nonce=nonce, task_id=task.task_id, accepted_at=now))
+    session.flush()
+    return envelope
+
+
+def verify_task_response(
+    session: Session,
+    *,
+    task_id: str,
+    endpoint_id: str,
+    nonce: str,
+    state_version: int,
+) -> EndpointTaskRecord:
+    task = session.get(EndpointTaskRecord, task_id)
+    if task is None or task.endpoint_id != endpoint_id:
+        raise PermissionError("task is not assigned to this endpoint")
+    envelope = TaskEnvelope.from_dict(task.envelope_json or {})
+    if envelope.nonce != nonce or task.revoked:
+        raise TaskReplayError("task nonce is invalid or revoked")
+    if task.state_version != state_version:
+        raise TaskConflictError("task state_version is stale")
+    return task
+
+
+def transition_task(
+    session: Session,
+    *,
+    task: EndpointTaskRecord,
+    expected_state: str,
+    target_state: str,
+    now: datetime,
+) -> EndpointTaskRecord:
+    changed = session.execute(update(EndpointTaskRecord).where(
+        EndpointTaskRecord.task_id == task.task_id,
+        EndpointTaskRecord.state == expected_state,
+        EndpointTaskRecord.state_version == task.state_version,
+        EndpointTaskRecord.revoked.is_(False),
+    ).values(
+        state=target_state,
+        state_version=EndpointTaskRecord.state_version + 1,
+        updated_at=now,
+    ).execution_options(synchronize_session=False)).rowcount
+    if changed != 1:
+        raise TaskConflictError("task state changed concurrently")
+    session.flush(); session.expire(task)
+    return task
+
+
+def record_task_event(
+    session: Session,
+    *,
+    event_id: str,
+    task_id: str,
+    endpoint_id: str,
+    nonce: str,
+    state_version: int,
+    event_type: str,
+    occurred_at: datetime,
+    summary: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    failure_reason: str | None = None,
+) -> tuple[EndpointTaskEventRecord, bool]:
+    existing = session.scalar(select(EndpointTaskEventRecord).where(
+        EndpointTaskEventRecord.event_id == event_id,
+    ))
+    if existing is not None:
+        return existing, False
+    task = verify_task_response(
+        session, task_id=task_id, endpoint_id=endpoint_id,
+        nonce=nonce, state_version=state_version,
+    )
+    terminal = {
+        "task.started": "running", "task.succeeded": "succeeded",
+        "task.failed": "failed", "task.rejected": "rejected",
+        "task.cancelled": "cancelled",
+    }.get(event_type)
+    task.state_version += 1
+    if terminal is not None:
+        task.state = terminal
+    task.updated_at = occurred_at
+    record = EndpointTaskEventRecord(
+        event_id=event_id, task_id=task_id, event_type=event_type,
+        occurred_at=occurred_at, summary=summary, artifacts=artifacts or [],
+        failure_reason=failure_reason,
+    )
+    session.add(record); session.flush()
+    return record, True
 
 
 def list_owned_tasks(session: Session, owner: str) -> list[EndpointTaskRecord]:
