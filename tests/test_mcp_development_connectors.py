@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from skillify.mcp.docs import DocumentSearchConnector
 from skillify.mcp.forgejo import ForgejoDevelopmentConnector
 from skillify.mcp.scope import ConnectorPolicy
+from skillify.mcp.sdk_client import call_stdio_tool
+
+
+SERVER = Path(__file__).parent / "fixtures/mcp_connector_server.py"
 
 
 class FakeForgejo:
@@ -74,3 +81,27 @@ def test_document_search_is_read_only_and_collection_allowlisted() -> None:
     assert connector.search("engineering", "deploy", 5)[0]["title"] == "Runbook"
     with pytest.raises(PermissionError, match="collection"):
         connector.search("finance", "payroll")
+
+
+def test_forgejo_and_documents_are_exposed_through_sdk_stdio() -> None:
+    issue = call_stdio_tool(
+        [sys.executable, str(SERVER), "forgejo"],
+        request={
+            "name": "forgejo.get_issue",
+            "arguments": {"owner": "acme", "repository": "service", "number": 42},
+        },
+        timeout_seconds=5,
+    )
+    document = call_stdio_tool(
+        [sys.executable, str(SERVER), "documents"],
+        request={
+            "name": "docs.search",
+            "arguments": {"collection": "engineering", "query": "deploy", "limit": 5},
+        },
+        timeout_seconds=5,
+    )
+
+    assert issue.is_error is False
+    assert "Fix parser" in issue.text
+    assert document.is_error is False
+    assert "Runbook" in document.text

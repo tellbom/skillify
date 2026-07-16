@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from mcp.server.fastmcp import FastMCP
+
 
 _COMMENT = re.compile(r"--|/\*|\*/|#")
 _FORBIDDEN = re.compile(
@@ -180,3 +182,20 @@ class ReadonlyDatabaseConnector:
             "rowCount": len(rows),
             "byteCount": byte_count,
         }
+
+
+def create_mcp_server(connector: ReadonlyDatabaseConnector) -> FastMCP:
+    """Expose the existing read-only policy engine through the official SDK."""
+    server = FastMCP("skillify-db-readonly")
+
+    @server.tool(name="db.list_tables")
+    def list_tables() -> dict[str, Any]:
+        """List tables visible through the configured read-only allowlist."""
+        return connector.list_tables()
+
+    @server.tool(name="db.query")
+    def query(sql: str) -> dict[str, Any]:
+        """Run one bounded SELECT query through the existing safety policy."""
+        return connector.query(sql)
+
+    return server

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +13,10 @@ from skillify.mcp.db_readonly.connector import (
     ReadonlyDatabaseConnector,
     SQLiteReadExecutor,
 )
+from skillify.mcp.sdk_client import call_stdio_tool
+
+
+SERVER = Path(__file__).parent / "fixtures/mcp_connector_server.py"
 
 
 @pytest.fixture
@@ -91,3 +97,25 @@ def test_sensitive_columns_are_redacted_and_audit_id_is_returned(
     assert result["rows"] == [{"id": 1, "email": "[REDACTED]"}]
     assert len(result["auditId"]) == 32
     assert _connector(connection).list_tables()["tables"] == ["users"]
+
+
+def test_database_policy_is_exposed_through_sdk_stdio_server() -> None:
+    result = call_stdio_tool(
+        [sys.executable, str(SERVER), "database"],
+        request={"name": "db.query", "arguments": {"sql": "SELECT id, email FROM users"}},
+        timeout_seconds=5,
+    )
+
+    assert result.is_error is False
+    assert "[REDACTED]" in result.text
+    assert "jane@example.test" not in result.text
+
+
+def test_database_sdk_server_keeps_query_policy() -> None:
+    result = call_stdio_tool(
+        [sys.executable, str(SERVER), "database"],
+        request={"name": "db.query", "arguments": {"sql": "DELETE FROM users"}},
+        timeout_seconds=5,
+    )
+
+    assert result.is_error is True

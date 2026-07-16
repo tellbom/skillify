@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from mcp.server.fastmcp import FastMCP
+
 from skillify.mcp.scope import ConnectorPolicy, ToolAccess, ToolScope
 
 
@@ -42,3 +44,14 @@ class ForgejoDevelopmentConnector:
     def rerun_ci(self, owner: str, repository: str, run_id: str) -> dict[str, Any]:
         self.policy.authorize(RERUN_CI)
         return self.backend.rerun_ci(owner, repository, run_id)
+
+
+def create_mcp_server(connector: ForgejoDevelopmentConnector) -> FastMCP:
+    """Expose atomic Forgejo/CI tools without duplicating authorization logic."""
+    server = FastMCP("skillify-forgejo")
+
+    server.tool(name="forgejo.get_issue")(connector.get_issue)
+    server.tool(name="forgejo.comment_issue")(connector.comment_issue)
+    server.tool(name="ci.get_status")(connector.get_ci_status)
+    server.tool(name="ci.rerun")(connector.rerun_ci)
+    return server
