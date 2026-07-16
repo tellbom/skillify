@@ -42,15 +42,6 @@ services:
       - "${FORGEJO_SSH_PORT:-2222}:22"
     networks: [skillify]
 
-  devpi:
-    build: ./devpi
-    restart: unless-stopped
-    volumes:
-      - devpi-data:/data
-    ports:
-      - "${DEVPI_PORT:-3141}:3141"
-    networks: [skillify]
-
   webhook:
     build:
       context: ..
@@ -80,8 +71,6 @@ services:
     restart: unless-stopped
     depends_on:
       forgejo:
-        condition: service_started
-      devpi:
         condition: service_started
     environment:
       SKILLIFY_FORGEJO_URL: ${SKILLIFY_FORGEJO_URL:-http://forgejo:3000}
@@ -122,7 +111,6 @@ services:
 volumes:
   forgejo-db:
   forgejo-data:
-  devpi-data:
 
 networks:
   skillify:

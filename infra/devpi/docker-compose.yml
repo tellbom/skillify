@@ -1,0 +1,15 @@
+name: skillify-devpi
+
+services:
+  devpi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - devpi-data:/data
+    ports:
+      - "${DEVPI_PORT:-3141}:3141"
+
+volumes:
+  devpi-data:

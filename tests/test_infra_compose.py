@@ -15,6 +15,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = REPO_ROOT / "infra" / "docker-compose.yml"
+DEVPI_COMPOSE_PATH = REPO_ROOT / "infra" / "devpi" / "docker-compose.yml"
 ENV_EXAMPLE_PATH = REPO_ROOT / "infra" / ".env.example"
 
 
@@ -25,13 +26,22 @@ def _load_compose() -> dict:
 def test_compose_is_valid_yaml_with_expected_services() -> None:
     compose = _load_compose()
     assert set(compose["services"].keys()) == {
-        "db", "forgejo", "devpi", "webhook", "skillify-web", "frontend",
+        "db", "forgejo", "webhook", "skillify-web", "frontend",
     }
 
 
 def test_compose_declares_named_volumes_for_persistence() -> None:
     compose = _load_compose()
-    assert set(compose["volumes"].keys()) == {"forgejo-db", "forgejo-data", "devpi-data"}
+    assert set(compose["volumes"].keys()) == {"forgejo-db", "forgejo-data"}
+
+
+def test_devpi_has_an_independent_compose_lifecycle() -> None:
+    main = _load_compose()
+    standalone = yaml.safe_load(DEVPI_COMPOSE_PATH.read_text(encoding="utf-8"))
+    assert "devpi" not in main["services"]
+    assert "devpi" not in main["services"]["skillify-web"].get("depends_on", {})
+    assert set(standalone["services"]) == {"devpi"}
+    assert set(standalone["volumes"]) == {"devpi-data"}
 
 
 def test_forgejo_depends_on_healthy_db() -> None:

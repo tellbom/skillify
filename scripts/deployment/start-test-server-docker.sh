@@ -83,7 +83,7 @@ docker info >/dev/null
 optional_start_and_wait process-redis
 optional_start_and_wait process-es
 start_and_wait skillify-db-1
-start_and_wait skillify-devpi-1
+optional_start_and_wait skillify-devpi-1
 start_and_wait skillify-forgejo-1
 optional_start_and_wait skillify-webhook-1
 start_and_wait skillify-skillify-web-1
