@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import os
+
+import requests
 
 from mcp.server.fastmcp import FastMCP
 
@@ -42,3 +45,28 @@ def create_mcp_server(connector: DocumentSearchConnector) -> FastMCP:
     server = FastMCP("skillify-documents")
     server.tool(name="docs.search")(connector.search)
     return server
+
+
+class DocumentHttpBackend:
+    def __init__(self, base_url: str, token: str) -> None:
+        self.base_url = base_url.rstrip("/"); self.token = token
+
+    def search(self, collection: str, query: str, limit: int) -> list[dict[str, Any]]:
+        response = requests.get(
+            self.base_url + "/search", params={"collection": collection, "q": query, "limit": limit},
+            headers={"Authorization": f"Bearer {self.token}"}, timeout=10,
+        )
+        response.raise_for_status()
+        value = response.json()
+        if not isinstance(value, list):
+            raise ValueError("document search response must be a list")
+        return value
+
+
+def create_configured_server() -> FastMCP:
+    collections = frozenset(value for value in os.environ["SKILLIFY_MCP_DOCS_COLLECTIONS"].split(",") if value)
+    connector = DocumentSearchConnector(
+        DocumentHttpBackend(os.environ["SKILLIFY_MCP_DOCS_URL"], os.environ["SKILLIFY_MCP_DOCS_TOKEN"]),
+        ConnectorPolicy(frozenset({"docs:read"})), allowed_collections=collections,
+    )
+    return create_mcp_server(connector)

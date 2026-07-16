@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import os
+
+import requests
 
 from mcp.server.fastmcp import FastMCP
 
@@ -55,3 +58,41 @@ def create_mcp_server(connector: ForgejoDevelopmentConnector) -> FastMCP:
     server.tool(name="ci.get_status")(connector.get_ci_status)
     server.tool(name="ci.rerun")(connector.rerun_ci)
     return server
+
+
+class ForgejoHttpBackend:
+    def __init__(self, base_url: str, token: str) -> None:
+        self.base_url = base_url.rstrip("/"); self.token = token
+
+    def _request(self, method: str, path: str, json: dict | None = None) -> dict[str, Any]:
+        response = requests.request(
+            method, self.base_url + path, json=json,
+            headers={"Authorization": f"token {self.token}"}, timeout=10,
+        )
+        response.raise_for_status()
+        value = response.json()
+        if not isinstance(value, dict):
+            raise ValueError("Forgejo response must be an object")
+        return value
+
+    def get_issue(self, owner, repository, number):
+        return self._request("GET", f"/api/v1/repos/{owner}/{repository}/issues/{number}")
+
+    def comment_issue(self, owner, repository, number, body):
+        return self._request("POST", f"/api/v1/repos/{owner}/{repository}/issues/{number}/comments", {"body": body})
+
+    def get_ci_status(self, owner, repository, reference):
+        return self._request("GET", f"/api/v1/repos/{owner}/{repository}/commits/{reference}/status")
+
+    def rerun_ci(self, owner, repository, run_id):
+        return self._request("POST", f"/api/v1/repos/{owner}/{repository}/actions/runs/{run_id}/rerun")
+
+
+def create_configured_server() -> FastMCP:
+    scopes = frozenset(value for value in os.environ.get("SKILLIFY_MCP_FORGEJO_SCOPES", "repo:read,ci:read").split(",") if value)
+    writes = frozenset(value for value in os.environ.get("SKILLIFY_MCP_FORGEJO_WRITE_TOOLS", "").split(",") if value)
+    connector = ForgejoDevelopmentConnector(
+        ForgejoHttpBackend(os.environ["SKILLIFY_MCP_FORGEJO_URL"], os.environ["SKILLIFY_MCP_FORGEJO_TOKEN"]),
+        ConnectorPolicy(scopes, writes),
+    )
+    return create_mcp_server(connector)

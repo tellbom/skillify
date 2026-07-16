@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -199,3 +200,19 @@ def create_mcp_server(connector: ReadonlyDatabaseConnector) -> FastMCP:
         return connector.query(sql)
 
     return server
+
+
+def create_configured_server() -> FastMCP:
+    from skillify.mcp.db_readonly.dm8_executor import connect_readonly
+
+    executor = connect_readonly(
+        user=os.environ["SKILLIFY_MCP_DM8_USER"],
+        password=os.environ["SKILLIFY_MCP_DM8_PASSWORD"],
+        server=os.environ["SKILLIFY_MCP_DM8_HOST"],
+        port=int(os.environ.get("SKILLIFY_MCP_DM8_PORT", "5236")),
+    )
+    tables = frozenset(value for value in os.environ["SKILLIFY_MCP_DM8_TABLES"].split(",") if value)
+    sensitive = frozenset(value for value in os.environ.get("SKILLIFY_MCP_DM8_SENSITIVE_COLUMNS", "").split(",") if value)
+    return create_mcp_server(ReadonlyDatabaseConnector(
+        executor, allowed_tables=tables, sensitive_columns=sensitive,
+    ))

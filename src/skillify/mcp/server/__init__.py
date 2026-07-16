@@ -9,6 +9,19 @@ from mcp.server.fastmcp import FastMCP
 
 ServerFactory = Callable[[], FastMCP]
 _FACTORIES: dict[str, ServerFactory] = {}
+_BUILTINS_LOADED = False
+
+
+def _load_builtins() -> None:
+    global _BUILTINS_LOADED
+    if _BUILTINS_LOADED:
+        return
+    from skillify.mcp.db_readonly.connector import create_configured_server as database
+    from skillify.mcp.docs.connector import create_configured_server as documents
+    from skillify.mcp.forgejo.connector import create_configured_server as forgejo
+
+    _FACTORIES.update({"db-readonly": database, "documents": documents, "forgejo": forgejo})
+    _BUILTINS_LOADED = True
 
 
 def register_server(name: str, factory: ServerFactory) -> None:
@@ -18,10 +31,12 @@ def register_server(name: str, factory: ServerFactory) -> None:
 
 
 def available_servers() -> tuple[str, ...]:
+    _load_builtins()
     return tuple(sorted(_FACTORIES))
 
 
 def create_server(name: str) -> FastMCP:
+    _load_builtins()
     try:
         return _FACTORIES[name]()
     except KeyError as exc:
