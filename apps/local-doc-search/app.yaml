@@ -1,0 +1,45 @@
+schemaVersion: 1
+appId: local-doc-search
+version: 1.0.0
+workflow:
+  id: document-search
+  version: 1.0.0
+  status: published
+skills:
+  - id: local-document-search
+    version: 1.0.0
+    status: published
+permissions:
+  readPaths: ["*"]
+  writePaths: []
+  commands: {}
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [read]
+inputSchema:
+  type: object
+  additionalProperties: false
+  required: [directoryAlias, query, mode]
+  properties:
+    directoryAlias: {type: string, minLength: 1, maxLength: 64}
+    query: {type: string, minLength: 1, maxLength: 500}
+    mode: {enum: [filename, metadata, fulltext]}
+outputSchema:
+  type: object
+  additionalProperties: false
+  required: [matches]
+  properties:
+    matches:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [path, size, suffix, line, snippet]
+        properties:
+          path: {type: string}
+          size: {type: integer, minimum: 0}
+          suffix: {type: string}
+          line: {type: [integer, "null"], minimum: 1}
+          snippet: {type: [string, "null"]}

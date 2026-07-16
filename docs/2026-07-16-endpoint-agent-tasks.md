@@ -237,7 +237,7 @@
 - **[test-env]**：无。
 - commit：`feat(apps): define governed agent app contract`
 
-### - [ ] Task 7.2 本地文件检索 App — Owner: Claude Code
+### - [x] Task 7.2 本地文件检索 App — Owner: Claude Code
 - 锚点：`+apps/local-doc-search/`
 - 端侧选目录生成 alias，服务端不枚举本机；文件名/元数据/全文检索，默认不整盘向量化；内容上传需再确认。
 - **Dev-DoD**：检索逻辑 + ignore/大小/敏感目录规则 对临时目录离线单测。
