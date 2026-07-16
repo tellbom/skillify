@@ -104,7 +104,7 @@
 
 ## S3 · Code Map 本地代码智能
 
-### - [ ] Task 3.1 语言无关索引管线（复用 OSS） — Owner: Codex
+### - [x] Task 3.1 语言无关索引管线（复用 OSS） — Owner: Codex
 - 锚点：`+src/skillify/codemap/pipeline.py`
 - ripgrep 发现 + Tree-sitter/Ctags 符号 + Repomix 摘要；排除 secret/二进制/vendor/生成物；首批 Python→JS/TS→Java→Go；版本化 `code-map.json`（解析器版本+内容哈希）。
 - **Dev-DoD**：对仓库内**固定小样本**离线跑通；增量/删除/重命名/语法错误/超大仓 测试过（可用 fixture 仓）。
