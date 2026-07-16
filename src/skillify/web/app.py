@@ -44,6 +44,10 @@ from skillify.web.schemas import (
     CommentIn,
     CommentOut,
     EventIn,
+    EndpointOut,
+    EndpointTaskCreateIn,
+    EndpointTaskEventOut,
+    EndpointTaskOut,
     ExternalScanOut,
     ExternalSelectionIn,
     ExternalSelectionOut,
@@ -97,6 +101,12 @@ from skillify.web.upload_service import (
     NamespaceOwnershipNotConfiguredError,
     UploadRejected,
     create_native_zip_build,
+)
+from skillify.tasks.web_store import (
+    dispatch_task,
+    list_owned_endpoints,
+    list_owned_tasks,
+    task_events,
 )
 
 app = FastAPI(title="skillify-web", description="Community site backend (T3.1)")
@@ -906,6 +916,84 @@ def my_subscriptions(claims: dict = Depends(require_keycloak_user)) -> list[MySu
             for (ns, n) in subscribed
             if (entry := latest_by_skill.get((ns, n))) is not None
         ]
+    finally:
+        session.close()
+
+
+def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
+    events = task_events(session, task.task_id)
+    return EndpointTaskOut(
+        taskId=task.task_id,
+        endpointId=task.endpoint_id,
+        workflowId=task.workflow_id,
+        workflowVersion=task.workflow_version,
+        workspaceAlias=task.workspace_alias,
+        state=task.state,
+        approvalRequired=task.approval_required,
+        createdAt=task.created_at,
+        updatedAt=task.updated_at,
+        events=[EndpointTaskEventOut(
+            eventType=event.event_type,
+            occurredAt=event.occurred_at,
+            summary=event.summary,
+            artifacts=event.artifacts,
+            failureReason=event.failure_reason,
+        ) for event in events],
+    )
+
+
+@app.get("/api/my/endpoints", response_model=list[EndpointOut])
+def my_endpoints(claims: dict = Depends(require_keycloak_user)) -> list[EndpointOut]:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        return [EndpointOut(
+            endpointId=item.endpoint_id,
+            label=item.label,
+            online=item.online,
+            workspaceAliases=item.workspace_aliases,
+            lastSeenAt=item.last_seen_at,
+        ) for item in list_owned_endpoints(session, username)]
+    finally:
+        session.close()
+
+
+@app.get("/api/endpoint-tasks", response_model=list[EndpointTaskOut])
+def endpoint_tasks(claims: dict = Depends(require_keycloak_user)) -> list[EndpointTaskOut]:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        return [_endpoint_task_out(session, task) for task in list_owned_tasks(session, username)]
+    finally:
+        session.close()
+
+
+@app.post("/api/endpoint-tasks", response_model=EndpointTaskOut)
+def create_endpoint_task(
+    payload: EndpointTaskCreateIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> EndpointTaskOut:
+    username = claims.get("preferred_username") or claims.get("sub") or "unknown"
+    session = _session()
+    try:
+        try:
+            task = dispatch_task(
+                session,
+                owner=username,
+                endpoint_id=payload.endpointId,
+                workflow_id=payload.workflowId,
+                workflow_version=payload.workflowVersion,
+                workspace_alias=payload.workspaceAlias,
+                inputs=payload.inputs,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        session.commit()
+        return _endpoint_task_out(session, task)
     finally:
         session.close()
 

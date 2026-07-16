@@ -207,3 +207,15 @@ export function getMyPublishJobs(status) {
 export function getMyUsage() {
   return request('/my/usage', { auth: true })
 }
+
+export function getMyEndpoints() {
+  return request('/my/endpoints', { auth: true })
+}
+
+export function getEndpointTasks() {
+  return request('/endpoint-tasks', { auth: true })
+}
+
+export function dispatchEndpointTask(payload) {
+  return request('/endpoint-tasks', { method: 'POST', json: payload, auth: true })
+}

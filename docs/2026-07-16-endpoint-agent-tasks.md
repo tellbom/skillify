@@ -188,7 +188,7 @@
 - **[test-env]**：真实服务端接收入库。
 - commit：`feat(agent): report verifiable endpoint events`
 
-### - [ ] Task 5.4 Web 任务下达与审批 — Owner: Claude Code
+### - [x] Task 5.4 Web 任务下达与审批 — Owner: Claude Code
 - 锚点：`src/skillify/web/app.py`、`web/src/views/`（复用 Keycloak/RBAC）
 - 只能向自己绑定且在线 endpoint 下达；固定 Workflow 表单，无任意 prompt/shell 输入框；展示确认状态/事件时间线/构件/失败原因。
 - **Dev-DoD**：后端接口对 fake Keycloak + SQLite 离线单测；前端 `vue-tsc`/`vitest`/`build` 过。
@@ -196,6 +196,7 @@
 - commit：`feat(web): dispatch governed endpoint tasks`
 
 > **门禁 G5** — Dev：5.1–5.4 Dev-DoD 过。**[test-env] G5**：浏览器建 Bugfix 任务→端侧拉取确认→OpenCode 本地完成→断网重连事件无重复且可审计；服务端从未连端侧入站端口。
+> **状态（2026-07-16）**：Dev G5 协议、出站 Bridge、可信事件 outbox 与固定 Workflow Web 表单已通过；**[test-env] G5 待真实 Keycloak/长轮询/OpenCode/断网重连联动**。
 
 ---
 
@@ -283,7 +284,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]

@@ -219,3 +219,46 @@ class SkillEvent(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<SkillEvent {self.event_type} {self.namespace}/{self.name}@{self.version}>"
+
+
+class EndpointBinding(Base):
+    """A user-owned endpoint advertised to the Web task control plane."""
+
+    __tablename__ = "endpoint_bindings"
+
+    endpoint_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(255), index=True)
+    label: Mapped[str] = mapped_column(String(128))
+    online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    workspace_aliases: Mapped[list] = mapped_column(JSONText(), default=list)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EndpointTaskRecord(Base):
+    """Governed Web-originated task; inputs are fixed-form values, never a prompt."""
+
+    __tablename__ = "endpoint_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    endpoint_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_username: Mapped[str] = mapped_column(String(255), index=True)
+    workflow_id: Mapped[str] = mapped_column(String(128))
+    workflow_version: Mapped[str] = mapped_column(String(64))
+    workspace_alias: Mapped[str] = mapped_column(String(64))
+    inputs: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EndpointTaskEventRecord(Base):
+    __tablename__ = "endpoint_task_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[str | None] = mapped_column(String(500), default=None)
+    artifacts: Mapped[list] = mapped_column(JSONText(), default=list)
+    failure_reason: Mapped[str | None] = mapped_column(String(128), default=None)

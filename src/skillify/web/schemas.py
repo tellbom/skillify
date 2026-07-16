@@ -231,3 +231,40 @@ class MySubscriptionOut(BaseModel):
     name: str
     latestVersion: str
     publishedAt: datetime
+
+
+class EndpointOut(BaseModel):
+    endpointId: str
+    label: str
+    online: bool
+    workspaceAliases: list[str]
+    lastSeenAt: datetime
+
+
+class EndpointTaskCreateIn(BaseModel):
+    endpointId: str
+    workflowId: str
+    workflowVersion: str
+    workspaceAlias: str
+    inputs: dict[str, Any]
+
+
+class EndpointTaskEventOut(BaseModel):
+    eventType: str
+    occurredAt: datetime
+    summary: str | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    failureReason: str | None = None
+
+
+class EndpointTaskOut(BaseModel):
+    taskId: str
+    endpointId: str
+    workflowId: str
+    workflowVersion: str
+    workspaceAlias: str
+    state: str
+    approvalRequired: bool
+    createdAt: datetime
+    updatedAt: datetime
+    events: list[EndpointTaskEventOut] = Field(default_factory=list)
