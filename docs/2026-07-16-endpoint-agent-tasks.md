@@ -209,7 +209,7 @@
 - **[test-env]**：各连接器真机 smoke。
 - commit：`docs(mcp): catalog approved internal connectors`
 
-### - [ ] Task 6.2 只读数据库 MCP（DM8）
+### - [x] Task 6.2 只读数据库 MCP（DM8）
 - 锚点：`+src/skillify/mcp/db_readonly/`
 - 复用成熟 SQL MCP + DM8 兼容层；只读账号；仅 SELECT/元数据，拒绝多语句/DDL/DML/存储过程；allowlist+超时+行数+字节上限+审计 ID；字段脱敏。
 - **Dev-DoD**：SQL 安全策略（注释绕过/CTE/子查询/超时/超行/敏感列 六类）对 **SQLite** 离线过；脱敏逻辑单测。
