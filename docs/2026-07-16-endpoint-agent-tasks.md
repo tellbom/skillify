@@ -244,7 +244,7 @@
 - **[test-env]**：真实端侧目录 + Web 表单联动。
 - commit：`feat(apps): add local document search app`
 
-### - [ ] Task 7.3 文本/表格批处理 App — Owner: Claude Code
+### - [x] Task 7.3 文本/表格批处理 App — Owner: Claude Code
 - 锚点：`+apps/file-processing/`（复用 `examples/excel`、`examples/text`）
 - 核心转换用版本锁定可测 Python Skill；不原地覆盖；deterministic fixture tests；依赖只从 devpi。
 - **Dev-DoD**：每脚本 deterministic fixture tests **离线** 过（本地包/`--find-links`，同 `test_venv_offline.py` 思路）；输出进新目录+变更清单断言。
@@ -252,6 +252,7 @@
 - commit：`feat(apps): add deterministic file processing apps`
 
 > **门禁 G7** — Dev：7.1–7.3 Dev-DoD 过。**[test-env] G7**：非技术用户仅经 Web 表单下达本地 CSV 汇总任务，端侧确认后用锁定 Skill 生成新文件+预览+审计，原文件未改。
+> **状态（2026-07-16）**：Dev G7 App 契约、本地 alias 检索与标准库确定性文本/CSV 处理已通过；**[test-env] G7 待 Web 表单、端侧确认与真实 devpi 联动**。
 
 ---
 
@@ -285,7 +286,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [x] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [x] G6 Dev　- [x] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]
