@@ -1,29 +1,11 @@
 workflowVersion: 1
 id: feature-development
-execution: serial
+runtime: [opencode, claude-code]
+entryAgent: build
 mode: workspace-write
-roles:
-  - id: clarification
-    prompt: Convert the request into bounded acceptance criteria and record unresolved blockers without inventing scope.
-    output: artifacts/acceptance-criteria.md
-  - id: localization
-    prompt: Locate the smallest relevant code surface and cite CodeGraph evidence positions.
-    output: artifacts/code-locations.md
-    requiresEvidence: true
-  - id: plan
-    prompt: Produce a surgical implementation and test plan mapped to the acceptance criteria.
-    output: artifacts/implementation-plan.md
-  - id: tdd-implementation
-    prompt: Add a focused failing test, implement the smallest change, and record the passing command.
-    output: artifacts/change.patch
-    requiresEvidence: true
-  - id: review
-    prompt: Review the diff and test evidence against every acceptance criterion and list remaining risks.
-    output: artifacts/review.md
-    requiresEvidence: true
+skills: [requirements-clarification, codegraph-exploration, test-driven-development, requesting-code-review]
 gates:
   - id: plan-approval
-    beforeRole: tdd-implementation
     requiredByDefault: false
     webRequired: true
 artifacts:

@@ -1,14 +1,11 @@
 """Declarative development workflow packs."""
 
-from skillify.workflows.contract import (
-    WorkflowExecution,
+from skillify.workflows.pack_config import (
     WorkflowPack,
     approval_required,
-    execute_workflow,
     load_workflow_pack,
 )
 
 __all__ = [
-    "WorkflowExecution", "WorkflowPack", "approval_required",
-    "execute_workflow", "load_workflow_pack",
+    "WorkflowPack", "approval_required", "load_workflow_pack",
 ]

@@ -1,29 +1,11 @@
 workflowVersion: 1
 id: behavior-preserving-refactor
-execution: serial
+runtime: [opencode, claude-code]
+entryAgent: build
 mode: workspace-write
-roles:
-  - id: baseline
-    prompt: Record the current external behavior and exact focused test commands before editing.
-    output: artifacts/baseline.json
-    requiresEvidence: true
-  - id: refactor-plan
-    prompt: Define a bounded structural change that preserves the recorded external behavior.
-    output: artifacts/refactor-plan.md
-  - id: implementation
-    prompt: Apply the planned structural change without adding features or changing public behavior.
-    output: artifacts/change.patch
-  - id: verification
-    prompt: Rerun the exact baseline tests and compare observable behavior and results.
-    output: artifacts/verification.json
-    requiresEvidence: true
-  - id: review
-    prompt: Review the diff for behavioral drift, unnecessary scope, and remaining risks.
-    output: artifacts/review.md
-    requiresEvidence: true
+skills: [behavior-baseline, behavior-preserving-refactor, verification-before-completion, requesting-code-review]
 gates:
   - id: baseline-recorded
-    beforeRole: implementation
     requiredByDefault: true
 artifacts:
   - refactor-report.json

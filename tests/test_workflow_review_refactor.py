@@ -23,6 +23,7 @@ def test_review_pack_is_read_only_and_requires_finding_evidence() -> None:
     assert validate_skill_dir(REVIEW).ok
     pack = load_workflow_pack(REVIEW)
     assert pack.mode == "read-only"
+    assert pack.entry_agent == "plan"
     assert pack.artifacts == ("review-report.json",)
     valid = {
         "summary": "One correctness finding.",
@@ -44,10 +45,8 @@ def test_review_pack_is_read_only_and_requires_finding_evidence() -> None:
 def test_refactor_pack_requires_baseline_before_implementation() -> None:
     assert validate_skill_dir(REFACTOR).ok
     pack = load_workflow_pack(REFACTOR)
-    assert tuple(role.id for role in pack.roles) == (
-        "baseline", "refactor-plan", "implementation", "verification", "review",
-    )
-    assert pack.gates[0].before_role == "implementation"
+    assert pack.entry_agent == "build"
+    assert "behavior-preserving-refactor" in pack.skills
     assert pack.gates[0].required_by_default is True
 
 
