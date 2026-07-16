@@ -128,7 +128,9 @@ def _mcp_metadata(checksum: str) -> dict[str, object]:
 def test_pack_mcp_preserves_prebuilt_archive_and_writes_governed_sidecar(tmp_path: Path) -> None:
     archive = tmp_path / "approved.tar.gz"
     archive.write_bytes(b"immutable approved MCP archive")
-    artifact = load_mcp_artifact(_mcp_metadata(sha256_file(archive)))
+    artifact = load_mcp_artifact(
+        _mcp_metadata(sha256_file(archive)), approved_forgejo_base="https://forgejo.internal"
+    )
 
     result = pack_mcp(artifact, archive, tmp_path / "dist")
 
@@ -143,7 +145,9 @@ def test_pack_mcp_preserves_prebuilt_archive_and_writes_governed_sidecar(tmp_pat
 def test_pack_mcp_rejects_archive_that_does_not_match_metadata(tmp_path: Path) -> None:
     archive = tmp_path / "approved.tar.gz"
     archive.write_bytes(b"tampered")
-    artifact = load_mcp_artifact(_mcp_metadata("a" * 64))
+    artifact = load_mcp_artifact(
+        _mcp_metadata("a" * 64), approved_forgejo_base="https://forgejo.internal"
+    )
 
     with pytest.raises(ValueError, match="checksum"):
         pack_mcp(artifact, archive, tmp_path / "dist")

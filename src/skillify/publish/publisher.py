@@ -17,7 +17,7 @@ from typing import Any
 from skillify.common.config import SkillifyConfig
 from skillify.index.db import init_db, make_engine, session_scope
 from skillify.index.ingest import ReleaseEvent, upsert_release
-from skillify.mcp.registry import McpArtifact
+from skillify.mcp.registry import McpArtifact, McpRegistryError
 from skillify.packaging.pack import (
     McpPackResult,
     PackagingError,
@@ -192,22 +192,31 @@ def publish_mcp_artifact(
     cfg: SkillifyConfig,
 ) -> McpPublishResult:
     """Publish a validated MCP peer artifact through the immutable Forgejo flow."""
-    result = pack_mcp(artifact, archive_path, cfg.cache_dir / "dist")
     if not cfg.forgejo_url or not cfg.forgejo_token:
         raise PublishNotConfiguredError("forgejo_url / forgejo_token not configured")
-    org = cfg.forgejo_org or result.namespace
+    if cfg.forgejo_url != artifact.approved_forgejo_base:
+        raise McpRegistryError("publish service must match the approved Forgejo source coordinate")
+    if cfg.forgejo_org is not None and cfg.forgejo_org != artifact.namespace:
+        raise McpRegistryError("publish organization must match the MCP source coordinate")
+    result = pack_mcp(artifact, archive_path, cfg.cache_dir / "dist")
+    org = result.namespace
     repo = result.name
     tag = f"v{result.version}"
     client = ForgejoClient(cfg.forgejo_url, cfg.forgejo_token)
     client.ensure_org_repo(org, repo)
-    body = f"artifactKind=mcp\nsha256={result.sha256}"
+    release_name = f"{result.name} {result.version}"
+    body = (
+        f"artifactKind=mcp\n"
+        f"coordinate=mcp:{result.namespace}/{result.name}@{result.version}\n"
+        f"sha256={result.sha256}"
+    )
     release = client.find_release_by_tag(org, repo, tag)
     recovered = release is not None
     if release is None:
         release = client.create_release(
-            org, repo, tag_name=tag, name=f"{result.name} {result.version}", body=body, draft=True,
+            org, repo, tag_name=tag, name=release_name, body=body, draft=True,
         )
-    elif _release_checksum(release.body) != result.sha256:
+    elif release.name != release_name or release.body != body:
         raise AlreadyPublishedError(org, repo, tag)
     asset_paths = (result.tarball_path, result.checksum_path, result.artifact_manifest_path)
     if recovered and not release.draft:
@@ -216,6 +225,9 @@ def publish_mcp_artifact(
         raise AlreadyPublishedError(org, repo, tag)
     expected_assets = {path.name: path for path in asset_paths}
     if recovered:
+        asset_names = [asset.name for asset in release.assets]
+        if len(asset_names) != len(expected_assets) or set(asset_names) != set(expected_assets):
+            raise AlreadyPublishedError(org, repo, tag)
         with tempfile.TemporaryDirectory(prefix="skillify-mcp-recovery-") as temporary:
             for asset in release.assets:
                 expected = expected_assets.get(asset.name)
@@ -225,13 +237,12 @@ def publish_mcp_artifact(
                 client.download(asset.browser_download_url, downloaded)
                 if not hmac.compare_digest(sha256_file(downloaded), sha256_file(expected)):
                     raise AlreadyPublishedError(org, repo, tag)
-    existing_asset_names = {asset.name for asset in release.assets}
-    missing_assets = [path for path in asset_paths if path.name not in existing_asset_names]
-    for asset_path in missing_assets:
-        client.upload_release_asset(org, repo, release.id, asset_path)
+    else:
+        for asset_path in asset_paths:
+            client.upload_release_asset(org, repo, release.id, asset_path)
     if release.draft:
         release = client.update_release(
-            org, repo, release.id, tag_name=tag, name=f"{result.name} {result.version}",
+            org, repo, release.id, tag_name=tag, name=release_name,
             body=body, draft=False,
         )
     return McpPublishResult(

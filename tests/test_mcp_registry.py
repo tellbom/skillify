@@ -14,13 +14,18 @@ from skillify.mcp.registry import (
     McpRegistry,
     McpRegistryError,
     McpTransport,
-    load_mcp_artifact,
+    load_mcp_artifact as _load_mcp_artifact,
     probe_stdio_mcp,
     render_opencode_mcp,
 )
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+APPROVED_FORGEJO_BASE = "https://forgejo.internal"
+
+
+def load_mcp_artifact(value: object):
+    return _load_mcp_artifact(value, approved_forgejo_base=APPROVED_FORGEJO_BASE)
 
 
 def _permissions() -> dict[str, object]:
@@ -81,6 +86,23 @@ def test_local_mcp_requires_argv_checksum_and_intranet_source() -> None:
     assert artifact.coordinate.identifier == "approved/echo"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://evil.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "https://forgejo.internal/attacker/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+    ],
+)
+def test_source_must_match_explicit_approved_forgejo_base_exactly(source: str) -> None:
+    with pytest.raises(McpRegistryError, match="approved Forgejo"):
+        _load_mcp_artifact(local_artifact(source=source), approved_forgejo_base=APPROVED_FORGEJO_BASE)
+
+
+def test_source_requires_an_explicit_approved_forgejo_base() -> None:
+    with pytest.raises(McpRegistryError, match="approved Forgejo"):
+        _load_mcp_artifact(local_artifact())
+
+
 @pytest.mark.parametrize("command", ["python server.py", ["sh", "-c", "server"]])
 def test_local_mcp_rejects_shell_commands(command: object) -> None:
     with pytest.raises(McpRegistryError, match="argv|shell"):
@@ -98,6 +120,19 @@ def test_local_mcp_rejects_shell_commands(command: object) -> None:
         ["/opt/skillify/mcp/echo/bin/pip", "install", "remote-package"],
         ["/opt/skillify/mcp/echo/bin/python3", "-m", "pip", "install", "remote-package"],
         ["/opt/skillify/mcp/echo/bin/env", "sh", "-c", "server"],
+        ["/opt/skillify/mcp/echo/bin/python3.11", "-m", "pip", "install", "package"],
+        ["/opt/skillify/mcp/echo/bin/nodejs", "-e", "fetch('https://public.example')"],
+        ["/opt/skillify/mcp/echo/bin/corepack", "npx", "package"],
+        ["/opt/skillify/mcp/echo/bin/PIP3.11.EXE", "install", "package"],
+        ["/opt/skillify/mcp/echo/bin/bash5", "-c", "server"],
+        ["/opt/skillify/mcp/echo/bin/py", "-m", "pip"],
+        ["/opt/skillify/mcp/echo/bin/pythonw3.11", "-m", "pip"],
+        ["/opt/skillify/mcp/echo/bin/node20", "-e", "fetch('payload')"],
+        ["/opt/skillify/mcp/echo/bin/server", "--download=HTTPS://public.example/archive"],
+        ["/opt/skillify/mcp/echo/bin/server", "prefix=ftp://public.example/archive"],
+        ["/opt/skillify/mcp/echo/bin/server", "config=file://runtime/package"],
+        ["/opt/skillify/mcp/echo/bin/server", "--download=data:text/plain,payload"],
+        ["/opt/skillify/mcp/echo/bin/server", "--download=//public.example/archive"],
         ["/bin/server", "--token", "literal-secret"],
         ["/bin/server", "--token=literal-secret"],
     ],
@@ -112,6 +147,31 @@ def test_local_mcp_allows_sensitive_environment_reference() -> None:
         local_artifact(command=["/opt/skillify/mcp/echo/bin/server", "--token", "{env:MCP_TOKEN}"], environment=["MCP_TOKEN"])
     )
     assert artifact.command[-1] == "{env:MCP_TOKEN}"
+
+
+def test_local_mcp_allows_sensitive_assignment_environment_reference() -> None:
+    artifact = load_mcp_artifact(local_artifact(
+        command=["/opt/skillify/mcp/echo/bin/server", "--token={env:MCP_TOKEN}"],
+        environment=["MCP_TOKEN"],
+    ))
+    assert artifact.command[-1] == "--token={env:MCP_TOKEN}"
+
+
+def test_local_mcp_does_not_treat_download_env_reference_as_secret_reference() -> None:
+    with pytest.raises(McpRegistryError, match="download"):
+        load_mcp_artifact(local_artifact(
+            command=["/opt/skillify/mcp/echo/bin/server", "--download={env:MCP_URL}"],
+            environment=["MCP_URL"],
+        ))
+
+
+@pytest.mark.parametrize("flag", ["--download", "--url", "--source", "--registry"])
+def test_local_mcp_rejects_split_runtime_location_environment_reference(flag: str) -> None:
+    with pytest.raises(McpRegistryError, match="download"):
+        load_mcp_artifact(local_artifact(
+            command=["/opt/skillify/mcp/echo/bin/server", flag, "{env:MCP_URL}"],
+            environment=["MCP_URL"],
+        ))
 
 
 @pytest.mark.parametrize(
@@ -136,6 +196,23 @@ def test_remote_mcp_requires_https_and_auth_reference_not_secret() -> None:
         "Authorization": "Bearer {env:MCP_TOKEN}"
     }
     assert render_opencode_mcp(spec)["timeout"] == 15_000
+
+
+@pytest.mark.parametrize(
+    ("timeout", "milliseconds"),
+    [(0.001, 1), (120, 120_000)],
+)
+def test_timeout_boundaries_render_positive_integer_milliseconds(timeout: float, milliseconds: int) -> None:
+    remote = load_mcp_artifact(remote_artifact(timeoutSeconds=timeout))
+    local = load_mcp_artifact(local_artifact(timeoutSeconds=timeout))
+    assert render_opencode_mcp(remote)["timeout"] == milliseconds
+    assert render_opencode_mcp(local)["timeout"] == milliseconds
+
+
+@pytest.mark.parametrize("timeout", [0.0009, 0.0015, 120.001, float("nan"), float("inf")])
+def test_timeout_rejects_submillisecond_or_unrepresentable_values(timeout: float) -> None:
+    with pytest.raises(McpRegistryError, match="timeout"):
+        load_mcp_artifact(remote_artifact(timeoutSeconds=timeout))
 
 
 @pytest.mark.parametrize(
@@ -218,6 +295,51 @@ def test_probe_returns_only_stable_errors(mode: str, code: str) -> None:
         )
     assert caught.value.code == code
     assert "top-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        ("bool-id", "invalid-response"),
+        ("lone-surrogate", "malformed-response"),
+        ("deep-response", "malformed-response"),
+        ("duplicate-id", "malformed-response"),
+    ],
+)
+def test_probe_rejects_adversarial_json_with_stable_codes(mode: str, code: str) -> None:
+    with pytest.raises(McpProbeError) as caught:
+        probe_stdio_mcp(
+            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), mode),
+            request={"name": "echo", "arguments": {}},
+            timeout_seconds=2,
+            environ={},
+        )
+    assert caught.value.code == code
+
+
+def test_probe_bounds_request_nesting_before_process_start() -> None:
+    nested: object = "leaf"
+    for _ in range(40):
+        nested = {"next": nested}
+    with pytest.raises(McpProbeError) as caught:
+        probe_stdio_mcp(
+            (sys.executable, str(FIXTURES / "missing-server.py")),
+            request={"name": "echo", "arguments": {"nested": nested}},
+            timeout_seconds=1,
+            environ={},
+        )
+    assert caught.value.code == "invalid-request"
+
+
+def test_probe_translates_lone_surrogate_request_to_stable_error() -> None:
+    with pytest.raises(McpProbeError) as caught:
+        probe_stdio_mcp(
+            (sys.executable, str(FIXTURES / "missing-server.py")),
+            request={"name": "echo", "arguments": {"text": "\ud800"}},
+            timeout_seconds=1,
+            environ={},
+        )
+    assert caught.value.code == "invalid-request"
 
 
 def test_probe_timeout_is_bounded_and_safe() -> None:

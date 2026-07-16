@@ -9,8 +9,9 @@ import pytest
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
 from skillify.common.config import SkillifyConfig
 from skillify.mcp.registry import load_mcp_artifact
-from skillify.packaging.pack import sha256_file
+from skillify.packaging.pack import pack_mcp, sha256_file
 from skillify.publish.publisher import AlreadyPublishedError, publish_mcp_artifact
+from skillify.mcp.registry import McpRegistryError
 from tests.fake_forgejo import fake_forgejo  # noqa: F401 (fixture import)
 
 
@@ -121,21 +122,22 @@ def test_list_tree_returns_entries_and_empty_on_missing_ref(fake_forgejo) -> Non
 def test_publish_mcp_uses_same_immutable_release_asset_flow(fake_forgejo, tmp_path: Path) -> None:
     archive = tmp_path / "mcp.tar.gz"
     archive.write_bytes(b"approved mcp")
+    forgejo_base = f"http://127.0.0.1:{fake_forgejo.server_port}"
     metadata = {
         "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
         "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
         "checksum": sha256_file(archive), "license": "MIT",
-        "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "source": f"{forgejo_base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
         "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"],
         "environment": [], "permissions": {
             "readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [],
             "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": [],
         }, "enabled": True,
     }
-    artifact = load_mcp_artifact(metadata)
+    artifact = load_mcp_artifact(metadata, approved_forgejo_base=forgejo_base)
     cfg = SkillifyConfig(
         home=tmp_path / "home",
-        forgejo_url=f"http://127.0.0.1:{fake_forgejo.server_port}",
+        forgejo_url=forgejo_base,
         forgejo_token="tok",
     )
 
@@ -154,22 +156,28 @@ def test_publish_mcp_never_mutates_existing_published_release(fake_forgejo, tmp_
     archive = tmp_path / "mcp.tar.gz"
     archive.write_bytes(b"approved mcp")
     checksum = sha256_file(archive)
+    forgejo_base = f"http://127.0.0.1:{fake_forgejo.server_port}"
     metadata = {
         "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
         "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
         "checksum": checksum, "license": "MIT",
-        "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "source": f"{forgejo_base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
         "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"], "environment": [],
         "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []},
         "enabled": True,
     }
-    client = ForgejoClient(f"http://127.0.0.1:{fake_forgejo.server_port}", "tok")
+    client = ForgejoClient(forgejo_base, "tok")
     client.ensure_org_repo("approved", "echo")
-    client.create_release("approved", "echo", tag_name="v1.2.3", name="echo 1.2.3", body=f"artifactKind=mcp\nsha256={checksum}")
+    client.create_release(
+        "approved", "echo", tag_name="v1.2.3", name="echo 1.2.3",
+        body=f"artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}",
+    )
     cfg = SkillifyConfig(home=tmp_path / "home", forgejo_url=client.base_url, forgejo_token="tok")
 
     with pytest.raises(AlreadyPublishedError):
-        publish_mcp_artifact(load_mcp_artifact(metadata), archive, cfg)
+        publish_mcp_artifact(
+            load_mcp_artifact(metadata, approved_forgejo_base=forgejo_base), archive, cfg
+        )
 
     release = client.get_release_by_tag("approved", "echo", "v1.2.3")
     assert release is not None and release.assets == []
@@ -179,28 +187,144 @@ def test_publish_mcp_rejects_corrupted_same_name_asset_in_draft(fake_forgejo, tm
     archive = tmp_path / "mcp.tar.gz"
     archive.write_bytes(b"approved mcp")
     checksum = sha256_file(archive)
+    forgejo_base = f"http://127.0.0.1:{fake_forgejo.server_port}"
     metadata = {
         "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
         "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
         "checksum": checksum, "license": "MIT",
-        "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "source": f"{forgejo_base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
         "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"], "environment": [],
         "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []},
         "enabled": True,
     }
-    client = ForgejoClient(f"http://127.0.0.1:{fake_forgejo.server_port}", "tok")
+    client = ForgejoClient(forgejo_base, "tok")
     client.ensure_org_repo("approved", "echo")
     release = client.create_release(
         "approved", "echo", tag_name="v1.2.3", name="echo 1.2.3",
-        body=f"artifactKind=mcp\nsha256={checksum}", draft=True,
+        body=f"artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}", draft=True,
     )
-    corrupt = tmp_path / "approved-echo-1.2.3.tar.gz"
-    corrupt.write_bytes(b"corrupt")
+    corrupt = tmp_path / "approved-echo-1.2.3.artifact.json"
+    corrupt.write_text('{"artifactKind":"skill"}\n', encoding="utf-8")
     client.upload_release_asset("approved", "echo", release.id, corrupt)
     cfg = SkillifyConfig(home=tmp_path / "home", forgejo_url=client.base_url, forgejo_token="tok")
 
     with pytest.raises(AlreadyPublishedError):
-        publish_mcp_artifact(load_mcp_artifact(metadata), archive, cfg)
+        publish_mcp_artifact(
+            load_mcp_artifact(metadata, approved_forgejo_base=forgejo_base), archive, cfg
+        )
 
     recovered = client.find_release_by_tag("approved", "echo", "v1.2.3")
     assert recovered is not None and recovered.draft is True
+
+
+def test_publish_mcp_rejects_source_or_organization_coordinate_before_network(
+    fake_forgejo, tmp_path: Path
+) -> None:
+    archive = tmp_path / "mcp.tar.gz"
+    archive.write_bytes(b"approved mcp")
+    base = f"http://127.0.0.1:{fake_forgejo.server_port}"
+    metadata = {
+        "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
+        "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
+        "checksum": sha256_file(archive), "license": "MIT",
+        "source": f"{base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"],
+        "environment": [], "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []},
+        "enabled": True,
+    }
+    artifact = load_mcp_artifact(metadata, approved_forgejo_base=base)
+    cfg = SkillifyConfig(
+        home=tmp_path / "home", forgejo_url=base, forgejo_token="tok", forgejo_org="attacker"
+    )
+
+    with pytest.raises(McpRegistryError, match="coordinate"):
+        publish_mcp_artifact(artifact, archive, cfg)
+    assert fake_forgejo.state.repos == set()
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("wrong", "artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
+        ("echo 1.2.3", "artifactKind=skill\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
+        ("echo 1.2.3", "artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}"),
+    ],
+)
+def test_publish_mcp_rejects_nonexact_or_incomplete_draft_without_mutation(
+    fake_forgejo, tmp_path: Path, name: str, body: str
+) -> None:
+    archive = tmp_path / "mcp.tar.gz"
+    archive.write_bytes(b"approved mcp")
+    checksum = sha256_file(archive)
+    base = f"http://127.0.0.1:{fake_forgejo.server_port}"
+    metadata = {
+        "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
+        "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
+        "checksum": checksum, "license": "MIT",
+        "source": f"{base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"], "environment": [],
+        "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []}, "enabled": True,
+    }
+    client = ForgejoClient(base, "tok")
+    client.ensure_org_repo("approved", "echo")
+    release = client.create_release(
+        "approved", "echo", tag_name="v1.2.3", name=name,
+        body=body.format(checksum=checksum), draft=True,
+    )
+    before = dict(fake_forgejo.state.releases["approved/echo/v1.2.3"])
+    cfg = SkillifyConfig(home=tmp_path / "home", forgejo_url=base, forgejo_token="tok")
+
+    with pytest.raises(AlreadyPublishedError):
+        publish_mcp_artifact(
+            load_mcp_artifact(metadata, approved_forgejo_base=base), archive, cfg
+        )
+
+    after = fake_forgejo.state.releases["approved/echo/v1.2.3"]
+    assert after == before
+    assert after["id"] == release.id and after["assets"] == []
+
+
+@pytest.mark.parametrize("corrupt_sidecar", [False, True])
+def test_publish_mcp_recovers_only_complete_byte_exact_draft(
+    fake_forgejo, tmp_path: Path, corrupt_sidecar: bool
+) -> None:
+    archive = tmp_path / "mcp.tar.gz"
+    archive.write_bytes(b"approved mcp")
+    checksum = sha256_file(archive)
+    base = f"http://127.0.0.1:{fake_forgejo.server_port}"
+    metadata = {
+        "schemaVersion": 1, "artifactKind": "mcp", "namespace": "approved", "name": "echo",
+        "version": "1.2.3", "forgejoRelease": "v1.2.3", "commit": "b" * 40,
+        "checksum": checksum, "license": "MIT",
+        "source": f"{base}/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "transport": "stdio", "command": ["/opt/skillify/mcp/echo/bin/server"], "environment": [],
+        "permissions": {"readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [], "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": []}, "enabled": True,
+    }
+    artifact = load_mcp_artifact(metadata, approved_forgejo_base=base)
+    cfg = SkillifyConfig(home=tmp_path / "home", forgejo_url=base, forgejo_token="tok")
+    packed = pack_mcp(artifact, archive, tmp_path / "prepared")
+    client = ForgejoClient(base, "tok")
+    client.ensure_org_repo("approved", "echo")
+    release = client.create_release(
+        "approved", "echo", tag_name="v1.2.3", name="echo 1.2.3",
+        body=f"artifactKind=mcp\ncoordinate=mcp:approved/echo@1.2.3\nsha256={checksum}",
+        draft=True,
+    )
+    assets = [packed.tarball_path, packed.checksum_path, packed.artifact_manifest_path]
+    if corrupt_sidecar:
+        corrupt = tmp_path / packed.artifact_manifest_path.name
+        corrupt.write_text('{"artifactKind":"skill"}\n', encoding="utf-8")
+        assets[-1] = corrupt
+    for asset in assets:
+        client.upload_release_asset("approved", "echo", release.id, asset)
+
+    if corrupt_sidecar:
+        with pytest.raises(AlreadyPublishedError):
+            publish_mcp_artifact(artifact, archive, cfg)
+        unchanged = client.find_release_by_tag("approved", "echo", "v1.2.3")
+        assert unchanged is not None and unchanged.draft is True
+    else:
+        result = publish_mcp_artifact(artifact, archive, cfg)
+        assert result.recovered is True
+        published = client.find_release_by_tag("approved", "echo", "v1.2.3")
+        assert published is not None and published.draft is False

@@ -8,6 +8,7 @@ binary using an exact argv and an explicitly supplied environment.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import select
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import time
 from dataclasses import InitVar, dataclass
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -70,6 +72,7 @@ class McpArtifact:
     transport: McpTransport
     permissions: PermissionManifest
     enabled: bool
+    approved_forgejo_base: str
     _validation_token: InitVar[object] = None
     command: tuple[str, ...] = ()
     environment: tuple[str, ...] = ()
@@ -194,38 +197,54 @@ def _required_text(data: Mapping[str, object], key: str) -> str:
 
 
 def _validate_intranet_source(
-    value: str, *, namespace: str, name: str, version: str, release: str
+    value: str, *, approved_forgejo_base: str, namespace: str, name: str, version: str, release: str
 ) -> str:
     if any(ord(character) <= 32 or ord(character) == 127 for character in value):
         raise McpRegistryError("source must be a canonical intranet URI")
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise McpRegistryError("source must be an absolute approved intranet HTTPS URI")
-    host = parsed.hostname.casefold().rstrip(".")
-    if not host.endswith((".internal", ".corp", ".local")):
-        raise McpRegistryError("source must use an approved intranet host")
-    expected_suffix = (
-        f"/{namespace}/{name}/releases/download/{release}/"
+    expected = (
+        f"{approved_forgejo_base}/{namespace}/{name}/releases/download/{release}/"
         f"{namespace}-{name}-{version}.tar.gz"
     )
-    try:
-        canonical_netloc = host if parsed.port is None else f"{host}:{parsed.port}"
-    except ValueError as exc:
-        raise McpRegistryError("source must use a canonical intranet host") from exc
-    if (
-        parsed.netloc != canonical_netloc
-        or parsed.query
-        or parsed.fragment
-        or not parsed.path.endswith(expected_suffix)
-        or "%" in parsed.path
-        or "//" in parsed.path
-        or any(part in {".", "..", "latest", "main", "master"} for part in PurePosixPath(parsed.path).parts)
-    ):
-        raise McpRegistryError("source must be an immutable intranet URI")
+    if value != expected:
+        raise McpRegistryError(
+            "source must exactly match the immutable approved Forgejo intranet coordinate"
+        )
     return value
 
 
-def _load_common(data: Mapping[str, object]) -> tuple[Coordinate, str, str, str, str, str, PermissionManifest, bool]:
+def _canonical_forgejo_base(value: object) -> str:
+    if type(value) is not str or not value or any(
+        ord(character) <= 32 or ord(character) == 127 for character in value
+    ):
+        raise McpRegistryError("an explicit canonical approved Forgejo base URL is required")
+    parsed = urlsplit(value)
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise McpRegistryError("approved Forgejo base URL must be canonical")
+    host = parsed.hostname.casefold().rstrip(".")
+    try:
+        canonical_netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    except ValueError as exc:
+        raise McpRegistryError("approved Forgejo base URL has an invalid port") from exc
+    loopback_http = parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme != "https" and not loopback_http:
+        raise McpRegistryError("approved Forgejo base URL must use HTTPS")
+    if (
+        parsed.netloc != canonical_netloc
+        or value.endswith("/")
+        or "%" in parsed.path
+        or "//" in parsed.path
+        or any(part in {".", ".."} for part in PurePosixPath(parsed.path).parts)
+    ):
+        raise McpRegistryError("approved Forgejo base URL must be canonical")
+    canonical = f"{parsed.scheme}://{canonical_netloc}{parsed.path}"
+    if value != canonical:
+        raise McpRegistryError("approved Forgejo base URL must be canonical")
+    return canonical
+
+
+def _load_common(
+    data: Mapping[str, object], approved_forgejo_base: str
+) -> tuple[Coordinate, str, str, str, str, str, PermissionManifest, bool]:
     if type(data.get("schemaVersion")) is not int or data.get("schemaVersion") != 1 or data.get("artifactKind") != "mcp":
         raise McpRegistryError("MCP artifact requires schemaVersion 1 and artifactKind mcp")
     namespace = _required_text(data, "namespace")
@@ -249,6 +268,7 @@ def _load_common(data: Mapping[str, object]) -> tuple[Coordinate, str, str, str,
         raise McpRegistryError("license must be an SPDX-style identifier")
     source = _validate_intranet_source(
         _required_text(data, "source"),
+        approved_forgejo_base=approved_forgejo_base,
         namespace=namespace,
         name=name,
         version=version,
@@ -265,22 +285,25 @@ def _load_common(data: Mapping[str, object]) -> tuple[Coordinate, str, str, str,
     return coordinate, release, commit, checksum, license_name, source, permissions, data["enabled"]  # type: ignore[return-value]
 
 
-def load_mcp_artifact(value: object) -> McpArtifact:
+def load_mcp_artifact(
+    value: object, *, approved_forgejo_base: str | None = None
+) -> McpArtifact:
     if type(value) is not dict:
         raise McpRegistryError("MCP artifact metadata must be an object")
+    approved_base = _canonical_forgejo_base(approved_forgejo_base)
     data: Mapping[str, object] = value
     transport_text = _required_text(data, "transport")
     try:
         transport = McpTransport(transport_text)
     except ValueError as exc:
         raise McpRegistryError("transport must be stdio or remote") from exc
-    common = _load_common(data)
+    common = _load_common(data, approved_base)
     base_fields = {
         "schemaVersion", "artifactKind", "namespace", "name", "version", "forgejoRelease",
         "commit", "checksum", "license", "source", "transport", "permissions", "enabled",
     }
     if transport is McpTransport.STDIO:
-        allowed = base_fields | {"command", "environment"}
+        allowed = base_fields | {"command", "environment", "timeoutSeconds"}
         unknown = set(data) - allowed
         if unknown:
             raise McpRegistryError(f"unknown local MCP fields: {sorted(unknown)}")
@@ -301,18 +324,27 @@ def load_mcp_artifact(value: object) -> McpArtifact:
         ):
             raise McpRegistryError("command executable must be inside the governed MCP artifact")
         executable = Path(command_tuple[0]).name.casefold()
-        runtime_launchers = {
-            "busybox", "bunx", "curl", "env", "npm", "npx", "pip", "pip3", "pipx",
-            "pnpm", "pnpx", "toybox", "uvx", "wget", "yarn",
-        }
-        if executable in runtime_launchers:
+        for suffix in (".exe", ".cmd", ".bat", ".com"):
+            executable = executable.removesuffix(suffix)
+        executable_family = re.sub(r"(?:[-_.]?\d+(?:\.\d+)*)$", "", executable)
+        runtime_launcher = re.fullmatch(
+            r"(?:busybox|bunx|cargo|composer|corepack|curl|env|gem|npm|npx|pip|pipx|pnpm|pnpx|toybox|uvx|wget|yarn)",
+            executable_family,
+        )
+        if runtime_launcher:
             raise McpRegistryError("runtime package and download launchers are forbidden")
-        interpreter_names = {"node", "python", "python3", "ruby", "perl", "php"}
-        if executable in interpreter_names and any(
+        interpreter = re.fullmatch(
+            r"(?:bun|deno|lua|node(?:js)?|perl|php|py|pypy|pythonw?|ruby)",
+            executable_family,
+        )
+        if interpreter and any(
             argument in {"-c", "-e", "--eval", "-m"} for argument in command_tuple[1:]
         ):
             raise McpRegistryError("interpreter code and module launchers are forbidden")
-        if executable in {"sh", "bash", "zsh", "dash", "fish", "cmd", "powershell", "pwsh"} or (
+        shell_launcher = re.fullmatch(
+            r"(?:(?:ba|da|z|fi)?sh|cmd|powershell|pwsh)", executable_family
+        )
+        if shell_launcher or (
             len(command_tuple) >= 2 and command_tuple[1] in {"-c", "/c", "-command"}
         ):
             raise McpRegistryError("shell commands are forbidden; use exact argv")
@@ -336,8 +368,36 @@ def load_mcp_artifact(value: object) -> McpArtifact:
             match = _ENV_REFERENCE_RE.fullmatch(sensitive_value)
             if match is None or match.group(1) not in environment_names:
                 raise McpRegistryError("sensitive argv values must use an allowed environment reference")
-        if any(argument.startswith(("http://", "https://")) for argument in command_tuple[1:]):
+
+        runtime_location_flag = re.compile(
+            r"(?i)(?:download|endpoint|fetch|mirror|package|registry|remote|source|uri|url)"
+        )
+
+        def is_allowed_environment_reference(index: int, argument: str) -> bool:
+            direct = _ENV_REFERENCE_RE.fullmatch(argument)
+            if direct is not None:
+                previous = command_tuple[index - 1] if index > 0 else ""
+                return (
+                    direct.group(1) in environment_names
+                    and runtime_location_flag.search(previous) is None
+                )
+            if "=" not in argument:
+                return False
+            flag, candidate = argument.split("=", 1)
+            reference = _ENV_REFERENCE_RE.fullmatch(candidate)
+            return (
+                reference is not None
+                and reference.group(1) in environment_names
+                and runtime_location_flag.search(flag) is None
+            )
+
+        if any(
+            not is_allowed_environment_reference(index, argument)
+            and ("//" in argument or re.search(r"(?i)[a-z][a-z0-9+.-]*:", argument))
+            for index, argument in enumerate(command_tuple[1:], start=1)
+        ):
             raise McpRegistryError("runtime download URLs are forbidden in MCP argv")
+        timeout_seconds, _ = _validate_timeout(data.get("timeoutSeconds", 15))
         coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
         return McpArtifact(
             coordinate=coordinate,
@@ -349,9 +409,11 @@ def load_mcp_artifact(value: object) -> McpArtifact:
             transport=transport,
             permissions=permissions,
             enabled=enabled,
+            approved_forgejo_base=approved_base,
             _validation_token=_VALIDATED_ARTIFACT_TOKEN,
             command=command_tuple,
             environment=tuple(environment),
+            timeout_seconds=timeout_seconds,
         )
 
     allowed = base_fields | {"url", "allowedHost", "authEnv", "tlsRequired", "timeoutSeconds"}
@@ -389,9 +451,7 @@ def load_mcp_artifact(value: object) -> McpArtifact:
         raise McpRegistryError("authEnv must be an environment reference name, never a secret")
     if data.get("tlsRequired") is not True:
         raise McpRegistryError("remote MCP requires TLS")
-    timeout = data.get("timeoutSeconds")
-    if type(timeout) not in {int, float} or isinstance(timeout, bool) or not 0 < timeout <= 120:
-        raise McpRegistryError("timeoutSeconds must be in (0, 120]")
+    timeout, _ = _validate_timeout(data.get("timeoutSeconds"))
     coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
     return McpArtifact(
         coordinate=coordinate,
@@ -403,6 +463,7 @@ def load_mcp_artifact(value: object) -> McpArtifact:
         transport=transport,
         permissions=permissions,
         enabled=enabled,
+        approved_forgejo_base=approved_base,
         _validation_token=_VALIDATED_ARTIFACT_TOKEN,
         url=url,
         allowed_host=allowed_host,
@@ -412,6 +473,24 @@ def load_mcp_artifact(value: object) -> McpArtifact:
     )
 
 
+def _validate_timeout(value: object) -> tuple[float, int]:
+    if type(value) not in {int, float} or isinstance(value, bool):
+        raise McpRegistryError("timeoutSeconds must be a representable millisecond value")
+    try:
+        decimal = Decimal(str(value))
+        milliseconds = decimal * 1000
+    except (InvalidOperation, ValueError) as exc:
+        raise McpRegistryError("timeoutSeconds must be a representable millisecond value") from exc
+    if (
+        not decimal.is_finite()
+        or decimal < Decimal("0.001")
+        or decimal > Decimal("120")
+        or milliseconds != milliseconds.to_integral_value()
+    ):
+        raise McpRegistryError("timeoutSeconds must be an exact value from 0.001 to 120 seconds")
+    return float(decimal), int(milliseconds)
+
+
 def render_opencode_mcp(artifact: McpArtifact) -> dict[str, object]:
     """Render only keys supported by the pinned OpenCode v1.15.11 MCP schema."""
     if type(artifact) is not McpArtifact:
@@ -419,6 +498,7 @@ def render_opencode_mcp(artifact: McpArtifact) -> dict[str, object]:
     if artifact.transport is McpTransport.STDIO:
         rendered: dict[str, object] = {
             "type": "local", "command": list(artifact.command), "enabled": artifact.enabled,
+            "timeout": _validate_timeout(artifact.timeout_seconds)[1],
         }
         if artifact.environment:
             rendered["environment"] = {name: f"{{env:{name}}}" for name in artifact.environment}
@@ -428,7 +508,7 @@ def render_opencode_mcp(artifact: McpArtifact) -> dict[str, object]:
         "url": artifact.url,
         "enabled": artifact.enabled,
         "headers": {"Authorization": f"Bearer {{env:{artifact.auth_env}}}"},
-        "timeout": int(round(artifact.timeout_seconds * 1000)),
+        "timeout": _validate_timeout(artifact.timeout_seconds)[1],
     }
 
 
@@ -454,7 +534,11 @@ def mcp_artifact_as_dict(artifact: McpArtifact) -> dict[str, object]:
         "enabled": artifact.enabled,
     }
     if artifact.transport is McpTransport.STDIO:
-        value.update(command=list(artifact.command), environment=list(artifact.environment))
+        value.update(
+            command=list(artifact.command),
+            environment=list(artifact.environment),
+            timeoutSeconds=artifact.timeout_seconds,
+        )
     else:
         value.update(
             url=artifact.url,
@@ -500,6 +584,47 @@ class _LineReader:
             if self.total > _MAX_TOTAL_BYTES or len(self.buffer) + len(chunk) > _MAX_FRAME_BYTES + 1:
                 raise McpProbeError("frame-too-large")
             self.buffer.extend(chunk)
+
+
+def _validate_json_tree(value: object, *, code: str) -> None:
+    stack: list[tuple[object, int]] = [(value, 0)]
+    nodes = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > 4096 or depth > 32:
+            raise McpProbeError(code)
+        if item is None or type(item) in {bool, int}:
+            continue
+        if type(item) is float:
+            if not math.isfinite(item):
+                raise McpProbeError(code)
+            continue
+        if type(item) is str:
+            try:
+                item.encode("utf-8", errors="strict")
+            except UnicodeError as exc:
+                raise McpProbeError(code) from exc
+            continue
+        if type(item) is list:
+            stack.extend((child, depth + 1) for child in item)
+            continue
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise McpProbeError(code)
+            stack.extend((key, depth + 1) for key in item)
+            stack.extend((child, depth + 1) for child in item.values())
+            continue
+        raise McpProbeError(code)
+
+
+def _reject_duplicate_probe_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON field")
+        value[key] = item
+    return value
 
 
 def _stop_process(process: subprocess.Popen[bytes]) -> None:
@@ -552,9 +677,12 @@ def _encoded_message(request_id: int | None, method: str, params: object) -> byt
     payload: dict[str, object] = {"jsonrpc": "2.0", "method": method, "params": params}
     if request_id is not None:
         payload["id"] = request_id
+    _validate_json_tree(payload, code="invalid-request")
     try:
-        message = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
-    except (TypeError, ValueError, UnicodeError) as exc:
+        message = json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8", errors="strict") + b"\n"
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise McpProbeError("invalid-request") from exc
     if len(message) > _MAX_FRAME_BYTES:
         raise McpProbeError("request-too-large")
@@ -569,10 +697,16 @@ def _rpc(process: subprocess.Popen[bytes], reader: _LineReader, request_id: int,
         raise
     line = reader.read(deadline)
     try:
-        response = json.loads(line)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        response = json.loads(line, object_pairs_hook=_reject_duplicate_probe_fields)
+    except (json.JSONDecodeError, UnicodeDecodeError, UnicodeError, RecursionError, ValueError) as exc:
         raise McpProbeError("malformed-response") from exc
-    if type(response) is not dict or response.get("jsonrpc") != "2.0" or response.get("id") != request_id:
+    _validate_json_tree(response, code="malformed-response")
+    if (
+        type(response) is not dict
+        or response.get("jsonrpc") != "2.0"
+        or type(response.get("id")) is not int
+        or response.get("id") != request_id
+    ):
         raise McpProbeError("invalid-response")
     if "error" in response or "result" not in response:
         raise McpProbeError("rpc-error")

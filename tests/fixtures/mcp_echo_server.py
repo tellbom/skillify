@@ -35,7 +35,12 @@ for line in sys.stdin:
     if MODE == "malformed":
         print("not-json", flush=True)
         continue
+    if MODE == "duplicate-id":
+        print('{"jsonrpc":"2.0","id":1,"id":1,"result":{}}', flush=True)
+        continue
     response_id = request["id"] + 1 if MODE == "wrong-id" else request["id"]
+    if MODE == "bool-id":
+        response_id = True
     method = request["method"]
     if method == "initialize":
         result = {"protocolVersion": "2025-03-26", "capabilities": {}, "serverInfo": {"name": "echo", "version": "1.0.0"}}
@@ -47,6 +52,18 @@ for line in sys.stdin:
     else:
         text = request["params"]["arguments"].get("text", "")
         result = {"content": [{"type": "text", "text": text}], "isError": False}
+        if MODE == "lone-surrogate":
+            sys.stdout.buffer.write(
+                b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"\\ud800"}],"isError":false}}\n'
+            )
+            sys.stdout.buffer.flush()
+            continue
+        if MODE == "deep-response":
+            sys.stdout.write(
+                '{"jsonrpc":"2.0","id":3,"result":{"content":' + "[" * 40 + "{}" + "]" * 40 + ',"isError":false}}\n'
+            )
+            sys.stdout.flush()
+            continue
     print(json.dumps({"jsonrpc": "2.0", "id": response_id, "result": result}), flush=True)
     if MODE == "exit-nonzero" and method == "tools/call":
         raise SystemExit(7)
