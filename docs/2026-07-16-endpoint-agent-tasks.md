@@ -202,7 +202,7 @@
 
 ## S6 · 数据库与业务 MCP（全 Owner: Codex）
 
-### - [ ] Task 6.1 MCP 接入评定与目录
+### - [x] Task 6.1 MCP 接入评定与目录
 - 锚点：`+docs/mcp/catalog.md`
 - 盘点现有 API/CLI/SDK/DB；优先官方/成熟 MCP；记录 owner/版本/数据分类/权限/网络/维护/smoke。
 - **Dev-DoD**：目录文档合入，字段齐全。
