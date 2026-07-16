@@ -63,3 +63,5 @@ def test_local_outbox_deduplicates_event_ids(tmp_path: Path) -> None:
     assert outbox.enqueue("event-1", {"type": "task.received"}) is True
     assert outbox.enqueue("event-1", {"type": "different"}) is False
     assert len(outbox.pending()) == 1
+    assert outbox.acknowledge("event-1") is True
+    assert outbox.acknowledge("event-1") is False

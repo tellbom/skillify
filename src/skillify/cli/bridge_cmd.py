@@ -90,6 +90,17 @@ class LocalOutbox:
     def pending(self) -> tuple[dict[str, Any], ...]:
         return tuple(self._records())
 
+    def acknowledge(self, event_id: str) -> bool:
+        records = self._records()
+        kept = [record for record in records if record["eventId"] != event_id]
+        if len(kept) == len(records):
+            return False
+        self.path.write_text(
+            "".join(json.dumps(record, sort_keys=True) + "\n" for record in kept),
+            encoding="utf-8",
+        )
+        return True
+
 
 class BridgeLoop:
     def __init__(

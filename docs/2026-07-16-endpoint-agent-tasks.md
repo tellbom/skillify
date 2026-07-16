@@ -181,7 +181,7 @@
 - **[test-env]**：真实服务端长轮询 + 断网重连。
 - commit：`feat(agent): add opt-in endpoint bridge`
 
-### - [ ] Task 5.3 事件与构件上报 — Owner: Codex
+### - [x] Task 5.3 事件与构件上报 — Owner: Codex
 - 锚点：复用 `common/telemetry.py`、`index/events.py`；`+src/skillify/tasks/reporting.py`
 - 只报标准事件/测试摘要/diff 统计/版本/构件引用；prompt/源码/secret 默认不传；outbox 幂等补传；UI 无虚构百分比。
 - **Dev-DoD**：上报载荷构造（脱敏断言）+ outbox 幂等（按 event_id）对 fake 端点离线单测。
