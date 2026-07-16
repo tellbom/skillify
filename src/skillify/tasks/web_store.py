@@ -189,6 +189,8 @@ def record_task_event(
     event_type: str,
     occurred_at: datetime,
     summary: str | None = None,
+    test_summary: dict[str, Any] | None = None,
+    diff_stats: dict[str, Any] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
     failure_reason: str | None = None,
 ) -> tuple[EndpointTaskEventRecord, bool]:
@@ -212,7 +214,8 @@ def record_task_event(
     task.updated_at = occurred_at
     record = EndpointTaskEventRecord(
         event_id=event_id, task_id=task_id, event_type=event_type,
-        occurred_at=occurred_at, summary=summary, artifacts=artifacts or [],
+        occurred_at=occurred_at, summary=summary, test_summary=test_summary,
+        diff_stats=diff_stats, artifacts=artifacts or [],
         failure_reason=failure_reason,
     )
     session.add(record); session.flush()

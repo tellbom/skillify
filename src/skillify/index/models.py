@@ -271,6 +271,8 @@ class EndpointTaskEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     summary: Mapped[str | None] = mapped_column(String(500), default=None)
+    test_summary: Mapped[dict | None] = mapped_column(JSONText(), default=None)
+    diff_stats: Mapped[dict | None] = mapped_column(JSONText(), default=None)
     artifacts: Mapped[list] = mapped_column(JSONText(), default=list)
     failure_reason: Mapped[str | None] = mapped_column(String(128), default=None)
 

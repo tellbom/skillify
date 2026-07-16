@@ -72,6 +72,7 @@ from skillify.web.schemas import (
     VersionInfo,
     YankOut,
 )
+from skillify.web.endpoint_agent_api import router as endpoint_agent_router
 from skillify.web.build_models import (
     BuildNotFound,
     BuildNotReady,
@@ -110,6 +111,7 @@ from skillify.tasks.web_store import (
 )
 
 app = FastAPI(title="skillify-web", description="Community site backend (T3.1)")
+app.include_router(endpoint_agent_router)
 
 # Dev-friendly default; an intranet deployment should restrict this to the actual frontend
 # origin(s) via SKILLIFY_WEB_CORS_ORIGINS (comma-separated) — see run().
@@ -937,6 +939,8 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
             eventType=event.event_type,
             occurredAt=event.occurred_at,
             summary=event.summary,
+            testSummary=event.test_summary,
+            diffStats=event.diff_stats,
             artifacts=event.artifacts,
             failureReason=event.failure_reason,
         ) for event in events],

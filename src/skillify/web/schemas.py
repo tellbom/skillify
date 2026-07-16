@@ -268,6 +268,8 @@ class EndpointTaskEventOut(BaseModel):
     eventType: str
     occurredAt: datetime
     summary: str | None = None
+    testSummary: dict[str, Any] | None = None
+    diffStats: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     failureReason: str | None = None
 
@@ -284,3 +286,20 @@ class EndpointTaskOut(BaseModel):
     createdAt: datetime
     updatedAt: datetime
     events: list[EndpointTaskEventOut] = Field(default_factory=list)
+
+
+class EndpointTaskLifecycleIn(BaseModel):
+    nonce: str
+    stateVersion: int
+
+
+class EndpointEventIn(EndpointTaskLifecycleIn):
+    eventId: str
+    taskId: str
+    eventType: str
+    occurredAt: datetime
+    summary: str | None = None
+    testSummary: dict[str, Any] | None = None
+    diffStats: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    failureReason: str | None = None
