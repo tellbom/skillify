@@ -24,6 +24,7 @@ from skillify.install.opencode_distribution import (
     resolve_distribution_paths,
 )
 from skillify.install.projector import agent_skills_root, load_agent_rule
+from skillify.credentials.store import EncryptedFileSecretStore
 
 REQUIRED_BINARIES = ["uv"]
 
@@ -172,6 +173,18 @@ def _check_devpi_reachable(cfg: SkillifyConfig) -> CheckResult:
         )
 
 
+def _check_credentials(cfg: SkillifyConfig) -> CheckResult:
+    store = EncryptedFileSecretStore(
+        cfg.home / "credentials.enc", cfg.home / "keys" / "credentials.key"
+    )
+    try:
+        count = len(store.references())
+    except ValueError:
+        return CheckResult("credentials", False, "local credential metadata is invalid", required=False)
+    return CheckResult(
+        "credentials", count > 0, f"{count} local credential reference(s)",
+        "add credentials only for tasks that require them", required=False,
+    )
 def _opencode_distribution_paths(config: AgentLocalConfig) -> tuple[Path, Path] | None:
     return resolve_distribution_paths(
         config.opencode_manifest_path, config.opencode_artifact_root,
@@ -240,6 +253,7 @@ def run_doctor(
     checks.append(_check_forgejo_reachable(cfg))
     checks.append(_check_forgejo_token(cfg))
     checks.append(_check_devpi_reachable(cfg))
+    checks.append(_check_credentials(cfg))
     checks += _check_configured_agent_dirs(cfg)
 
     all_ok = True
