@@ -8,19 +8,14 @@ binary using an exact argv and an explicitly supplied environment.
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
-import select
-import signal
-import subprocess
-import time
 from dataclasses import InitVar, dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Mapping
 from urllib.parse import urlsplit
 
 from skillify.agent.capability_lock import CapabilityKind
@@ -30,14 +25,6 @@ from skillify.install.resolver import CapabilityResolveError, Coordinate
 
 class McpRegistryError(ValueError):
     """MCP metadata is malformed, mutable, or unsafe."""
-
-
-class McpProbeError(RuntimeError):
-    """A stable, non-sensitive local MCP probe failure."""
-
-    def __init__(self, code: str):
-        self.code = code
-        super().__init__(code)
 
 
 class McpTransport(str, Enum):
@@ -50,9 +37,6 @@ _LICENSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}\Z")
 _HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
 _MAX_ARG = 4096
 _MAX_ARGS = 128
-_PROTOCOL_VERSION = "2025-03-26"
-_MAX_FRAME_BYTES = 64 * 1024
-_MAX_TOTAL_BYTES = 192 * 1024
 _VALIDATED_ARTIFACT_TOKEN = object()
 _SENSITIVE_ARG_RE = re.compile(
     r"(?:api[-_]?key|auth(?:orization)?|bearer|credential|header|password|secret|token)",
@@ -640,258 +624,3 @@ def mcp_artifact_as_dict(artifact: McpArtifact) -> dict[str, object]:
             timeoutSeconds=artifact.timeout_seconds,
         )
     return value
-
-
-@dataclass(frozen=True)
-class McpProbeResult:
-    text: str
-    is_error: bool
-
-
-class _LineReader:
-    def __init__(self, fd: int):
-        self.fd = fd
-        self.buffer = bytearray()
-        self.total = 0
-
-    def read(self, deadline: float) -> bytes:
-        while True:
-            newline = self.buffer.find(b"\n")
-            if newline >= 0:
-                line = bytes(self.buffer[:newline])
-                del self.buffer[: newline + 1]
-                if len(line) > _MAX_FRAME_BYTES:
-                    raise McpProbeError("frame-too-large")
-                return line
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise McpProbeError("timeout")
-            readable, _, _ = select.select([self.fd], [], [], remaining)
-            if not readable:
-                raise McpProbeError("timeout")
-            chunk = os.read(self.fd, 4096)
-            if not chunk:
-                raise McpProbeError("process-exited")
-            self.total += len(chunk)
-            if self.total > _MAX_TOTAL_BYTES or len(self.buffer) + len(chunk) > _MAX_FRAME_BYTES + 1:
-                raise McpProbeError("frame-too-large")
-            self.buffer.extend(chunk)
-
-
-def _validate_json_tree(value: object, *, code: str) -> None:
-    stack: list[tuple[object, int]] = [(value, 0)]
-    nodes = 0
-    while stack:
-        item, depth = stack.pop()
-        nodes += 1
-        if nodes > 4096 or depth > 32:
-            raise McpProbeError(code)
-        if item is None or type(item) in {bool, int}:
-            continue
-        if type(item) is float:
-            if not math.isfinite(item):
-                raise McpProbeError(code)
-            continue
-        if type(item) is str:
-            try:
-                item.encode("utf-8", errors="strict")
-            except UnicodeError as exc:
-                raise McpProbeError(code) from exc
-            continue
-        if type(item) is list:
-            stack.extend((child, depth + 1) for child in item)
-            continue
-        if type(item) is dict:
-            if any(type(key) is not str for key in item):
-                raise McpProbeError(code)
-            stack.extend((key, depth + 1) for key in item)
-            stack.extend((child, depth + 1) for child in item.values())
-            continue
-        raise McpProbeError(code)
-
-
-def _reject_duplicate_probe_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate JSON field")
-        value[key] = item
-    return value
-
-
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
-    group_id = process.pid
-    try:
-        os.killpg(group_id, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        process.wait(timeout=0.1)
-    except subprocess.TimeoutExpired:
-        pass
-    # Always follow with SIGKILL: the session leader may have exited after
-    # SIGTERM while an inherited descendant remains in the owned group.
-    try:
-        os.killpg(group_id, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        process.wait(timeout=0.1)
-    except subprocess.TimeoutExpired:
-        pass
-
-
-def _write_message(process: subprocess.Popen[bytes], message: bytes, deadline: float) -> None:
-    if len(message) > _MAX_FRAME_BYTES:
-        raise McpProbeError("request-too-large")
-    assert process.stdin is not None
-    fd = process.stdin.fileno()
-    written = 0
-    while written < len(message):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise McpProbeError("timeout")
-        _, writable, _ = select.select([], [fd], [], remaining)
-        if not writable:
-            raise McpProbeError("timeout")
-        try:
-            count = os.write(fd, message[written:])
-        except BlockingIOError:
-            continue
-        except (BrokenPipeError, OSError) as exc:
-            raise McpProbeError("process-exited") from exc
-        if count <= 0:
-            raise McpProbeError("process-exited")
-        written += count
-
-
-def _encoded_message(request_id: int | None, method: str, params: object) -> bytes:
-    payload: dict[str, object] = {"jsonrpc": "2.0", "method": method, "params": params}
-    if request_id is not None:
-        payload["id"] = request_id
-    _validate_json_tree(payload, code="invalid-request")
-    try:
-        message = json.dumps(
-            payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-        ).encode("utf-8", errors="strict") + b"\n"
-    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
-        raise McpProbeError("invalid-request") from exc
-    if len(message) > _MAX_FRAME_BYTES:
-        raise McpProbeError("request-too-large")
-    return message
-
-
-def _rpc(process: subprocess.Popen[bytes], reader: _LineReader, request_id: int, method: str, params: object, deadline: float) -> object:
-    message = _encoded_message(request_id, method, params)
-    try:
-        _write_message(process, message, deadline)
-    except McpProbeError:
-        raise
-    line = reader.read(deadline)
-    try:
-        response = json.loads(line, object_pairs_hook=_reject_duplicate_probe_fields)
-    except (json.JSONDecodeError, UnicodeDecodeError, UnicodeError, RecursionError, ValueError) as exc:
-        raise McpProbeError("malformed-response") from exc
-    _validate_json_tree(response, code="malformed-response")
-    if (
-        type(response) is not dict
-        or response.get("jsonrpc") != "2.0"
-        or type(response.get("id")) is not int
-        or response.get("id") != request_id
-    ):
-        raise McpProbeError("invalid-response")
-    if "error" in response or "result" not in response:
-        raise McpProbeError("rpc-error")
-    return response["result"]
-
-
-def _notify(process: subprocess.Popen[bytes], method: str, params: object, deadline: float) -> None:
-    _write_message(process, _encoded_message(None, method, params), deadline)
-
-
-def probe_stdio_mcp(
-    argv: Sequence[str],
-    *,
-    request: Mapping[str, object],
-    timeout_seconds: float,
-    environ: Mapping[str, str],
-) -> McpProbeResult:
-    if type(argv) not in {tuple, list} or not argv or len(argv) > _MAX_ARGS or any(
-        type(arg) is not str or not arg or len(arg.encode("utf-8")) > _MAX_ARG or "\x00" in arg
-        for arg in argv
-    ):
-        raise McpProbeError("invalid-argv")
-    if (
-        type(environ) is not dict
-        or len(environ) > 128
-        or any(
-            type(key) is not str
-            or type(value) is not str
-            or _ENV_RE.fullmatch(key) is None
-            or len(value.encode("utf-8")) > _MAX_ARG
-            or "\x00" in value
-            for key, value in environ.items()
-        )
-    ):
-        raise McpProbeError("invalid-environment")
-    if type(timeout_seconds) not in {int, float} or isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= 120:
-        raise McpProbeError("invalid-timeout")
-    if type(request) is not dict or set(request) != {"name", "arguments"} or type(request.get("name")) is not str or type(request.get("arguments")) is not dict:
-        raise McpProbeError("invalid-request")
-    # Validate the largest outbound frame before creating a process or touching a pipe.
-    _encoded_message(3, "tools/call", dict(request))
-    try:
-        process = subprocess.Popen(
-            tuple(argv),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=dict(environ),
-            shell=False,
-            start_new_session=True,
-        )
-    except (OSError, ValueError) as exc:
-        raise McpProbeError("launch-failed") from exc
-    try:
-        assert process.stdout is not None
-        assert process.stdin is not None
-        os.set_blocking(process.stdin.fileno(), False)
-        reader = _LineReader(process.stdout.fileno())
-        deadline = time.monotonic() + float(timeout_seconds)
-        initialized = _rpc(
-            process, reader, 1, "initialize",
-            {"protocolVersion": _PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "skillify-probe", "version": "1"}},
-            deadline,
-        )
-        if type(initialized) is not dict or initialized.get("protocolVersion") != _PROTOCOL_VERSION:
-            raise McpProbeError("protocol-version-mismatch")
-        _notify(process, "notifications/initialized", {}, deadline)
-        tools = _rpc(process, reader, 2, "tools/list", {}, deadline)
-        if type(tools) is not dict or type(tools.get("tools")) is not list or not any(
-            type(tool) is dict and tool.get("name") == request["name"] for tool in tools["tools"]
-        ):
-            raise McpProbeError("tool-not-found")
-        result = _rpc(process, reader, 3, "tools/call", dict(request), deadline)
-        if type(result) is not dict or type(result.get("content")) is not list or type(result.get("isError", False)) is not bool:
-            raise McpProbeError("invalid-tool-result")
-        text_parts = [item["text"] for item in result["content"] if type(item) is dict and item.get("type") == "text" and type(item.get("text")) is str]
-        if not text_parts:
-            raise McpProbeError("invalid-tool-result")
-        text = "\n".join(text_parts)
-        if len(text.encode()) > _MAX_FRAME_BYTES:
-            raise McpProbeError("frame-too-large")
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
-        post_result_wait = min(0.1, max(0.0, deadline - time.monotonic()))
-        if post_result_wait:
-            try:
-                return_code = process.wait(timeout=post_result_wait)
-            except subprocess.TimeoutExpired:
-                return_code = None
-            if return_code not in {None, 0}:
-                raise McpProbeError("process-exited-nonzero")
-        return McpProbeResult(text=text, is_error=result.get("isError", False))
-    finally:
-        _stop_process(process)

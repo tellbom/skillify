@@ -1,26 +1,19 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
-import time
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
 from skillify.mcp.registry import (
-    McpProbeError,
     McpRegistry,
     McpRegistryError,
     McpTransport,
     load_mcp_artifact as _load_mcp_artifact,
-    probe_stdio_mcp,
     render_opencode_mcp,
 )
 
 
-FIXTURES = Path(__file__).parent / "fixtures"
 APPROVED_FORGEJO_BASE = "https://forgejo.internal"
 
 
@@ -490,179 +483,3 @@ def test_validated_artifact_cannot_be_replaced_to_bypass_loader() -> None:
     artifact = load_mcp_artifact(local_artifact())
     with pytest.raises(McpRegistryError, match="load_mcp_artifact"):
         replace(artifact, command=("/bin/sh", "-c", "curl https://public.example"))
-
-
-def test_probe_local_echo_mcp_without_shell_or_network() -> None:
-    result = probe_stdio_mcp(
-        (sys.executable, str(FIXTURES / "mcp_echo_server.py")),
-        request={"name": "echo", "arguments": {"text": "hello"}},
-        timeout_seconds=2,
-        environ={"PATH": os.environ.get("PATH", "")},
-    )
-    assert result.text == "hello"
-    assert result.is_error is False
-
-
-def test_filesystem_fixture_cannot_escape_root(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    (root / "ok.txt").write_text("ok", encoding="utf-8")
-    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
-    result = probe_stdio_mcp(
-        (sys.executable, str(FIXTURES / "mcp_filesystem_server.py")),
-        request={"name": "read_fixture", "arguments": {"path": "../secret.txt"}},
-        timeout_seconds=2,
-        environ={"MCP_FIXTURE_ROOT": str(root)},
-    )
-    assert result.is_error is True
-    assert "secret" not in result.text
-
-
-@pytest.mark.parametrize("mode,code", [("malformed", "malformed-response"), ("wrong-id", "invalid-response")])
-def test_probe_returns_only_stable_errors(mode: str, code: str) -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), mode),
-            request={"name": "echo", "arguments": {"text": "top-secret"}},
-            timeout_seconds=2,
-            environ={},
-        )
-    assert caught.value.code == code
-    assert "top-secret" not in str(caught.value)
-
-
-@pytest.mark.parametrize(
-    ("mode", "code"),
-    [
-        ("bool-id", "invalid-response"),
-        ("lone-surrogate", "malformed-response"),
-        ("deep-response", "malformed-response"),
-        ("duplicate-id", "malformed-response"),
-    ],
-)
-def test_probe_rejects_adversarial_json_with_stable_codes(mode: str, code: str) -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), mode),
-            request={"name": "echo", "arguments": {}},
-            timeout_seconds=2,
-            environ={},
-        )
-    assert caught.value.code == code
-
-
-def test_probe_bounds_request_nesting_before_process_start() -> None:
-    nested: object = "leaf"
-    for _ in range(40):
-        nested = {"next": nested}
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "missing-server.py")),
-            request={"name": "echo", "arguments": {"nested": nested}},
-            timeout_seconds=1,
-            environ={},
-        )
-    assert caught.value.code == "invalid-request"
-
-
-def test_probe_translates_lone_surrogate_request_to_stable_error() -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "missing-server.py")),
-            request={"name": "echo", "arguments": {"text": "\ud800"}},
-            timeout_seconds=1,
-            environ={},
-        )
-    assert caught.value.code == "invalid-request"
-
-
-def test_probe_timeout_is_bounded_and_safe() -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "hang"),
-            request={"name": "echo", "arguments": {}},
-            timeout_seconds=0.05,
-            environ={},
-        )
-    assert caught.value.code == "timeout"
-
-
-def test_probe_rejects_oversized_request_before_pipe_write() -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "hang"),
-            request={"name": "echo", "arguments": {"text": "x" * 100_000}},
-            timeout_seconds=0.05,
-            environ={},
-        )
-    assert caught.value.code == "request-too-large"
-
-
-@pytest.mark.parametrize(
-    "environ",
-    [{"BAD=NAME": "value"}, {"PATH": "x" * 5000}],
-)
-def test_probe_rejects_unbounded_or_non_name_environment(environ: dict[str, str]) -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py")),
-            request={"name": "echo", "arguments": {}},
-            timeout_seconds=1,
-            environ=environ,
-        )
-    assert caught.value.code == "invalid-environment"
-
-
-def test_probe_pipe_write_obeys_same_deadline_when_server_never_reads() -> None:
-    started = time.monotonic()
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "never-read"),
-            request={"name": "echo", "arguments": {"text": "x" * 60_000}},
-            timeout_seconds=0.05,
-            environ={},
-        )
-    assert caught.value.code == "timeout"
-    assert time.monotonic() - started < 1
-
-
-def test_probe_sends_initialized_notification_before_tools() -> None:
-    result = probe_stdio_mcp(
-        (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "strict-handshake"),
-        request={"name": "echo", "arguments": {"text": "ready"}},
-        timeout_seconds=2,
-        environ={},
-    )
-    assert result.text == "ready"
-
-
-def test_probe_rejects_nonzero_exit_after_response() -> None:
-    with pytest.raises(McpProbeError) as caught:
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "exit-nonzero"),
-            request={"name": "echo", "arguments": {"text": "ignored"}},
-            timeout_seconds=2,
-            environ={},
-        )
-    assert caught.value.code == "process-exited-nonzero"
-
-
-def test_probe_cleans_descendant_group_when_leader_exits(tmp_path: Path) -> None:
-    pid_file = tmp_path / "child.pid"
-    with pytest.raises(McpProbeError):
-        probe_stdio_mcp(
-            (sys.executable, str(FIXTURES / "mcp_echo_server.py"), "descendant-exit"),
-            request={"name": "echo", "arguments": {}},
-            timeout_seconds=2,
-            environ={"MCP_CHILD_PID_FILE": str(pid_file)},
-        )
-    child_pid = int(pid_file.read_text(encoding="ascii"))
-    deadline = time.monotonic() + 1
-    while time.monotonic() < deadline:
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("probe leaked a descendant process")
