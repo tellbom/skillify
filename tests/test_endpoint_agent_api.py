@@ -45,7 +45,10 @@ def _dispatch() -> str:
         "runtime": "claude-code", "inputs": {"issueReference": "BUG-42"},
     })
     assert response.status_code == 200, response.text
-    return response.json()["taskId"]
+    task_id = response.json()["taskId"]
+    confirmed = client.post(f"/api/endpoint-tasks/{task_id}/work-packages/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    return task_id
 
 
 def _as_endpoint(endpoint_id: str = "endpoint-1", owner: str = "jane") -> None:

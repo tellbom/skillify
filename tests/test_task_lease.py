@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointTaskRecord
+from skillify.index.models import EndpointTaskRecord, WorkPackageRecord
 from skillify.tasks.lease import LeaseError, claim_next_task, heartbeat_task
 
 
@@ -61,3 +61,24 @@ def test_heartbeat_rejects_wrong_endpoint_or_owner() -> None:
         heartbeat_task(
             session, task_id="task-1", endpoint_id="endpoint-1", lease_owner="bridge-2", now=NOW,
         )
+
+
+def test_claim_waits_for_work_package_confirmation() -> None:
+    session = _session()
+    session.add(_task())
+    package = WorkPackageRecord(
+        package_id="package-1", task_id="task-1", objective="Fix the parser",
+        allowed_paths=["src/parser/**"], dependencies=[], access="write",
+        recommended_skills=[], recommended_mcp=[], acceptance_commands=[],
+        parallelizable=False, confirmed=False,
+    )
+    session.add(package); session.commit()
+
+    assert claim_next_task(
+        session, endpoint_id="endpoint-1", lease_owner="bridge-1", now=NOW,
+    ) is None
+
+    package.confirmed = True; session.commit()
+    assert claim_next_task(
+        session, endpoint_id="endpoint-1", lease_owner="bridge-1", now=NOW,
+    ) is not None

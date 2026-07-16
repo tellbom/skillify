@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.orm import Session
 
-from skillify.index.models import EndpointTaskRecord
+from skillify.index.models import EndpointTaskRecord, WorkPackageRecord
 
 
 class LeaseError(RuntimeError):
@@ -29,6 +29,10 @@ def claim_next_task(
     lease_seconds: int = 60,
 ) -> EndpointTaskRecord | None:
     now = _utc(now)
+    has_unconfirmed_package = exists(select(WorkPackageRecord.id).where(
+        WorkPackageRecord.task_id == EndpointTaskRecord.task_id,
+        WorkPackageRecord.confirmed.is_(False),
+    ))
     active = session.scalar(select(EndpointTaskRecord).where(
         EndpointTaskRecord.endpoint_id == endpoint_id,
         EndpointTaskRecord.lease_owner == lease_owner,
@@ -42,6 +46,7 @@ def claim_next_task(
         EndpointTaskRecord.endpoint_id == endpoint_id,
         EndpointTaskRecord.state == "awaiting_confirmation",
         EndpointTaskRecord.revoked.is_(False),
+        ~has_unconfirmed_package,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).order_by(EndpointTaskRecord.created_at))
     if candidate is None:
@@ -51,6 +56,7 @@ def claim_next_task(
         EndpointTaskRecord.task_id == candidate.task_id,
         EndpointTaskRecord.state_version == candidate.state_version,
         EndpointTaskRecord.revoked.is_(False),
+        ~has_unconfirmed_package,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).values(
         lease_owner=lease_owner,
