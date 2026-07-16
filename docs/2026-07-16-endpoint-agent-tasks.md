@@ -8,7 +8,7 @@
 
 ## 图例
 
-- `- [ ]` 未完成　`- [x]` 已完成
+- `- [ ]` Dev-DoD 未完成　`- [x]` Dev-DoD 已完成；各条 **[test-env]** 独立销账，不因 Dev 勾选而视为完成
 - **Dev-DoD**：现在就要满足，工具见计划书 §0.1（`compileall` / `pytest` 离线 / `vue-tsc` / `vitest` / `build`）。
 - **[test-env]**：需要真实 OpenCode / DM8 / Forgejo / 网络 / 目标 Linux；现在**只写代码 + 标 `skip`**，接入测试环境再销账。
 
@@ -16,14 +16,14 @@
 
 ## S0 · 仓库评定与计划固化
 
-### - [ ] Task 0.1 建立真实仓库基线 — Owner: Codex
+### - [x] Task 0.1 建立真实仓库基线 — Owner: Codex
 - 锚点：`+docs/assessments/2026-07-16-endpoint-agent-repository-assessment.md`、`+docs/superpowers/plans/2026-07-16-s1-opencode-provider.md`
 - 步骤：`rg --files` 清单 → 关键字矩阵（`skillctl|agent|opencode|claude|mcp|orchestration|runtime|permissions|devpi|Forgejo`）→ 跑测试基线 → 复用矩阵 → **离线可测性评估** → S1 精确计划。
 - **Dev-DoD**：五份产出齐全；测试基线记录 `compileall`/`pytest`/`type-check`/`vitest`/`build` 的原始 pass/fail/skip；标出依赖真实服务需延后的用例。
 - **[test-env]**：Linux/OpenCode/glibc/arch 离线安装、内网模型端点可调 —— 本 Task 只给草案，真机确认延后。
 - commit：`docs: assess endpoint agent integration`
 
-### - [ ] Task 0.2 锁定 ADR 与协议版本 — Owner: Codex
+### - [x] Task 0.2 锁定 ADR 与协议版本 — Owner: Codex
 - 锚点：`+docs/adr/ADR-xxx-endpoint-agent-runtime.md`
 - 步骤：记录"扩展 skillctl 不新增重叠 CLI""OpenCode first + Provider 隔离""本地执行/服务端控制面/端侧主动连接""原生工具不 MCP 化"四项决策 + `task_protocol_version:1` + `provider_contract_version:1`。
 - **Dev-DoD**：ADR 文件合入，四项决策 + 两个协议版本齐全。
@@ -34,28 +34,28 @@
 
 ## S1 · 端侧基础与 OpenCode Provider
 
-### - [ ] Task 1.1 扩展 CLI 命令面 — Owner: Claude Code
+### - [x] Task 1.1 扩展 CLI 命令面 — Owner: Claude Code
 - 锚点：`src/skillify/cli/main.py`、`+src/skillify/cli/agent_cmd.py`、`src/skillify/common/config.py`、`+tests/test_cli_agent.py`
 - 命令：`agent doctor|init|run|status|stop|logs`；XDG 分区；稳定机器可读错误码。
 - **Dev-DoD**：`compileall` 过；`test_cli_agent.py` 离线过（命令解析 / `--help` 快照 / 退出码 / 无服务器时 `doctor`、本地 `run` 逻辑分支可跑 / 未授权 workspace 失败）。
 - **[test-env]**：`doctor` 对真实 OpenCode / 模型端点 / MCP runtime 的实际探测结果。
 - commit：`feat(cli): add endpoint agent command group`
 
-### - [ ] Task 1.2 定义 Provider Adapter 契约 — Owner: Codex
+### - [x] Task 1.2 定义 Provider Adapter 契约 — Owner: Codex
 - 锚点：`+src/skillify/agent/provider.py`、`+src/skillify/agent/events.py`、`+src/skillify/agent/fake_provider.py`、`+tests/test_provider_contract.py`
 - 标准状态：`queued/awaiting_approval/running/blocked/succeeded/failed/cancelled`；标准事件：`task.accepted/plan.ready/tool.requested/tool.completed/test.completed/artifact.created/task.blocked/task.finished`；事件含 task/session/provider/version/timestamp，**不含** prompt/源码/secret。
 - **Dev-DoD**：`FakeProvider` 可用；契约测试离线覆盖启动 / 事件顺序 / 取消 / 异常退出 / 清理；断言事件不含敏感字段。
 - **[test-env]**：无（纯契约，离线即可完整验证）。
 - commit：`feat(agent): define provider execution contract`
 
-### - [ ] Task 1.3 实现 OpenCode Provider — Owner: Claude Code
+### - [x] Task 1.3 实现 OpenCode Provider — Owner: Claude Code
 - 锚点：`+src/skillify/agent/providers/opencode.py`、`+tests/test_opencode_provider_contract.py`、`+tests/test_opencode_provider_smoke.py`
 - 用官方 OpenCode Server/OpenAPI/SDK；`127.0.0.1`+随机空闲端口+临时强密码+超时+进程组清理；每 workspace 隔离配置；不持久化明文密钥；映射五条路径（正常结束/取消/超时/崩溃/SIGTERM）。
 - **Dev-DoD**：`compileall` 过；用 **fake HTTP server** 离线验证会话/消息/工具事件→标准事件的映射、五条生命周期分支、密钥不落盘/日志。
 - **[test-env]**：`test_opencode_provider_smoke.py`（默认 `pytest.mark.skip`）——真实 OpenCode 拉起、只绑 localhost、停止后无残留进程。
 - commit：`feat(agent): add opencode provider`
 
-### - [ ] Task 1.4 离线安装与版本锁定 — Owner: Codex
+### - [x] Task 1.4 离线安装与版本锁定 — Owner: Codex
 - 锚点：`src/skillify/cli/doctor_cmd.py`、`+infra/offline/opencode-manifest.json`、用户文档
 - 复用现有分发方式，不 `curl|sh`；记录 OpenCode/skillctl 的版本/平台/哈希/许可/内网位置；兼容矩阵写入 doctor 规则。
 - **Dev-DoD**：`compileall` 过；manifest schema + 校验逻辑（哈希比对 / 损坏包拒绝 / 版本解析）离线单测过。
@@ -63,33 +63,34 @@
 - commit：`build(agent): add offline opencode distribution`
 
 > **门禁 G1** — Dev：1.1–1.4 全部 Dev-DoD 过。**[test-env] G1**：目标 Linux + 示例仓库完成"分析文件→改一处→跑测试→输出 diff 摘要"，OpenCode 仅 localhost，停止无残留进程。
+> **状态（2026-07-16）**：Dev G1 已通过；**[test-env] G1 待执行**。
 
 ---
 
 ## S2 · Skill/Workflow/MCP 分发与权限
 
-### - [ ] Task 2.1 OpenCode 配置适配器 — Owner: Claude Code
+### - [x] Task 2.1 OpenCode 配置适配器 — Owner: Claude Code
 - 锚点：复用 `install/agent_defaults.py`、`install/projector.py`；`+src/skillify/agent/opencode_config.py`
 - 从 Skillify manifest 生成 OpenCode skills/agents/commands/plugin/MCP；user/project scope；install/update/rollback/dry-run；安装前预览、安装后 lockfile、卸载只删归属条目；冲突不静默覆盖。
 - **Dev-DoD**：生成逻辑对临时目录离线单测；幂等 / dry-run / 冲突拒绝覆盖。
 - **[test-env]**：真实 OpenCode 读取生成的配置并生效。
 - commit：`feat(agent): install skillify capabilities into opencode`
 
-### - [ ] Task 2.2 能力锁文件 — Owner: Codex
+### - [x] Task 2.2 能力锁文件 — Owner: Codex
 - 锚点：复用 `install/lock.py`、`install/resolver.py`；`+src/skillify/agent/capability_lock.py`
 - 字段：`schema_version`/构件类型/名称/版本/Forgejo release/commit/checksum/依赖/作用域/生成文件/时间；禁止漂移 latest；安装校验 checksum、回滚不重解析。
 - **Dev-DoD**：可复现 lockfile 生成 + 四类测试（依赖冲突/循环/缺包/篡改）离线过（用 fake release 元数据）。
 - **[test-env]**：对真实 Forgejo release 的 checksum 校验。
 - commit：`feat(agent): lock installed capabilities`
 
-### - [ ] Task 2.3 权限 Manifest 与本地确认 — Owner: Codex
+### - [x] Task 2.3 权限 Manifest 与本地确认 — Owner: Codex
 - 锚点：复用 manifest `permissions`；`+src/skillify/agent/permissions.py`
 - 合并 Skill/Workflow/MCP/任务权限取最严；运行前摘要；`rm`/提权/凭据/DB 写/越界写 拒绝或二次确认；Web 任务首版禁无人值守写码；脱敏审计。
 - **Dev-DoD**：权限合并 / 最严规则 / 危险操作判定 纯函数离线全覆盖；审计记录脱敏断言。
 - **[test-env]**：真实端侧二次确认交互。
 - commit：`feat(agent): enforce local capability permissions`
 
-### - [ ] Task 2.4 MCP 构件分发 — Owner: Codex
+### - [x] Task 2.4 MCP 构件分发 — Owner: Codex
 - 锚点：`+src/skillify/mcp/registry.py`、复用 `packaging/pack.py`、`publish/`
 - MCP 作为并列构件元数据；本地 stdio / 远程 Streamable HTTP；安装前命令/来源/网络/权限预览；本地 stdio 仅允许构件内经审查的直接服务二进制，参数仅限安全选项闭集和显式凭据引用，环境必须精确等于命令实际消费且符合 `SKILLIFY_MCP_[A-Z0-9]+(?:_[A-Z0-9]+)*` 规范分段的凭据引用集合，从正向边界排除 loader/runtime 控制变量；禁止解释器包装脚本、自由位置参数及子命令，预览必须显示执行、参数与环境约束；**S0 给出 runtime 复用与许可结论**。
 - **Dev-DoD**：元数据模型 + 预览生成 + 本地 echo MCP 契约（stdio）离线单测。
@@ -97,6 +98,7 @@
 - commit：`feat(mcp): distribute governed mcp configurations`
 
 > **门禁 G2** — Dev：2.1–2.4 Dev-DoD 过。**[test-env] G2**：从 Skillify 安装一个 Workflow Pack，其 Skill、OpenCode agent/command、本地 MCP 均可离线安装/更新/回滚，用户配置不被破坏。
+> **状态（2026-07-16）**：Dev G2 离线夹具已通过；**[test-env] G2 待真实 Linux/OpenCode/Forgejo/内网 MCP 环境执行**。
 
 ---
 
@@ -279,7 +281,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [ ] G0 Dev　- [ ] G1 Dev　- [ ] G2 Dev　- [ ] G3 Dev　- [ ] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [ ] G3 Dev　- [ ] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]
