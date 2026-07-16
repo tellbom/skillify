@@ -155,15 +155,20 @@ def _check_devpi_reachable(cfg: SkillifyConfig) -> CheckResult:
         return CheckResult(
             "devpi-reachable", False, "devpi_index_url not configured",
             "set devpi_index_url in ~/.skillify/config.yaml or SKILLIFY_DEVPI_INDEX_URL",
+            required=False,
         )
     try:
         resp = requests.get(cfg.devpi_index_url, timeout=3)
         ok = resp.status_code < 500
-        return CheckResult("devpi-reachable", ok, f"HTTP {resp.status_code} from {cfg.devpi_index_url}")
+        return CheckResult(
+            "devpi-reachable", ok, f"HTTP {resp.status_code} from {cfg.devpi_index_url}",
+            required=False,
+        )
     except requests.RequestException as exc:
         return CheckResult(
             "devpi-reachable", False, f"{cfg.devpi_index_url}: {exc}",
-            "check the URL and that devpi (infra/docker-compose.yml) is running",
+            "check the external devpi URL or the standalone infra/devpi stack",
+            required=False,
         )
 
 

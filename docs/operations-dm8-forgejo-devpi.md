@@ -1,6 +1,6 @@
 # Skillify 数据备份与恢复
 
-本文覆盖三套彼此独立的数据：Skillify DM8 业务 schema、Forgejo PostgreSQL + `/data`、devpi `/data`。所有命令中的主机、用户、目录和文件名都是占位符。
+本文覆盖 Skillify DM8 业务 schema 与 Forgejo PostgreSQL + `/data`。devpi 已采用独立生命周期，参见 [`operations-devpi-standalone.md`](operations-devpi-standalone.md)。所有命令中的主机、用户、目录和文件名都是占位符。
 
 ## 一致性原则
 
@@ -66,23 +66,6 @@ docker compose cp db:/tmp/forgejo.dump <backup-directory>/forgejo-<timestamp>.du
 
 不要只恢复 Forgejo PostgreSQL 而复用另一个时间点的 `/data`。
 
-## devpi
-
-### 备份
-
-优先使用 devpi-server 对应版本支持的导出方式。若采用 volume 备份：
-
-1. 停止依赖安装流量和 `devpi` 服务。
-2. 归档 `devpi-data` volume。
-3. 记录 devpi-server 版本、索引配置、归档 checksum 和时间点。
-
-### 恢复
-
-1. 使用相同 devpi-server 版本创建空数据目录。
-2. 恢复导出数据或 volume 归档。
-3. 启动 devpi，验证目标 index 可列出。
-4. 从隔离 venv 安装一个已缓存包，再安装一个带 Python 依赖的 Skill。
-
 ## 演练记录
 
-每次演练记录：备份开始/结束、恢复开始/结束、操作者、软件版本、文件 checksum、五表行数、Forgejo 仓库/Release 数量、devpi 验证包和最终结论。
+每次演练记录：备份开始/结束、恢复开始/结束、操作者、软件版本、文件 checksum、五表行数、Forgejo 仓库/Release 数量和最终结论。

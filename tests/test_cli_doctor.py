@@ -134,6 +134,19 @@ def test_doctor_fails_when_forgejo_unreachable(tmp_path: Path) -> None:
     assert ok is False
 
 
+def test_doctor_treats_unreachable_devpi_as_advisory(
+    tmp_path: Path, fake_server: str,
+) -> None:
+    cfg = _isolated_green_config(tmp_path, fake_server)
+    cfg = SkillifyConfig(
+        forgejo_url=cfg.forgejo_url,
+        forgejo_token=cfg.forgejo_token,
+        devpi_index_url="http://127.0.0.1:1/simple/",
+        home=cfg.home,
+    )
+    assert run_doctor(console=_NullConsole(), config=cfg) is True
+
+
 def _isolated_green_config(tmp_path: Path, fake_server: str) -> SkillifyConfig:
     from skillify.install.agent_defaults import ensure_default_agent_configs
     cfg = SkillifyConfig(
