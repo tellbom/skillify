@@ -110,6 +110,51 @@ def test_local_mcp_rejects_shell_commands(command: object) -> None:
 
 
 @pytest.mark.parametrize(
+    ("executable", "arguments"),
+    [
+        ("python", ["server.py"]),
+        ("python3.11m", ["server.py"]),
+        ("python3.11-dbg", ["pip"]),
+        ("pypy", ["server.py"]),
+        ("pypy3.10-v7.3.15", ["pip"]),
+        ("node", ["server.js"]),
+        ("node-v20.12.1", ["npm-cli.js"]),
+        ("php", ["server.php"]),
+        ("php8.3", ["composer.phar"]),
+        ("ruby", ["server.rb"]),
+        ("ruby3.3", ["bundle"]),
+        ("js", ["server.js"]),
+        ("js102", ["server.js"]),
+        ("php8.3-zts", ["server.php"]),
+        ("ruby3.3-debug", ["server.rb"]),
+        ("java", ["server.class"]),
+        ("dotnet", ["server.dll"]),
+        ("julia", ["server.jl"]),
+        ("rscript", ["server.R"]),
+        ("go", ["tool", "compile", "server.go"]),
+        ("unknown-runtime", ["server.opaque"]),
+        ("unknown-runtime", ["tool", "compile"]),
+    ],
+)
+def test_local_mcp_requires_direct_binary_not_interpreter_wrapped_scripts(
+    executable: str, arguments: list[str]
+) -> None:
+    with pytest.raises(McpRegistryError, match="direct governed server binary"):
+        load_mcp_artifact(local_artifact(command=[
+            f"/opt/skillify/mcp/echo/bin/{executable}",
+            *arguments,
+        ]))
+
+
+def test_local_mcp_accepts_reviewed_direct_governed_server_binary() -> None:
+    artifact = load_mcp_artifact(local_artifact(command=[
+        "/opt/skillify/mcp/echo/bin/server",
+        "--stdio",
+    ]))
+    assert artifact.command[0].endswith("/bin/server")
+
+
+@pytest.mark.parametrize(
     "command",
     [
         ["/usr/bin/env", "sh", "server"],
@@ -345,6 +390,8 @@ def test_registry_conflict_and_redacted_preview() -> None:
     assert "secret" not in rendered
     assert "[REDACTED]" in rendered
     assert preview.checksum == "a" * 64
+    assert preview.as_dict()["executionConstraint"] == "reviewed-direct-governed-server-binary"
+    assert preview.as_dict()["argumentConstraint"] == "approved-options-only-no-positionals"
 
     with pytest.raises(McpRegistryError, match="conflicting MCP coordinate"):
         registry.register(load_mcp_artifact(local_artifact(enabled=False)))

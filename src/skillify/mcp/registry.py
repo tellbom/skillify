@@ -67,6 +67,8 @@ _BOOLEAN_SAFE_LOCAL_FLAGS = frozenset(
 )
 _BOOLEAN_VALUES = frozenset({"0", "1", "false", "no", "off", "on", "true", "yes"})
 _LOG_LEVELS = frozenset({"critical", "debug", "error", "info", "trace", "warning"})
+_DIRECT_EXECUTABLE_CONSTRAINT = "reviewed-direct-governed-server-binary"
+_CLOSED_ARGUMENT_CONSTRAINT = "approved-options-only-no-positionals"
 
 
 def _executable_family(value: str) -> str:
@@ -144,6 +146,8 @@ class McpInstallPreview:
     checksum: str
     license: str
     command: tuple[str, ...]
+    execution_constraint: str | None
+    argument_constraint: str | None
     remote_domain: str | None
     auth_reference: str | None
     permissions: Mapping[str, object]
@@ -169,6 +173,16 @@ class McpInstallPreview:
             checksum=artifact.checksum,
             license=artifact.license,
             command=tuple(command),
+            execution_constraint=(
+                _DIRECT_EXECUTABLE_CONSTRAINT
+                if artifact.transport is McpTransport.STDIO
+                else None
+            ),
+            argument_constraint=(
+                _CLOSED_ARGUMENT_CONSTRAINT
+                if artifact.transport is McpTransport.STDIO
+                else None
+            ),
             remote_domain=artifact.allowed_host,
             auth_reference=artifact.auth_env,
             permissions=MappingProxyType(_permissions_as_dict(artifact.permissions)),
@@ -183,6 +197,8 @@ class McpInstallPreview:
             "checksum": self.checksum,
             "license": self.license,
             "command": list(self.command),
+            "executionConstraint": self.execution_constraint,
+            "argumentConstraint": self.argument_constraint,
             "remoteDomain": self.remote_domain,
             "authReference": self.auth_reference,
             "permissions": dict(self.permissions),
@@ -358,17 +374,14 @@ def load_mcp_artifact(
         if runtime_launcher:
             raise McpRegistryError("runtime package and download launchers are forbidden")
         interpreter = re.fullmatch(
-            r"(?:bun|deno|lua|node(?:js)?|perl|php|py|pypy|pythonw?|ruby)",
+            r"(?:bun|deno|js|lua|node(?:js)?|perl|php|py|pypy|pythonw?|ruby)",
             executable_family,
         )
-        if interpreter and any(
-            argument in {"-c", "-e", "--eval", "-m"}
-            or (executable_family == "bun" and argument == "x")
-            for argument in command_tuple[1:]
-        ):
-            raise McpRegistryError("interpreter code and module launchers are forbidden")
-        if executable_family == "go" and "run" in command_tuple[1:]:
-            raise McpRegistryError("runtime compiler launchers are forbidden")
+        if interpreter:
+            raise McpRegistryError(
+                "local MCP command requires a reviewed direct governed server binary; "
+                "interpreter and runtime executables are forbidden"
+            )
         shell_launcher = re.fullmatch(
             r"(?:(?:ba|da|z|fi)?sh|cmd|powershell|pwsh)", executable_family
         )
@@ -425,6 +438,11 @@ def load_mcp_artifact(
                     )
             if _SENSITIVE_ARG_RE.search(argument):
                 raise McpRegistryError("secret-bearing command arguments are forbidden")
+            if not normalized_flag.startswith("-"):
+                raise McpRegistryError(
+                    "local MCP command requires a direct governed server binary with "
+                    "approved options; positional scripts and subcommands are forbidden"
+                )
 
         if any(
             index not in credential_reference_indexes
