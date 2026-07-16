@@ -9,6 +9,7 @@ from skillify.index.models import EndpointBinding, EndpointTaskRecord
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.web.app import app
 from skillify.web.auth import require_keycloak_user
+from skillify.web.endpoint_auth import require_endpoint_machine
 
 
 client = TestClient(app)
@@ -20,6 +21,7 @@ def _configure(monkeypatch, tmp_path: Path) -> str:
     url = f"sqlite:///{(tmp_path / 'endpoint-api.db').as_posix()}"
     monkeypatch.setenv("SKILLIFY_INDEX_DB_URL", url)
     monkeypatch.setenv("SKILLIFY_ENDPOINT_TASK_SIGNING_SECRET", SECRET)
+    monkeypatch.setenv("SKILLIFY_ENDPOINT_DEVICE_SECRET", "device-secret")
     engine = make_engine(url); init_db(engine)
     with Session(engine) as session:
         session.add_all([
@@ -47,9 +49,21 @@ def _dispatch() -> str:
 
 
 def _as_endpoint(endpoint_id: str = "endpoint-1", owner: str = "jane") -> None:
-    app.dependency_overrides[require_keycloak_user] = lambda: {
-        "preferred_username": owner, "sub": owner, "endpoint_id": endpoint_id,
+    app.dependency_overrides[require_endpoint_machine] = lambda: {
+        "owner": owner, "endpoint_id": endpoint_id, "identity_kind": "endpoint",
     }
+
+
+def test_web_user_identity_cannot_authenticate_endpoint_routes(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    app.dependency_overrides[require_keycloak_user] = lambda: {
+        "preferred_username": "jane", "sub": "jane", "endpoint_id": "endpoint-1",
+    }
+    try:
+        response = client.get("/api/endpoint/tasks/pull", headers={"Authorization": "Bearer web-token"})
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_pull_confirm_event_and_duplicate_event(monkeypatch, tmp_path: Path) -> None:

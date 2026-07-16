@@ -214,7 +214,7 @@ def _resolve_connection(server: str | None, token_env: str) -> tuple[str, str]:
 
 def connect(
     server: str | None = typer.Option(None, "--server"),
-    token_env: str = typer.Option("SKILLIFY_AGENT_TOKEN", "--token-env"),
+    token_env: str = typer.Option("SKILLIFY_ENDPOINT_TOKEN", "--token-env"),
     once: bool = typer.Option(False, "--once", help="Poll once and exit."),
 ) -> None:
     """Connect this endpoint to the Skillify control plane using outbound polling."""
@@ -275,7 +275,7 @@ def _build_reporter(server_url: str, token: str, outbox: LocalOutbox):
 @bridge_app.command("start")
 def start(
     server: str | None = typer.Option(None, "--server"),
-    token_env: str = typer.Option("SKILLIFY_AGENT_TOKEN", "--token-env"),
+    token_env: str = typer.Option("SKILLIFY_ENDPOINT_TOKEN", "--token-env"),
     once: bool = typer.Option(False, "--once"),
 ) -> None:
     """Start the bridge in the foreground (default) or perform one poll."""

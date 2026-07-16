@@ -143,6 +143,7 @@ class SkillifyConfig:
     devpi_index_url: str | None = None
     webhook_secret: str | None = None  # T2.1: shared secret for Forgejo webhook HMAC verification
     endpoint_task_signing_secret: str | None = None
+    endpoint_device_secret: str | None = None
     # Skillify business DB. Production uses the external DM8 schema initialized by
     # infra/dm8-init/01-skillify-schema.sql; SQLite remains available for local tests.
     index_db_url: str | None = None
@@ -205,6 +206,7 @@ _ENV_OVERRIDES = {
     "SKILLIFY_DEVPI_INDEX_URL": "devpi_index_url",
     "SKILLIFY_WEBHOOK_SECRET": "webhook_secret",
     "SKILLIFY_ENDPOINT_TASK_SIGNING_SECRET": "endpoint_task_signing_secret",
+    "SKILLIFY_ENDPOINT_DEVICE_SECRET": "endpoint_device_secret",
     "SKILLIFY_INDEX_DB_URL": "index_db_url",
     "SKILLIFY_KEYCLOAK_REALM_URL": "keycloak_realm_url",
     "SKILLIFY_KEYCLOAK_AUDIENCE": "keycloak_audience",
@@ -233,6 +235,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         devpi_index_url=data.get("devpi_index_url"),
         webhook_secret=data.get("webhook_secret"),
         endpoint_task_signing_secret=data.get("endpoint_task_signing_secret"),
+        endpoint_device_secret=data.get("endpoint_device_secret"),
         index_db_url=data.get("index_db_url"),
         keycloak_realm_url=data.get("keycloak_realm_url"),
         keycloak_audience=data.get("keycloak_audience"),

@@ -15,7 +15,7 @@ from skillify.tasks.protocol import TaskConflictError, TaskProtocolError
 from skillify.tasks.web_store import (
     issue_task_envelope, record_task_event, transition_task, verify_task_response,
 )
-from skillify.web.auth import require_keycloak_user
+from skillify.web.endpoint_auth import require_endpoint_machine
 from skillify.web.schemas import EndpointEventIn, EndpointTaskLifecycleIn
 
 
@@ -32,7 +32,7 @@ def _session() -> Session:
 
 def _identity(claims: dict) -> tuple[str, str]:
     endpoint_id = claims.get("endpoint_id")
-    owner = claims.get("preferred_username") or claims.get("sub")
+    owner = claims.get("owner")
     if not endpoint_id or not owner:
         raise HTTPException(status_code=403, detail="endpoint identity claim is required")
     return str(endpoint_id), str(owner)
@@ -53,7 +53,7 @@ def _owned_binding(session: Session, endpoint_id: str, owner: str) -> EndpointBi
 
 
 @router.get("/api/endpoint/tasks/pull")
-def pull_endpoint_task(claims: dict = Depends(require_keycloak_user)) -> dict:
+def pull_endpoint_task(claims: dict = Depends(require_endpoint_machine)) -> dict:
     endpoint_id, owner = _identity(claims); session = _session()
     try:
         binding = _owned_binding(session, endpoint_id, owner)
@@ -75,7 +75,7 @@ def pull_endpoint_task(claims: dict = Depends(require_keycloak_user)) -> dict:
 @router.post("/api/endpoint/tasks/{task_id}/heartbeat")
 def heartbeat_endpoint_task(
     task_id: str, payload: EndpointTaskLifecycleIn,
-    claims: dict = Depends(require_keycloak_user),
+    claims: dict = Depends(require_endpoint_machine),
 ) -> dict:
     endpoint_id, owner = _identity(claims); session = _session()
     try:
@@ -129,7 +129,7 @@ def _transition(
 @router.post("/api/endpoint/tasks/{task_id}/confirm")
 def confirm_endpoint_task(
     task_id: str, payload: EndpointTaskLifecycleIn,
-    claims: dict = Depends(require_keycloak_user),
+    claims: dict = Depends(require_endpoint_machine),
 ) -> dict:
     return _transition(task_id, payload, claims, "running")
 
@@ -137,7 +137,7 @@ def confirm_endpoint_task(
 @router.post("/api/endpoint/tasks/{task_id}/cancel")
 def cancel_endpoint_task(
     task_id: str, payload: EndpointTaskLifecycleIn,
-    claims: dict = Depends(require_keycloak_user),
+    claims: dict = Depends(require_endpoint_machine),
 ) -> dict:
     return _transition(task_id, payload, claims, "cancelled")
 
@@ -145,7 +145,7 @@ def cancel_endpoint_task(
 @router.post("/api/endpoint/events")
 def endpoint_event(
     payload: EndpointEventIn,
-    claims: dict = Depends(require_keycloak_user),
+    claims: dict = Depends(require_endpoint_machine),
 ) -> dict:
     endpoint_id, owner = _identity(claims); session = _session()
     try:
