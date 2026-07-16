@@ -167,7 +167,7 @@
 
 ## S5 · Bridge、Web 任务与可信上报
 
-### - [ ] Task 5.1 定义任务协议 — Owner: Codex
+### - [x] Task 5.1 定义任务协议 — Owner: Codex
 - 锚点：`+src/skillify/tasks/protocol.py`、`+infra/dm8-init/06-endpoint-tasks.sql`
 - TaskEnvelope（workspace **alias** 非绝对路径）；签名/过期/重放/撤销/幂等；状态 compare-and-set。
 - **Dev-DoD**：协议序列化 + 状态机 + 幂等/重放/撤销 逻辑对 **SQLite** 离线全覆盖。
