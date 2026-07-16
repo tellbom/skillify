@@ -1,0 +1,671 @@
+"""Validated MCP registry, OpenCode rendering and bounded stdio probe.
+
+This module deliberately does not contain a gateway or a resident server.  It
+validates immutable distribution metadata and probes a caller-selected local
+binary using an exact argv and an explicitly supplied environment.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import select
+import signal
+import subprocess
+import time
+from dataclasses import InitVar, dataclass
+from enum import Enum
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+from typing import Mapping, Sequence
+from urllib.parse import urlsplit
+
+from skillify.agent.capability_lock import CapabilityKind
+from skillify.agent.permissions import PermissionManifest, PermissionValidationError
+from skillify.install.resolver import CapabilityResolveError, Coordinate
+
+
+class McpRegistryError(ValueError):
+    """MCP metadata is malformed, mutable, or unsafe."""
+
+
+class McpProbeError(RuntimeError):
+    """A stable, non-sensitive local MCP probe failure."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+class McpTransport(str, Enum):
+    STDIO = "stdio"
+    REMOTE = "remote"
+
+
+_ENV_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,127}\Z")
+_LICENSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}\Z")
+_HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
+_MAX_ARG = 4096
+_MAX_ARGS = 128
+_PROTOCOL_VERSION = "2025-03-26"
+_MAX_FRAME_BYTES = 64 * 1024
+_MAX_TOTAL_BYTES = 192 * 1024
+_VALIDATED_ARTIFACT_TOKEN = object()
+_SENSITIVE_ARG_RE = re.compile(
+    r"(?:api[-_]?key|auth(?:orization)?|bearer|credential|header|password|secret|token)",
+    re.IGNORECASE,
+)
+_ENV_REFERENCE_RE = re.compile(r"\{env:([A-Z_][A-Z0-9_]{0,127})\}\Z")
+
+
+@dataclass(frozen=True)
+class McpArtifact:
+    coordinate: Coordinate
+    forgejo_release: str
+    commit: str
+    checksum: str
+    license: str
+    source: str
+    transport: McpTransport
+    permissions: PermissionManifest
+    enabled: bool
+    _validation_token: InitVar[object] = None
+    command: tuple[str, ...] = ()
+    environment: tuple[str, ...] = ()
+    url: str | None = None
+    allowed_host: str | None = None
+    auth_env: str | None = None
+    tls_required: bool = True
+    timeout_seconds: float = 15.0
+
+    def __post_init__(self, _validation_token: object) -> None:
+        if _validation_token is not _VALIDATED_ARTIFACT_TOKEN:
+            raise McpRegistryError("MCP artifacts must be created by load_mcp_artifact")
+
+    @property
+    def namespace(self) -> str:
+        return self.coordinate.identifier.split("/", 1)[0]
+
+    @property
+    def name(self) -> str:
+        return self.coordinate.identifier.split("/", 1)[1]
+
+
+def _permissions_as_dict(value: PermissionManifest) -> dict[str, object]:
+    return {
+        "policyId": value.policy_id,
+        "readPaths": list(value.read_paths),
+        "writePaths": list(value.write_paths),
+        "commands": {key: action.value for key, action in value.commands.items()},
+        "networkDomains": list(value.network_domains),
+        "mcpServers": list(value.mcp_servers),
+        "databaseResources": list(value.database_resources),
+        "unattended": value.unattended,
+        "confirm": list(value.confirm),
+    }
+
+
+@dataclass(frozen=True)
+class McpInstallPreview:
+    coordinate: str
+    transport: str
+    source: str
+    checksum: str
+    license: str
+    command: tuple[str, ...]
+    remote_domain: str | None
+    auth_reference: str | None
+    permissions: Mapping[str, object]
+    enabled: bool
+
+    @classmethod
+    def from_artifact(cls, artifact: McpArtifact) -> "McpInstallPreview":
+        command = list(artifact.command)
+        redact_next = False
+        for index, argument in enumerate(command):
+            sensitive_flag = any(word in argument.casefold() for word in ("token", "secret", "password", "authorization"))
+            if redact_next:
+                command[index] = "[REDACTED]"
+                redact_next = False
+            elif sensitive_flag and "=" in argument:
+                command[index] = argument.split("=", 1)[0] + "=[REDACTED]"
+            elif sensitive_flag:
+                redact_next = True
+        return cls(
+            coordinate=str(artifact.coordinate),
+            transport=artifact.transport.value,
+            source=artifact.source,
+            checksum=artifact.checksum,
+            license=artifact.license,
+            command=tuple(command),
+            remote_domain=artifact.allowed_host,
+            auth_reference=artifact.auth_env,
+            permissions=MappingProxyType(_permissions_as_dict(artifact.permissions)),
+            enabled=artifact.enabled,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "coordinate": self.coordinate,
+            "transport": self.transport,
+            "source": self.source,
+            "checksum": self.checksum,
+            "license": self.license,
+            "command": list(self.command),
+            "remoteDomain": self.remote_domain,
+            "authReference": self.auth_reference,
+            "permissions": dict(self.permissions),
+            "enabled": self.enabled,
+        }
+
+
+class McpRegistry:
+    def __init__(self) -> None:
+        self._artifacts: dict[Coordinate, McpArtifact] = {}
+
+    def register(self, artifact: McpArtifact) -> None:
+        if type(artifact) is not McpArtifact:
+            raise McpRegistryError("registry accepts only validated MCP artifacts")
+        coordinate = artifact.coordinate
+        if coordinate in self._artifacts and self._artifacts[coordinate] != artifact:
+            raise McpRegistryError(f"conflicting MCP coordinate: {coordinate}")
+        self._artifacts[coordinate] = artifact
+
+    def get(self, namespace: str, name: str, version: str) -> McpArtifact:
+        try:
+            coordinate = Coordinate(CapabilityKind.MCP, f"{namespace}/{name}", version)
+        except CapabilityResolveError as exc:
+            raise McpRegistryError(str(exc)) from exc
+        try:
+            return self._artifacts[coordinate]
+        except KeyError as exc:
+            raise McpRegistryError(f"unknown MCP coordinate: {coordinate}") from exc
+
+    def preview(self, artifact: McpArtifact) -> McpInstallPreview:
+        return McpInstallPreview.from_artifact(artifact)
+
+
+def _required_text(data: Mapping[str, object], key: str) -> str:
+    value = data.get(key)
+    if type(value) is not str or not value:
+        raise McpRegistryError(f"{key} must be a non-empty string")
+    return value
+
+
+def _validate_intranet_source(
+    value: str, *, namespace: str, name: str, version: str, release: str
+) -> str:
+    if any(ord(character) <= 32 or ord(character) == 127 for character in value):
+        raise McpRegistryError("source must be a canonical intranet URI")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise McpRegistryError("source must be an absolute approved intranet HTTPS URI")
+    host = parsed.hostname.casefold().rstrip(".")
+    if not host.endswith((".internal", ".corp", ".local")):
+        raise McpRegistryError("source must use an approved intranet host")
+    expected_suffix = (
+        f"/{namespace}/{name}/releases/download/{release}/"
+        f"{namespace}-{name}-{version}.tar.gz"
+    )
+    try:
+        canonical_netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    except ValueError as exc:
+        raise McpRegistryError("source must use a canonical intranet host") from exc
+    if (
+        parsed.netloc != canonical_netloc
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith(expected_suffix)
+        or "%" in parsed.path
+        or "//" in parsed.path
+        or any(part in {".", "..", "latest", "main", "master"} for part in PurePosixPath(parsed.path).parts)
+    ):
+        raise McpRegistryError("source must be an immutable intranet URI")
+    return value
+
+
+def _load_common(data: Mapping[str, object]) -> tuple[Coordinate, str, str, str, str, str, PermissionManifest, bool]:
+    if type(data.get("schemaVersion")) is not int or data.get("schemaVersion") != 1 or data.get("artifactKind") != "mcp":
+        raise McpRegistryError("MCP artifact requires schemaVersion 1 and artifactKind mcp")
+    namespace = _required_text(data, "namespace")
+    name = _required_text(data, "name")
+    version = _required_text(data, "version")
+    try:
+        coordinate = Coordinate(CapabilityKind.MCP, f"{namespace}/{name}", version)
+    except CapabilityResolveError as exc:
+        raise McpRegistryError(f"version and coordinate must be exact: {exc}") from exc
+    release = _required_text(data, "forgejoRelease")
+    if release != f"v{version}":
+        raise McpRegistryError("forgejoRelease must equal immutable v<exact-version>")
+    commit = _required_text(data, "commit")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise McpRegistryError("commit must be lowercase 40-hex")
+    checksum = _required_text(data, "checksum")
+    if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+        raise McpRegistryError("checksum must be lowercase 64-hex")
+    license_name = _required_text(data, "license")
+    if not _LICENSE_RE.fullmatch(license_name):
+        raise McpRegistryError("license must be an SPDX-style identifier")
+    source = _validate_intranet_source(
+        _required_text(data, "source"),
+        namespace=namespace,
+        name=name,
+        version=version,
+        release=release,
+    )
+    if type(data.get("enabled")) is not bool:
+        raise McpRegistryError("enabled must be a boolean")
+    try:
+        permissions = PermissionManifest.from_value(
+            f"mcp-{namespace}-{name}-{version}", data.get("permissions")
+        )
+    except PermissionValidationError as exc:
+        raise McpRegistryError(f"invalid permissions: {exc}") from exc
+    return coordinate, release, commit, checksum, license_name, source, permissions, data["enabled"]  # type: ignore[return-value]
+
+
+def load_mcp_artifact(value: object) -> McpArtifact:
+    if type(value) is not dict:
+        raise McpRegistryError("MCP artifact metadata must be an object")
+    data: Mapping[str, object] = value
+    transport_text = _required_text(data, "transport")
+    try:
+        transport = McpTransport(transport_text)
+    except ValueError as exc:
+        raise McpRegistryError("transport must be stdio or remote") from exc
+    common = _load_common(data)
+    base_fields = {
+        "schemaVersion", "artifactKind", "namespace", "name", "version", "forgejoRelease",
+        "commit", "checksum", "license", "source", "transport", "permissions", "enabled",
+    }
+    if transport is McpTransport.STDIO:
+        allowed = base_fields | {"command", "environment"}
+        unknown = set(data) - allowed
+        if unknown:
+            raise McpRegistryError(f"unknown local MCP fields: {sorted(unknown)}")
+        command = data.get("command")
+        if type(command) not in {list, tuple} or not command or len(command) > _MAX_ARGS:
+            raise McpRegistryError("command must be a bounded argv array")
+        if any(type(arg) is not str or not arg or len(arg.encode()) > _MAX_ARG for arg in command):
+            raise McpRegistryError("command argv contains an invalid argument")
+        command_tuple = tuple(command)
+        if not Path(command_tuple[0]).is_absolute():
+            raise McpRegistryError("command executable must be an absolute argv path")
+        executable_parts = PurePosixPath(command_tuple[0]).parts
+        approved_prefix = ("/", "opt", "skillify", "mcp", common[0].identifier.split("/", 1)[1])
+        if (
+            ".." in executable_parts
+            or executable_parts[: len(approved_prefix)] != approved_prefix
+            or len(executable_parts) <= len(approved_prefix)
+        ):
+            raise McpRegistryError("command executable must be inside the governed MCP artifact")
+        executable = Path(command_tuple[0]).name.casefold()
+        runtime_launchers = {
+            "busybox", "bunx", "curl", "env", "npm", "npx", "pip", "pip3", "pipx",
+            "pnpm", "pnpx", "toybox", "uvx", "wget", "yarn",
+        }
+        if executable in runtime_launchers:
+            raise McpRegistryError("runtime package and download launchers are forbidden")
+        interpreter_names = {"node", "python", "python3", "ruby", "perl", "php"}
+        if executable in interpreter_names and any(
+            argument in {"-c", "-e", "--eval", "-m"} for argument in command_tuple[1:]
+        ):
+            raise McpRegistryError("interpreter code and module launchers are forbidden")
+        if executable in {"sh", "bash", "zsh", "dash", "fish", "cmd", "powershell", "pwsh"} or (
+            len(command_tuple) >= 2 and command_tuple[1] in {"-c", "/c", "-command"}
+        ):
+            raise McpRegistryError("shell commands are forbidden; use exact argv")
+        environment = data.get("environment")
+        if type(environment) not in {list, tuple} or len(environment) > 128:
+            raise McpRegistryError("environment must be a bounded name allowlist")
+        if any(type(name) is not str or not _ENV_RE.fullmatch(name) for name in environment):
+            raise McpRegistryError("environment must contain names, never values")
+        environment_names = set(environment)
+        for index, argument in enumerate(command_tuple):
+            if _ENV_REFERENCE_RE.fullmatch(argument):
+                continue
+            if not _SENSITIVE_ARG_RE.search(argument):
+                continue
+            if "=" in argument:
+                sensitive_value = argument.split("=", 1)[1]
+            elif argument.startswith("-") and index + 1 < len(command_tuple):
+                sensitive_value = command_tuple[index + 1]
+            else:
+                raise McpRegistryError("secret-bearing command arguments are forbidden")
+            match = _ENV_REFERENCE_RE.fullmatch(sensitive_value)
+            if match is None or match.group(1) not in environment_names:
+                raise McpRegistryError("sensitive argv values must use an allowed environment reference")
+        if any(argument.startswith(("http://", "https://")) for argument in command_tuple[1:]):
+            raise McpRegistryError("runtime download URLs are forbidden in MCP argv")
+        coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
+        return McpArtifact(
+            coordinate=coordinate,
+            forgejo_release=release,
+            commit=commit,
+            checksum=checksum,
+            license=license_name,
+            source=source,
+            transport=transport,
+            permissions=permissions,
+            enabled=enabled,
+            _validation_token=_VALIDATED_ARTIFACT_TOKEN,
+            command=command_tuple,
+            environment=tuple(environment),
+        )
+
+    allowed = base_fields | {"url", "allowedHost", "authEnv", "tlsRequired", "timeoutSeconds"}
+    unknown = set(data) - allowed
+    if unknown:
+        raise McpRegistryError(f"unknown remote MCP fields: {sorted(unknown)}")
+    url = _required_text(data, "url")
+    if any(ord(character) <= 32 or ord(character) == 127 for character in url):
+        raise McpRegistryError("remote MCP URL must be canonical")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or parsed.query
+        or "%" in parsed.path
+        or "//" in parsed.path
+        or any(part in {".", ".."} for part in PurePosixPath(parsed.path).parts)
+    ):
+        raise McpRegistryError("remote MCP url must be an absolute HTTPS URL without credentials")
+    host = parsed.hostname.casefold().rstrip(".")
+    allowed_host = _required_text(data, "allowedHost").casefold().rstrip(".")
+    if not _HOST_RE.fullmatch(allowed_host) or host != allowed_host:
+        raise McpRegistryError("remote MCP URL host must exactly match allowedHost")
+    try:
+        canonical_netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    except ValueError as exc:
+        raise McpRegistryError("remote MCP URL has an invalid port") from exc
+    if parsed.netloc != canonical_netloc:
+        raise McpRegistryError("remote MCP URL and allowedHost must be canonical")
+    auth_env = _required_text(data, "authEnv")
+    if not _ENV_RE.fullmatch(auth_env):
+        raise McpRegistryError("authEnv must be an environment reference name, never a secret")
+    if data.get("tlsRequired") is not True:
+        raise McpRegistryError("remote MCP requires TLS")
+    timeout = data.get("timeoutSeconds")
+    if type(timeout) not in {int, float} or isinstance(timeout, bool) or not 0 < timeout <= 120:
+        raise McpRegistryError("timeoutSeconds must be in (0, 120]")
+    coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
+    return McpArtifact(
+        coordinate=coordinate,
+        forgejo_release=release,
+        commit=commit,
+        checksum=checksum,
+        license=license_name,
+        source=source,
+        transport=transport,
+        permissions=permissions,
+        enabled=enabled,
+        _validation_token=_VALIDATED_ARTIFACT_TOKEN,
+        url=url,
+        allowed_host=allowed_host,
+        auth_env=auth_env,
+        tls_required=True,
+        timeout_seconds=float(timeout),
+    )
+
+
+def render_opencode_mcp(artifact: McpArtifact) -> dict[str, object]:
+    """Render only keys supported by the pinned OpenCode v1.15.11 MCP schema."""
+    if type(artifact) is not McpArtifact:
+        raise McpRegistryError("only validated MCP artifacts can be rendered")
+    if artifact.transport is McpTransport.STDIO:
+        rendered: dict[str, object] = {
+            "type": "local", "command": list(artifact.command), "enabled": artifact.enabled,
+        }
+        if artifact.environment:
+            rendered["environment"] = {name: f"{{env:{name}}}" for name in artifact.environment}
+        return rendered
+    return {
+        "type": "remote",
+        "url": artifact.url,
+        "enabled": artifact.enabled,
+        "headers": {"Authorization": f"Bearer {{env:{artifact.auth_env}}}"},
+        "timeout": int(round(artifact.timeout_seconds * 1000)),
+    }
+
+
+def mcp_artifact_as_dict(artifact: McpArtifact) -> dict[str, object]:
+    """Return canonical secret-free distribution metadata for a sidecar."""
+    if type(artifact) is not McpArtifact:
+        raise McpRegistryError("only validated MCP artifacts can be serialized")
+    permissions = _permissions_as_dict(artifact.permissions)
+    permissions.pop("policyId")
+    value: dict[str, object] = {
+        "schemaVersion": 1,
+        "artifactKind": "mcp",
+        "namespace": artifact.namespace,
+        "name": artifact.name,
+        "version": artifact.coordinate.version,
+        "forgejoRelease": artifact.forgejo_release,
+        "commit": artifact.commit,
+        "checksum": artifact.checksum,
+        "license": artifact.license,
+        "source": artifact.source,
+        "transport": artifact.transport.value,
+        "permissions": permissions,
+        "enabled": artifact.enabled,
+    }
+    if artifact.transport is McpTransport.STDIO:
+        value.update(command=list(artifact.command), environment=list(artifact.environment))
+    else:
+        value.update(
+            url=artifact.url,
+            allowedHost=artifact.allowed_host,
+            authEnv=artifact.auth_env,
+            tlsRequired=artifact.tls_required,
+            timeoutSeconds=artifact.timeout_seconds,
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class McpProbeResult:
+    text: str
+    is_error: bool
+
+
+class _LineReader:
+    def __init__(self, fd: int):
+        self.fd = fd
+        self.buffer = bytearray()
+        self.total = 0
+
+    def read(self, deadline: float) -> bytes:
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.buffer[:newline])
+                del self.buffer[: newline + 1]
+                if len(line) > _MAX_FRAME_BYTES:
+                    raise McpProbeError("frame-too-large")
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise McpProbeError("timeout")
+            readable, _, _ = select.select([self.fd], [], [], remaining)
+            if not readable:
+                raise McpProbeError("timeout")
+            chunk = os.read(self.fd, 4096)
+            if not chunk:
+                raise McpProbeError("process-exited")
+            self.total += len(chunk)
+            if self.total > _MAX_TOTAL_BYTES or len(self.buffer) + len(chunk) > _MAX_FRAME_BYTES + 1:
+                raise McpProbeError("frame-too-large")
+            self.buffer.extend(chunk)
+
+
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    group_id = process.pid
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=0.1)
+    except subprocess.TimeoutExpired:
+        pass
+    # Always follow with SIGKILL: the session leader may have exited after
+    # SIGTERM while an inherited descendant remains in the owned group.
+    try:
+        os.killpg(group_id, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=0.1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _write_message(process: subprocess.Popen[bytes], message: bytes, deadline: float) -> None:
+    if len(message) > _MAX_FRAME_BYTES:
+        raise McpProbeError("request-too-large")
+    assert process.stdin is not None
+    fd = process.stdin.fileno()
+    written = 0
+    while written < len(message):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise McpProbeError("timeout")
+        _, writable, _ = select.select([], [fd], [], remaining)
+        if not writable:
+            raise McpProbeError("timeout")
+        try:
+            count = os.write(fd, message[written:])
+        except BlockingIOError:
+            continue
+        except (BrokenPipeError, OSError) as exc:
+            raise McpProbeError("process-exited") from exc
+        if count <= 0:
+            raise McpProbeError("process-exited")
+        written += count
+
+
+def _encoded_message(request_id: int | None, method: str, params: object) -> bytes:
+    payload: dict[str, object] = {"jsonrpc": "2.0", "method": method, "params": params}
+    if request_id is not None:
+        payload["id"] = request_id
+    try:
+        message = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise McpProbeError("invalid-request") from exc
+    if len(message) > _MAX_FRAME_BYTES:
+        raise McpProbeError("request-too-large")
+    return message
+
+
+def _rpc(process: subprocess.Popen[bytes], reader: _LineReader, request_id: int, method: str, params: object, deadline: float) -> object:
+    message = _encoded_message(request_id, method, params)
+    try:
+        _write_message(process, message, deadline)
+    except McpProbeError:
+        raise
+    line = reader.read(deadline)
+    try:
+        response = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise McpProbeError("malformed-response") from exc
+    if type(response) is not dict or response.get("jsonrpc") != "2.0" or response.get("id") != request_id:
+        raise McpProbeError("invalid-response")
+    if "error" in response or "result" not in response:
+        raise McpProbeError("rpc-error")
+    return response["result"]
+
+
+def _notify(process: subprocess.Popen[bytes], method: str, params: object, deadline: float) -> None:
+    _write_message(process, _encoded_message(None, method, params), deadline)
+
+
+def probe_stdio_mcp(
+    argv: Sequence[str],
+    *,
+    request: Mapping[str, object],
+    timeout_seconds: float,
+    environ: Mapping[str, str],
+) -> McpProbeResult:
+    if type(argv) not in {tuple, list} or not argv or len(argv) > _MAX_ARGS or any(
+        type(arg) is not str or not arg or len(arg.encode("utf-8")) > _MAX_ARG or "\x00" in arg
+        for arg in argv
+    ):
+        raise McpProbeError("invalid-argv")
+    if (
+        type(environ) is not dict
+        or len(environ) > 128
+        or any(
+            type(key) is not str
+            or type(value) is not str
+            or _ENV_RE.fullmatch(key) is None
+            or len(value.encode("utf-8")) > _MAX_ARG
+            or "\x00" in value
+            for key, value in environ.items()
+        )
+    ):
+        raise McpProbeError("invalid-environment")
+    if type(timeout_seconds) not in {int, float} or isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= 120:
+        raise McpProbeError("invalid-timeout")
+    if type(request) is not dict or set(request) != {"name", "arguments"} or type(request.get("name")) is not str or type(request.get("arguments")) is not dict:
+        raise McpProbeError("invalid-request")
+    # Validate the largest outbound frame before creating a process or touching a pipe.
+    _encoded_message(3, "tools/call", dict(request))
+    try:
+        process = subprocess.Popen(
+            tuple(argv),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(environ),
+            shell=False,
+            start_new_session=True,
+        )
+    except (OSError, ValueError) as exc:
+        raise McpProbeError("launch-failed") from exc
+    try:
+        assert process.stdout is not None
+        assert process.stdin is not None
+        os.set_blocking(process.stdin.fileno(), False)
+        reader = _LineReader(process.stdout.fileno())
+        deadline = time.monotonic() + float(timeout_seconds)
+        initialized = _rpc(
+            process, reader, 1, "initialize",
+            {"protocolVersion": _PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "skillify-probe", "version": "1"}},
+            deadline,
+        )
+        if type(initialized) is not dict or initialized.get("protocolVersion") != _PROTOCOL_VERSION:
+            raise McpProbeError("protocol-version-mismatch")
+        _notify(process, "notifications/initialized", {}, deadline)
+        tools = _rpc(process, reader, 2, "tools/list", {}, deadline)
+        if type(tools) is not dict or type(tools.get("tools")) is not list or not any(
+            type(tool) is dict and tool.get("name") == request["name"] for tool in tools["tools"]
+        ):
+            raise McpProbeError("tool-not-found")
+        result = _rpc(process, reader, 3, "tools/call", dict(request), deadline)
+        if type(result) is not dict or type(result.get("content")) is not list or type(result.get("isError", False)) is not bool:
+            raise McpProbeError("invalid-tool-result")
+        text_parts = [item["text"] for item in result["content"] if type(item) is dict and item.get("type") == "text" and type(item.get("text")) is str]
+        if not text_parts:
+            raise McpProbeError("invalid-tool-result")
+        text = "\n".join(text_parts)
+        if len(text.encode()) > _MAX_FRAME_BYTES:
+            raise McpProbeError("frame-too-large")
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        post_result_wait = min(0.1, max(0.0, deadline - time.monotonic()))
+        if post_result_wait:
+            try:
+                return_code = process.wait(timeout=post_result_wait)
+            except subprocess.TimeoutExpired:
+                return_code = None
+            if return_code not in {None, 0}:
+                raise McpProbeError("process-exited-nonzero")
+        return McpProbeResult(text=text, is_error=result.get("isError", False))
+    finally:
+        _stop_process(process)

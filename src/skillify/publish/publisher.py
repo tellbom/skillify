@@ -7,6 +7,8 @@ service (T2.1, `push`/tag-triggered/automatic) so the two never drift.
 from __future__ import annotations
 
 import re
+import hmac
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,15 @@ from typing import Any
 from skillify.common.config import SkillifyConfig
 from skillify.index.db import init_db, make_engine, session_scope
 from skillify.index.ingest import ReleaseEvent, upsert_release
-from skillify.packaging.pack import PackagingError, PackResult, pack_skill
+from skillify.mcp.registry import McpArtifact
+from skillify.packaging.pack import (
+    McpPackResult,
+    PackagingError,
+    PackResult,
+    pack_mcp,
+    pack_skill,
+    sha256_file,
+)
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
 
 
@@ -45,6 +55,16 @@ class PublishResult:
     tag: str
     release_html_url: str
     index_error: str | None = None  # T2.2: set if best-effort index-write failed
+    recovered: bool = False
+
+
+@dataclass
+class McpPublishResult:
+    pack_result: McpPackResult
+    org: str
+    repo: str
+    tag: str
+    release_html_url: str
     recovered: bool = False
 
 
@@ -163,4 +183,62 @@ def publish_skill_dir(
     return PublishResult(
         pack_result=result, org=org, repo=repo, tag=tag, release_html_url=release.html_url,
         index_error=index_error, recovered=recovered,
+    )
+
+
+def publish_mcp_artifact(
+    artifact: McpArtifact,
+    archive_path: Path,
+    cfg: SkillifyConfig,
+) -> McpPublishResult:
+    """Publish a validated MCP peer artifact through the immutable Forgejo flow."""
+    result = pack_mcp(artifact, archive_path, cfg.cache_dir / "dist")
+    if not cfg.forgejo_url or not cfg.forgejo_token:
+        raise PublishNotConfiguredError("forgejo_url / forgejo_token not configured")
+    org = cfg.forgejo_org or result.namespace
+    repo = result.name
+    tag = f"v{result.version}"
+    client = ForgejoClient(cfg.forgejo_url, cfg.forgejo_token)
+    client.ensure_org_repo(org, repo)
+    body = f"artifactKind=mcp\nsha256={result.sha256}"
+    release = client.find_release_by_tag(org, repo, tag)
+    recovered = release is not None
+    if release is None:
+        release = client.create_release(
+            org, repo, tag_name=tag, name=f"{result.name} {result.version}", body=body, draft=True,
+        )
+    elif _release_checksum(release.body) != result.sha256:
+        raise AlreadyPublishedError(org, repo, tag)
+    asset_paths = (result.tarball_path, result.checksum_path, result.artifact_manifest_path)
+    if recovered and not release.draft:
+        # A published release is immutable even when it is incomplete. Operators
+        # must create a new version rather than silently repairing it in place.
+        raise AlreadyPublishedError(org, repo, tag)
+    expected_assets = {path.name: path for path in asset_paths}
+    if recovered:
+        with tempfile.TemporaryDirectory(prefix="skillify-mcp-recovery-") as temporary:
+            for asset in release.assets:
+                expected = expected_assets.get(asset.name)
+                if expected is None:
+                    raise AlreadyPublishedError(org, repo, tag)
+                downloaded = Path(temporary) / asset.name
+                client.download(asset.browser_download_url, downloaded)
+                if not hmac.compare_digest(sha256_file(downloaded), sha256_file(expected)):
+                    raise AlreadyPublishedError(org, repo, tag)
+    existing_asset_names = {asset.name for asset in release.assets}
+    missing_assets = [path for path in asset_paths if path.name not in existing_asset_names]
+    for asset_path in missing_assets:
+        client.upload_release_asset(org, repo, release.id, asset_path)
+    if release.draft:
+        release = client.update_release(
+            org, repo, release.id, tag_name=tag, name=f"{result.name} {result.version}",
+            body=body, draft=False,
+        )
+    return McpPublishResult(
+        pack_result=result,
+        org=org,
+        repo=repo,
+        tag=tag,
+        release_html_url=release.html_url,
+        recovered=recovered,
     )

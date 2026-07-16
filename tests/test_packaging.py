@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from skillify.packaging.pack import PackagingError, pack_skill, sha256_file
+from skillify.mcp.registry import load_mcp_artifact
+from skillify.packaging.pack import PackagingError, pack_mcp, pack_skill, sha256_file
 from tests.fixtures import VALID_MANIFEST, VALID_SKILL_MD
 
 
@@ -98,3 +99,51 @@ def test_artifact_manifest_embeds_skill_manifest(tmp_path: Path) -> None:
     data = json.loads(result.artifact_manifest_path.read_text(encoding="utf-8"))
     assert data["sha256"] == result.sha256
     assert data["skillManifest"]["name"] == "pivot-analysis"
+    assert data["artifactKind"] == "skill"
+
+
+def _mcp_metadata(checksum: str) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "artifactKind": "mcp",
+        "namespace": "approved",
+        "name": "echo",
+        "version": "1.2.3",
+        "forgejoRelease": "v1.2.3",
+        "commit": "b" * 40,
+        "checksum": checksum,
+        "license": "MIT",
+        "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
+        "transport": "stdio",
+        "command": ["/opt/skillify/mcp/echo/bin/server"],
+        "environment": ["PATH"],
+        "permissions": {
+            "readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [],
+            "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": [],
+        },
+        "enabled": True,
+    }
+
+
+def test_pack_mcp_preserves_prebuilt_archive_and_writes_governed_sidecar(tmp_path: Path) -> None:
+    archive = tmp_path / "approved.tar.gz"
+    archive.write_bytes(b"immutable approved MCP archive")
+    artifact = load_mcp_artifact(_mcp_metadata(sha256_file(archive)))
+
+    result = pack_mcp(artifact, archive, tmp_path / "dist")
+
+    assert result.tarball_path.read_bytes() == archive.read_bytes()
+    data = __import__("json").loads(result.artifact_manifest_path.read_text(encoding="utf-8"))
+    assert data["artifactKind"] == "mcp"
+    assert data["sha256"] == result.sha256
+    assert data["mcpArtifact"]["command"] == ["/opt/skillify/mcp/echo/bin/server"]
+    assert "secret" not in result.artifact_manifest_path.read_text(encoding="utf-8")
+
+
+def test_pack_mcp_rejects_archive_that_does_not_match_metadata(tmp_path: Path) -> None:
+    archive = tmp_path / "approved.tar.gz"
+    archive.write_bytes(b"tampered")
+    artifact = load_mcp_artifact(_mcp_metadata("a" * 64))
+
+    with pytest.raises(ValueError, match="checksum"):
+        pack_mcp(artifact, archive, tmp_path / "dist")

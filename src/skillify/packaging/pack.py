@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import hmac
 import json
+import shutil
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Any
 import yaml
 
 from skillify import __version__
+from skillify.mcp.registry import McpArtifact, mcp_artifact_as_dict
 from skillify.validator import ValidationResult, validate_skill_dir
 
 _EXCLUDED_DIR_NAMES = {".git", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache"}
@@ -41,6 +44,19 @@ class PackResult:
     author: str | dict
     tags: list[str]
     orchestration: dict
+
+
+@dataclass
+class McpPackResult:
+    tarball_path: Path
+    checksum_path: Path
+    artifact_manifest_path: Path
+    sha256: str
+    size_bytes: int
+    namespace: str
+    name: str
+    version: str
+    artifact: McpArtifact
 
 
 def _is_excluded(path: Path) -> bool:
@@ -123,6 +139,7 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
 
     artifact_manifest = {
         "artifactSchemaVersion": 1,
+        "artifactKind": "skill",
         "namespace": namespace,
         "name": name,
         "version": version,
@@ -152,4 +169,52 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
         author=manifest.get("author", ""),
         tags=manifest.get("tags") or [],
         orchestration=manifest.get("orchestration") or {},
+    )
+
+
+def pack_mcp(artifact: McpArtifact, archive_path: Path, output_dir: Path) -> McpPackResult:
+    """Package an already-built approved MCP archive without changing its bytes."""
+    if type(artifact) is not McpArtifact:
+        raise ValueError("artifact must be validated MCP metadata")
+    source = Path(archive_path)
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("MCP archive must be a regular non-symlink file")
+    digest = sha256_file(source)
+    if not hmac.compare_digest(digest, artifact.checksum):
+        raise ValueError("MCP archive checksum does not match immutable metadata")
+
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    base = f"{artifact.namespace}-{artifact.name}-{artifact.coordinate.version}"
+    tarball_path = destination / f"{base}.tar.gz"
+    checksum_path = destination / f"{base}.sha256"
+    artifact_manifest_path = destination / f"{base}.artifact.json"
+    if source.resolve() != tarball_path.resolve():
+        shutil.copyfile(source, tarball_path)
+    checksum_path.write_text(f"{digest}  {tarball_path.name}\n", encoding="utf-8")
+    sidecar = {
+        "artifactSchemaVersion": 1,
+        "artifactKind": "mcp",
+        "namespace": artifact.namespace,
+        "name": artifact.name,
+        "version": artifact.coordinate.version,
+        "sha256": digest,
+        "sizeBytes": tarball_path.stat().st_size,
+        "tarball": tarball_path.name,
+        "packagedBy": f"skillctl {__version__}",
+        "mcpArtifact": mcp_artifact_as_dict(artifact),
+    }
+    artifact_manifest_path.write_text(
+        json.dumps(sidecar, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+    return McpPackResult(
+        tarball_path=tarball_path,
+        checksum_path=checksum_path,
+        artifact_manifest_path=artifact_manifest_path,
+        sha256=digest,
+        size_bytes=tarball_path.stat().st_size,
+        namespace=artifact.namespace,
+        name=artifact.name,
+        version=artifact.coordinate.version,
+        artifact=artifact,
     )
