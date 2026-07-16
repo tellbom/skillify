@@ -230,7 +230,7 @@
 
 ## S7 · 非技术 Agent Apps
 
-### - [ ] Task 7.1 Agent App 模板契约 — Owner: Codex
+### - [x] Task 7.1 Agent App 模板契约 — Owner: Codex
 - 锚点：`+src/skillify/apps/contract.py`
 - 固定输入表单+锁定 Workflow/Skill+权限模板+结构化输出；输入/输出 JSON Schema；只允许已发布版本。
 - **Dev-DoD**：契约 schema + 校验（拒草稿脚本）离线单测。
