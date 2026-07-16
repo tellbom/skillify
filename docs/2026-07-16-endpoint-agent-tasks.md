@@ -111,7 +111,7 @@
 - **[test-env]**：真实中型仓库性能预算。
 - commit：`feat(codemap): build evidence-linked repository index`
 
-### - [ ] Task 3.2 Code Map 数据模型 — Owner: Codex
+### - [x] Task 3.2 Code Map 数据模型 — Owner: Codex
 - 锚点：`+src/skillify/codemap/schema.py`、`+src/skillify/codemap/store.py`
 - 节点：repository/module/file/symbol/API endpoint/data entity/test/entrypoint；边：contains/imports/calls/implements/reads-writes/tests/routes-to；推断关系标 confidence/source；生成失败不阻塞普通任务。
 - **Dev-DoD**：稳定节点 ID + 增量重建 + confidence 标注 离线单测。
