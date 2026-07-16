@@ -216,7 +216,7 @@
 - **[test-env]**：真实 DM8 只读账号 + 方言兼容。
 - commit：`feat(mcp): add governed read-only database connector`
 
-### - [ ] Task 6.3 Forgejo/文档/CI MCP
+### - [x] Task 6.3 Forgejo/文档/CI MCP
 - 锚点：`+src/skillify/mcp/forgejo/` 等
 - 优先级 Forgejo→文档搜索→CI；默认只读，写操作逐项授权；最小 scope，不下发管理员 token。
 - **Dev-DoD**：工具 scope 定义 + 只读默认 + 写授权门禁 对 fake Forgejo 离线单测。
@@ -224,6 +224,7 @@
 - commit：`feat(mcp): add approved development connectors`
 
 > **门禁 G6** — Dev：6.1–6.3 Dev-DoD 过。**[test-env] G6**：一个代码任务经 Code Map 找代码 + 只读 DB MCP 查 schema + Forgejo MCP 读 issue，端侧权限界面清楚展示三类边界。
+> **状态（2026-07-16）**：Dev G6 连接器目录、SQLite 只读 SQL 策略及 Forgejo/文档/CI scope 门禁已通过；**[test-env] G6 待真实 DM8/Forgejo/CI/文档后端 smoke**。
 
 ---
 
@@ -284,7 +285,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [x] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]
