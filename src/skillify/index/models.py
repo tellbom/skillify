@@ -246,19 +246,38 @@ class EndpointTaskRecord(Base):
     workflow_version: Mapped[str] = mapped_column(String(64))
     workspace_alias: Mapped[str] = mapped_column(String(64))
     inputs: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    runtime: Mapped[str] = mapped_column(String(32), default="opencode", nullable=False)
+    envelope_json: Mapped[dict | None] = mapped_column(JSONText(), default=None)
     state: Mapped[str] = mapped_column(String(32), index=True)
+    state_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approval_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), default=None)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class EndpointTaskEventRecord(Base):
     __tablename__ = "endpoint_task_events"
+    __table_args__ = (UniqueConstraint("event_id", name="uq_endpoint_task_events_event_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(128))
     task_id: Mapped[str] = mapped_column(String(128), index=True)
     event_type: Mapped[str] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     summary: Mapped[str | None] = mapped_column(String(500), default=None)
     artifacts: Mapped[list] = mapped_column(JSONText(), default=list)
     failure_reason: Mapped[str | None] = mapped_column(String(128), default=None)
+
+
+class EndpointTaskNonce(Base):
+    __tablename__ = "endpoint_task_nonces"
+
+    nonce: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
