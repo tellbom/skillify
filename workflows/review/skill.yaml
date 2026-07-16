@@ -1,0 +1,28 @@
+manifestVersion: 1
+namespace: skillify
+name: review
+version: 1.0.0
+description: Review code and report only evidence-backed P0, P1, and P2 findings.
+author: Skillify Team
+license: Apache-2.0
+runtime: custom
+targets: [opencode, codex, project]
+entrypoints:
+  commands:
+    review: workflow.yaml
+permissions:
+  readPaths: ["*"]
+  writePaths: []
+  commands:
+    "git diff *": allow
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [command]
+tags: [workflow, review, evidence]
+orchestration:
+  definition: workflow.yaml
+  reportSchema: report.schema.json
+reporting:
+  enabled: false

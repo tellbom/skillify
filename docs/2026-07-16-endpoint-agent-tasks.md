@@ -153,7 +153,7 @@
 - **[test-env]**：真实特性开发端到端。
 - commit：`feat(workflows): add feature development pack`
 
-### - [ ] Task 4.4 Review/Refactor Pack
+### - [x] Task 4.4 Review/Refactor Pack
 - 锚点：`+workflows/review/`、`+workflows/refactor/`
 - Review 只报有证据问题；Refactor 先记录基线不改外部行为；报告等级同现有团队规范。
 - **Dev-DoD**：Pack 结构 + 报告 schema 离线校验。
@@ -161,6 +161,7 @@
 - commit：`feat(workflows): add review and refactor packs`
 
 > **门禁 G4** — Dev：四 Pack 结构 + golden tests（Fake）离线过。**[test-env] G4**：四 Pack 可从 Skillify 安装、CLI 执行、产出结构化结果，串行、可恢复。
+> **状态（2026-07-16）**：Dev G4 四类 Pack 的结构、串行角色、证据/审批门禁、Fake golden 与报告 schema 已通过；**[test-env] G4 待真实安装与 OpenCode 执行质量验证**。
 
 ---
 
@@ -282,7 +283,7 @@
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [ ] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [ ] G5 Dev　- [ ] G6 Dev　- [ ] G7 Dev　- [ ] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]

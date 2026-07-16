@@ -1,0 +1,30 @@
+manifestVersion: 1
+namespace: skillify
+name: refactor
+version: 1.0.0
+description: Refactor a bounded code surface while preserving verified external behavior.
+author: Skillify Team
+license: Apache-2.0
+runtime: custom
+targets: [opencode, codex, project]
+entrypoints:
+  commands:
+    refactor: workflow.yaml
+permissions:
+  readPaths: ["*"]
+  writePaths: ["*"]
+  commands:
+    "pytest *": allow
+    "npm test *": allow
+    "git diff *": allow
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [write, command]
+tags: [workflow, refactor, baseline]
+orchestration:
+  definition: workflow.yaml
+  reportSchema: report.schema.json
+reporting:
+  enabled: false

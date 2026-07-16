@@ -1,0 +1,18 @@
+workflowVersion: 1
+id: evidence-review
+execution: serial
+mode: read-only
+roles:
+  - id: scope
+    prompt: Identify the requested diff, acceptance context, and relevant test surface without modifying files.
+    output: artifacts/review-scope.md
+  - id: evidence-review
+    prompt: Inspect correctness, regressions, and missing tests; retain only findings with reproducible impact and path-line evidence.
+    output: artifacts/findings.json
+    requiresEvidence: true
+  - id: report
+    prompt: Emit the validated P0/P1/P2 report, ordered by severity, or an empty findings list.
+    output: artifacts/review-report.json
+    requiresEvidence: true
+artifacts:
+  - review-report.json
