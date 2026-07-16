@@ -15,7 +15,7 @@ const tasks = ref([])
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
-const form = reactive({ endpointId: '', workspaceAlias: '', workflowId: 'evidence-bugfix', value: '' })
+const form = reactive({ endpointId: '', workspaceAlias: '', runtime: 'opencode', workflowId: 'evidence-bugfix', value: '' })
 
 const selectedEndpoint = computed(() => endpoints.value.find((item) => item.endpointId === form.endpointId))
 const selectedWorkflow = computed(() => WORKFLOWS.find((item) => item.id === form.workflowId))
@@ -55,6 +55,7 @@ async function submit() {
     const task = await dispatchEndpointTask({
       endpointId: form.endpointId,
       workspaceAlias: form.workspaceAlias,
+      runtime: form.runtime,
       workflowId: form.workflowId,
       workflowVersion: '1.0.0',
       inputs,
@@ -96,6 +97,12 @@ onMounted(load)
               <option v-for="alias in selectedEndpoint?.workspaceAliases || []" :key="alias" :value="alias">{{ alias }}</option>
             </select>
           </label>
+          <label>执行器
+            <select v-model="form.runtime" data-testid="runtime-select">
+              <option value="opencode">OpenCode</option>
+              <option value="claude-code">Claude Code</option>
+            </select>
+          </label>
           <label>Workflow
             <select v-model="form.workflowId" data-testid="workflow-select">
               <option v-for="workflow in WORKFLOWS" :key="workflow.id" :value="workflow.id">{{ workflow.label }}</option>
@@ -113,7 +120,7 @@ onMounted(load)
         <article v-for="task in tasks" :key="task.taskId" class="task-row">
           <div class="task-summary">
             <span class="status-dot" :class="task.state" />
-            <div><strong>{{ task.workflowId }}</strong><code>{{ task.taskId }}</code></div>
+            <div><strong>{{ task.workflowId }}</strong><small>{{ task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
           </div>
           <ol v-if="task.events?.length" class="timeline">
@@ -121,6 +128,12 @@ onMounted(load)
               <div><strong>{{ event.eventType }}</strong><time>{{ event.occurredAt }}</time></div>
               <p v-if="event.summary">{{ event.summary }}</p>
               <p v-if="event.failureReason" class="failure">{{ event.failureReason }}</p>
+              <p v-if="event.testSummary" class="evidence">
+                Tests: {{ event.testSummary.passed || 0 }} passed · {{ event.testSummary.failed || 0 }} failed · {{ event.testSummary.skipped || 0 }} skipped
+              </p>
+              <p v-if="event.diffStats" class="evidence">
+                Diff: {{ event.diffStats.filesChanged || 0 }} files · +{{ event.diffStats.insertions || 0 }} / -{{ event.diffStats.deletions || 0 }}
+              </p>
               <code v-for="artifact in event.artifacts || []" :key="artifact.artifactId">{{ artifact.kind }}:{{ artifact.artifactId }}</code>
             </li>
           </ol>
@@ -144,7 +157,7 @@ onMounted(load)
 .section-title > span { color: #80cbc4; font: 600 10px ui-monospace, monospace; }
 .section-title h2 { margin: 0 0 3px; font-size: 15px; }
 .section-title p { margin: 0; color: #777; font-size: 11px; }
-form { display: grid; align-items: end; grid-template-columns: repeat(4, minmax(130px, 1fr)) auto; gap: 12px; }
+form { display: grid; align-items: end; grid-template-columns: repeat(5, minmax(120px, 1fr)) auto; gap: 12px; }
 label { display: grid; color: #858585; font-size: 11px; gap: 6px; }
 select, input { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid #333; border-radius: 6px; box-sizing: border-box; color: #ddd; background: #141414; font: inherit; }
 select:focus, input:focus { border-color: #80cbc4; outline: none; }
@@ -154,6 +167,7 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .task-summary { display: flex; align-items: center; gap: 10px; }
 .task-summary > div { display: grid; flex: 1; gap: 3px; }
 .task-summary strong { font-size: 13px; }
+.task-summary small { color: #80cbc4; font: 9px ui-monospace, monospace; }
 .task-summary code { color: #666; font-size: 9px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #f0b86e; box-shadow: 0 0 0 4px rgb(240 184 110 / 8%); }
 .status-dot.succeeded { background: #80cbc4; }
@@ -166,6 +180,7 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .timeline strong { font-size: 11px; }
 .timeline time, .timeline p, .timeline code, .waiting { color: #707070; font-size: 10px; }
 .timeline p { margin: 4px 0; }.timeline .failure { color: #ef8d8d; }.timeline code { margin-right: 8px; color: #9bbfbc; }
+.timeline .evidence { color: #a9a9a9; font-family: ui-monospace, monospace; }
 .waiting { margin: 10px 0 0 17px; }
 .state-card { padding: 28px; border: 1px dashed #333; border-radius: 10px; color: #777; text-align: center; }
 .error-banner { padding: 10px 12px; border: 1px solid rgb(239 141 141 / 30%); border-radius: 7px; color: #efaaaa; background: rgb(239 141 141 / 6%); font-size: 12px; }
