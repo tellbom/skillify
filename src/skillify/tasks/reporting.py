@@ -17,6 +17,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 EVENT_TYPES = frozenset({
     "task.received", "task.confirmed", "task.started", "test.completed",
     "artifact.created", "task.succeeded", "task.failed", "task.rejected",
+    "task.rolled_back",
 })
 
 

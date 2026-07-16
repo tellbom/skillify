@@ -265,7 +265,7 @@
 - **[test-env]**：真实 Syft/Grype/Cosign 工具链 + 签名验证。
 - commit：`feat(security): scan and attest agent capabilities`
 
-### - [ ] Task 8.2 评测与可观测性 — Owner: Codex
+### - [x] Task 8.2 评测与可观测性 — Owner: Codex
 - 锚点：`+src/skillify/evals/`
 - 基于真实 TaskEvent 的成功率/拒绝率/回滚率/测试通过率/阻塞原因；Promptfoo/Phoenix；新版本回放固定用例达基线才 stable。
 - **Dev-DoD**：指标聚合 对样本 TaskEvent 离线单测；回放门禁逻辑单测。
