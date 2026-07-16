@@ -91,6 +91,96 @@ def test_project_to_claude_target_uses_copy_on_windows(tmp_path: Path, monkeypat
     assert stored.targets == ["claude"]
 
 
+def test_project_refuses_to_replace_unowned_existing_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    cfg = SkillifyConfig(home=tmp_path / "home")
+    lock = _make_installed_skill(cfg)
+    target = tmp_path / "claude-home" / "skills" / "excel__pivot-analysis"
+    target.mkdir(parents=True)
+    (target / "user.txt").write_text("keep", encoding="utf-8")
+    (cfg.agents_dir / "claude.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{target.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectionError, match="unowned"):
+        project_to_targets(cfg, lock, ["claude"])
+    assert (target / "user.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_project_refuses_new_template_target_even_when_agent_was_previously_owned(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    cfg = SkillifyConfig(home=tmp_path / "home")
+    lock = _make_installed_skill(cfg)
+    first = tmp_path / "first" / "excel__pivot-analysis"
+    (cfg.agents_dir / "claude.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{first.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+    lock = project_to_targets(cfg, lock, ["claude"])
+
+    user_target = tmp_path / "moved" / "excel__pivot-analysis"
+    user_target.mkdir(parents=True)
+    (user_target / "user.txt").write_text("keep", encoding="utf-8")
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{user_target.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectionError, match="unowned"):
+        project_to_targets(cfg, lock, ["claude"])
+    assert (user_target / "user.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_project_refuses_file_directory_type_confusion_in_owned_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    cfg = SkillifyConfig(home=tmp_path / "home")
+    lock = _make_installed_skill(cfg)
+    target = tmp_path / "copy" / "excel__pivot-analysis"
+    (cfg.agents_dir / "claude.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{target.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+    lock = project_to_targets(cfg, lock, ["claude"])
+    (target / "SKILL.md").unlink()
+    (target / "SKILL.md").mkdir()
+    (target / "SKILL.md/user.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ProjectionError, match="unowned"):
+        project_to_targets(cfg, lock, ["claude"])
+    assert (target / "SKILL.md/user.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_remove_refuses_moved_template_user_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    cfg = SkillifyConfig(home=tmp_path / "home")
+    lock = _make_installed_skill(cfg)
+    first = tmp_path / "first-remove" / "excel__pivot-analysis"
+    (cfg.agents_dir / "claude.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{first.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+    lock = project_to_targets(cfg, lock, ["claude"])
+    user_target = tmp_path / "remove-moved" / "excel__pivot-analysis"
+    user_target.mkdir(parents=True)
+    (user_target / "user.txt").write_text("keep", encoding="utf-8")
+    (cfg.agents_dir / "claude.yaml").write_text(
+        f"agent: claude\ntargetDirTemplate: '{user_target.as_posix()}'\nlinkMode: copy\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectionError, match="unowned"):
+        remove_projections(cfg, lock, ["claude"])
+    assert (user_target / "user.txt").read_text(encoding="utf-8") == "keep"
+
+
 @pytest.mark.skipif(not _symlinks_supported(), reason="symlinks require elevated privileges on this host")
 def test_project_uses_symlink_when_forced(tmp_path: Path) -> None:
     home = tmp_path / "home"

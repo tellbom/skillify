@@ -105,6 +105,72 @@ def test_unknown_field_rejected(tmp_path: Path) -> None:
     assert not result.ok
 
 
+def test_opencode_entrypoints_reference_regular_files_inside_artifact(tmp_path: Path) -> None:
+    manifest = VALID_MANIFEST + """
+entrypoints:
+  agents: {reviewer: agents/reviewer.md}
+  commands: {review: commands/review.md}
+  plugins: {governed-tools: plugins/governed-tools.js}
+  mcp: {repo-search: mcp/repo-search.yaml}
+"""
+    skill_dir = _write_skill(
+        tmp_path,
+        manifest=manifest,
+        extra_files={
+            "agents/reviewer.md": "reviewer",
+            "commands/review.md": "review",
+            "plugins/governed-tools.js": "export default {}",
+            "mcp/repo-search.yaml": "name: repo-search",
+        },
+    )
+    result = validate_skill_dir(skill_dir)
+    assert result.ok, [str(issue) for issue in result.issues]
+
+
+@pytest.mark.parametrize(
+    "entrypoints",
+    [
+        "{unknown: {name: commands/review.md}}",
+        "{commands: {'Bad_Name': commands/review.md}}",
+        "{commands: {review: /absolute/review.md}}",
+        "{commands: {review: ../outside.md}}",
+        "{commands: {review: commands/./review.md}}",
+        "{commands: {review: commands//review.md}}",
+        "{commands: {review: missing.md}}",
+    ],
+)
+def test_opencode_entrypoints_reject_unknown_names_and_unsafe_paths(
+    tmp_path: Path, entrypoints: str
+) -> None:
+    skill_dir = _write_skill(
+        tmp_path,
+        manifest=VALID_MANIFEST + f"\nentrypoints: {entrypoints}\n",
+        extra_files={"commands/review.md": "review"},
+    )
+    result = validate_skill_dir(skill_dir)
+    assert not result.ok
+    assert any("entrypoints" in issue.path for issue in result.issues)
+
+
+def test_opencode_entrypoint_rejects_symlink_even_when_target_is_inside(tmp_path: Path) -> None:
+    skill_dir = _write_skill(
+        tmp_path,
+        manifest=VALID_MANIFEST + "\nentrypoints: {commands: {review: commands/link.md}}\n",
+        extra_files={"commands/real.md": "review"},
+    )
+    (skill_dir / "commands/link.md").symlink_to(skill_dir / "commands/real.md")
+    result = validate_skill_dir(skill_dir)
+    assert not result.ok
+    assert any("symlink" in issue.message for issue in result.issues)
+
+
+def test_packaged_and_public_manifest_schemas_stay_identical() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    packaged = repository / "src/skillify/validator/schemas/skill-manifest-v1.schema.json"
+    public = repository / "spec/skill-manifest-v1.schema.json"
+    assert packaged.read_bytes() == public.read_bytes()
+
+
 def test_python_deps_require_requirements_file(tmp_path: Path) -> None:
     manifest = VALID_MANIFEST + "\ndependencies:\n  python: ['requests>=2.31']\n"
     skill_dir = _write_skill(tmp_path, manifest=manifest)

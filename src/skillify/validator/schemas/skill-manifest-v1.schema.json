@@ -97,6 +97,13 @@
     },
     "entrypoints": {
       "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agents": {"$ref": "#/$defs/entrypointMap"},
+        "commands": {"$ref": "#/$defs/entrypointMap"},
+        "plugins": {"$ref": "#/$defs/entrypointMap"},
+        "mcp": {"$ref": "#/$defs/entrypointMap"}
+      },
       "default": {}
     },
     "permissions": {
@@ -161,6 +168,19 @@
     }
   },
   "$defs": {
+    "entrypointMap": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\u0000\\\\]+$"
+      }
+    },
     "pathAllowlist": {
       "type": "array",
       "uniqueItems": true,
