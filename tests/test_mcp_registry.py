@@ -55,7 +55,7 @@ def local_artifact(**changes: object) -> dict[str, object]:
         "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
         "transport": "stdio",
         "command": ["/opt/skillify/mcp/echo/bin/server"],
-        "environment": ["PATH"],
+        "environment": [],
         "permissions": _permissions(),
         "enabled": True,
     }
@@ -210,24 +210,24 @@ def test_local_mcp_rejects_indirect_shell_download_and_plaintext_secret(command:
 
 def test_local_mcp_allows_sensitive_environment_reference() -> None:
     artifact = load_mcp_artifact(
-        local_artifact(command=["/opt/skillify/mcp/echo/bin/server", "--token", "{env:MCP_TOKEN}"], environment=["MCP_TOKEN"])
+        local_artifact(command=["/opt/skillify/mcp/echo/bin/server", "--token", "{env:SKILLIFY_MCP_TOKEN}"], environment=["SKILLIFY_MCP_TOKEN"])
     )
-    assert artifact.command[-1] == "{env:MCP_TOKEN}"
+    assert artifact.command[-1] == "{env:SKILLIFY_MCP_TOKEN}"
 
 
 def test_local_mcp_allows_sensitive_assignment_environment_reference() -> None:
     artifact = load_mcp_artifact(local_artifact(
-        command=["/opt/skillify/mcp/echo/bin/server", "--token={env:MCP_TOKEN}"],
-        environment=["MCP_TOKEN"],
+        command=["/opt/skillify/mcp/echo/bin/server", "--token={env:SKILLIFY_MCP_TOKEN}"],
+        environment=["SKILLIFY_MCP_TOKEN"],
     ))
-    assert artifact.command[-1] == "--token={env:MCP_TOKEN}"
+    assert artifact.command[-1] == "--token={env:SKILLIFY_MCP_TOKEN}"
 
 
 def test_local_mcp_does_not_treat_download_env_reference_as_secret_reference() -> None:
     with pytest.raises(McpRegistryError, match="location"):
         load_mcp_artifact(local_artifact(
-            command=["/opt/skillify/mcp/echo/bin/server", "--download={env:MCP_URL}"],
-            environment=["MCP_URL"],
+            command=["/opt/skillify/mcp/echo/bin/server", "--download={env:SKILLIFY_MCP_URL}"],
+            environment=["SKILLIFY_MCP_URL"],
         ))
 
 
@@ -235,8 +235,8 @@ def test_local_mcp_does_not_treat_download_env_reference_as_secret_reference() -
 def test_local_mcp_rejects_split_runtime_location_environment_reference(flag: str) -> None:
     with pytest.raises(McpRegistryError, match="location"):
         load_mcp_artifact(local_artifact(
-            command=["/opt/skillify/mcp/echo/bin/server", flag, "{env:MCP_URL}"],
-            environment=["MCP_URL"],
+            command=["/opt/skillify/mcp/echo/bin/server", flag, "{env:SKILLIFY_MCP_URL}"],
+            environment=["SKILLIFY_MCP_URL"],
         ))
 
 
@@ -250,13 +250,98 @@ def test_local_mcp_allows_only_explicit_credential_environment_flags(
 ) -> None:
     command = ["/opt/skillify/mcp/echo/bin/server"]
     if assignment:
-        command.append(f"{flag}={{env:MCP_CREDENTIAL}}")
+        command.append(f"{flag}={{env:SKILLIFY_MCP_CREDENTIAL}}")
     else:
-        command.extend([flag, "{env:MCP_CREDENTIAL}"])
+        command.extend([flag, "{env:SKILLIFY_MCP_CREDENTIAL}"])
     artifact = load_mcp_artifact(local_artifact(
-        command=command, environment=["MCP_CREDENTIAL"]
+        command=command, environment=["SKILLIFY_MCP_CREDENTIAL"]
     ))
-    assert "MCP_CREDENTIAL" in artifact.environment
+    assert artifact.environment == ("SKILLIFY_MCP_CREDENTIAL",)
+    assert render_opencode_mcp(artifact)["environment"] == {
+        "SKILLIFY_MCP_CREDENTIAL": "{env:SKILLIFY_MCP_CREDENTIAL}"
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "NODE_OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "RUBYOPT",
+        "PERL5OPT",
+        "BASH_ENV",
+        "ENV",
+        "IFS",
+        "PATH",
+        "_JAVA_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "CLASSPATH",
+        "DOTNET_STARTUP_HOOKS",
+        "RUBYLIB",
+        "LUA_PATH",
+        "LUA_CPATH",
+        "GEM_HOME",
+        "BUNDLE_GEMFILE",
+        "GLIBC_TUNABLES",
+        "HTTPS_PROXY",
+        "SSLKEYLOGFILE",
+    ],
+)
+def test_local_mcp_rejects_control_environment_even_when_credential_referenced(
+    name: str,
+) -> None:
+    with pytest.raises(McpRegistryError, match="control environment"):
+        load_mcp_artifact(local_artifact(
+            command=["/opt/skillify/mcp/echo/bin/server", "--token", f"{{env:{name}}}"],
+            environment=[name],
+        ))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SKILLIFY_MCP_",
+        "SKILLIFY_MCP__TOKEN",
+        "SKILLIFY_MCP_TOKEN_",
+        "SKILLIFY_MCP_token",
+        "SKILLIFY_MCP_TÖKEN",
+        "SKILLIFY_MCP_" + "A" * 116,
+    ],
+)
+def test_local_mcp_rejects_noncanonical_credential_environment_names(name: str) -> None:
+    with pytest.raises(McpRegistryError, match="environment|credential"):
+        load_mcp_artifact(local_artifact(
+            command=["/opt/skillify/mcp/echo/bin/server", "--token", f"{{env:{name}}}"],
+            environment=[name],
+        ))
+
+
+@pytest.mark.parametrize(
+    ("command", "environment"),
+    [
+        (["/opt/skillify/mcp/echo/bin/server"], ["EXTRA_UNUSED"]),
+        (
+            ["/opt/skillify/mcp/echo/bin/server", "--token", "{env:SKILLIFY_MCP_TOKEN}"],
+            ["SKILLIFY_MCP_TOKEN", "EXTRA_UNUSED"],
+        ),
+        (
+            ["/opt/skillify/mcp/echo/bin/server", "--token={env:SKILLIFY_MCP_TOKEN}"],
+            ["SKILLIFY_MCP_TOKEN", "SKILLIFY_MCP_TOKEN"],
+        ),
+        (
+            ["/opt/skillify/mcp/echo/bin/server", "--token", "{env:SKILLIFY_MCP_TOKEN}"],
+            ["OTHER_TOKEN"],
+        ),
+    ],
+)
+def test_local_mcp_environment_must_exactly_equal_consumed_credential_refs(
+    command: list[str], environment: list[str]
+) -> None:
+    with pytest.raises(McpRegistryError, match="environment|credential"):
+        load_mcp_artifact(local_artifact(command=command, environment=environment))
 
 
 def test_local_mcp_allows_only_explicit_safe_non_location_options() -> None:
@@ -303,18 +388,18 @@ def test_local_mcp_allows_bounded_split_log_level() -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        ["/opt/skillify/mcp/echo/bin/server", "-u", "{env:MCP_LOCATION}"],
-        ["/opt/skillify/mcp/echo/bin/server", "--repository", "{env:MCP_LOCATION}"],
-        ["/opt/skillify/mcp/echo/bin/server", "--mode", "download", "{env:MCP_LOCATION}"],
-        ["/opt/skillify/mcp/echo/bin/server", "{env:MCP_LOCATION}"],
-        ["/opt/skillify/mcp/echo/bin/server", "--config={env:MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "-u", "{env:SKILLIFY_MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--repository", "{env:SKILLIFY_MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--mode", "download", "{env:SKILLIFY_MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "{env:SKILLIFY_MCP_LOCATION}"],
+        ["/opt/skillify/mcp/echo/bin/server", "--config={env:SKILLIFY_MCP_LOCATION}"],
     ],
 )
 def test_local_mcp_rejects_environment_references_outside_credential_flags(
     command: list[str],
 ) -> None:
     with pytest.raises(McpRegistryError, match="environment reference|location|option"):
-        load_mcp_artifact(local_artifact(command=command, environment=["MCP_LOCATION"]))
+        load_mcp_artifact(local_artifact(command=command, environment=["SKILLIFY_MCP_LOCATION"]))
 
 
 @pytest.mark.parametrize(
@@ -380,8 +465,8 @@ def test_remote_mcp_rejects_unsafe_endpoint_or_literal_auth(changes: dict[str, o
 def test_registry_conflict_and_redacted_preview() -> None:
     registry = McpRegistry()
     artifact = load_mcp_artifact(local_artifact(
-        command=["/opt/skillify/mcp/echo/bin/server", "--token", "{env:MCP_TOKEN}"],
-        environment=["MCP_TOKEN"],
+        command=["/opt/skillify/mcp/echo/bin/server", "--token", "{env:SKILLIFY_MCP_TOKEN}"],
+        environment=["SKILLIFY_MCP_TOKEN"],
     ))
     registry.register(artifact)
     assert registry.get("approved", "echo", "1.2.3") == artifact
@@ -392,6 +477,10 @@ def test_registry_conflict_and_redacted_preview() -> None:
     assert preview.checksum == "a" * 64
     assert preview.as_dict()["executionConstraint"] == "reviewed-direct-governed-server-binary"
     assert preview.as_dict()["argumentConstraint"] == "approved-options-only-no-positionals"
+    assert preview.as_dict()["credentialReferences"] == ["SKILLIFY_MCP_TOKEN"]
+    assert preview.as_dict()["environmentConstraint"] == (
+        "exact-consumed-skillify-mcp-credential-references-only"
+    )
 
     with pytest.raises(McpRegistryError, match="conflicting MCP coordinate"):
         registry.register(load_mcp_artifact(local_artifact(enabled=False)))

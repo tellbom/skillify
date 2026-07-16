@@ -59,6 +59,9 @@ _SENSITIVE_ARG_RE = re.compile(
     re.IGNORECASE,
 )
 _ENV_REFERENCE_RE = re.compile(r"\{env:([A-Z_][A-Z0-9_]{0,127})\}\Z")
+_APPROVED_CREDENTIAL_ENV_RE = re.compile(
+    r"SKILLIFY_MCP_[A-Z0-9]+(?:_[A-Z0-9]+)*\Z"
+)
 _CREDENTIAL_FLAGS = frozenset(
     {"--api-key", "--auth-token", "--authorization", "--client-secret", "--password", "--token"}
 )
@@ -69,6 +72,7 @@ _BOOLEAN_VALUES = frozenset({"0", "1", "false", "no", "off", "on", "true", "yes"
 _LOG_LEVELS = frozenset({"critical", "debug", "error", "info", "trace", "warning"})
 _DIRECT_EXECUTABLE_CONSTRAINT = "reviewed-direct-governed-server-binary"
 _CLOSED_ARGUMENT_CONSTRAINT = "approved-options-only-no-positionals"
+_EXACT_ENVIRONMENT_CONSTRAINT = "exact-consumed-skillify-mcp-credential-references-only"
 
 
 def _executable_family(value: str) -> str:
@@ -148,6 +152,8 @@ class McpInstallPreview:
     command: tuple[str, ...]
     execution_constraint: str | None
     argument_constraint: str | None
+    credential_references: tuple[str, ...]
+    environment_constraint: str | None
     remote_domain: str | None
     auth_reference: str | None
     permissions: Mapping[str, object]
@@ -183,6 +189,16 @@ class McpInstallPreview:
                 if artifact.transport is McpTransport.STDIO
                 else None
             ),
+            credential_references=(
+                artifact.environment
+                if artifact.transport is McpTransport.STDIO
+                else ((artifact.auth_env,) if artifact.auth_env is not None else ())
+            ),
+            environment_constraint=(
+                _EXACT_ENVIRONMENT_CONSTRAINT
+                if artifact.transport is McpTransport.STDIO
+                else None
+            ),
             remote_domain=artifact.allowed_host,
             auth_reference=artifact.auth_env,
             permissions=MappingProxyType(_permissions_as_dict(artifact.permissions)),
@@ -199,6 +215,8 @@ class McpInstallPreview:
             "command": list(self.command),
             "executionConstraint": self.execution_constraint,
             "argumentConstraint": self.argument_constraint,
+            "credentialReferences": list(self.credential_references),
+            "environmentConstraint": self.environment_constraint,
             "remoteDomain": self.remote_domain,
             "authReference": self.auth_reference,
             "permissions": dict(self.permissions),
@@ -395,7 +413,18 @@ def load_mcp_artifact(
         if any(type(name) is not str or not _ENV_RE.fullmatch(name) for name in environment):
             raise McpRegistryError("environment must contain names, never values")
         environment_names = set(environment)
+        if len(environment) != len(environment_names):
+            raise McpRegistryError("environment must be a unique exact credential reference set")
+        if any(
+            _APPROVED_CREDENTIAL_ENV_RE.fullmatch(name) is None
+            for name in environment_names
+        ):
+            raise McpRegistryError(
+                "environment names must use the approved MCP credential namespace; "
+                "loader and runtime control environment names are forbidden"
+            )
         credential_reference_indexes: set[int] = set()
+        credential_environment_names: set[str] = set()
         safe_value_indexes: set[int] = set()
         for index, argument in enumerate(command_tuple[1:], start=1):
             if index in credential_reference_indexes or index in safe_value_indexes:
@@ -407,10 +436,16 @@ def load_mcp_artifact(
                     command_tuple[index + 1] if index + 1 < len(command_tuple) else ""
                 )
                 reference = _ENV_REFERENCE_RE.fullmatch(candidate)
-                if reference is None or reference.group(1) not in environment_names:
+                if reference is None:
                     raise McpRegistryError(
-                        "credential flags require an allowed environment reference"
+                        "credential flags require an exact environment reference"
                     )
+                if _APPROVED_CREDENTIAL_ENV_RE.fullmatch(reference.group(1)) is None:
+                    raise McpRegistryError(
+                        "credential environment references must use the approved MCP namespace; "
+                        "control environment names are forbidden"
+                    )
+                credential_environment_names.add(reference.group(1))
                 credential_reference_indexes.add(index if separator else index + 1)
                 continue
             if normalized_flag in _BOOLEAN_SAFE_LOCAL_FLAGS:
@@ -450,6 +485,10 @@ def load_mcp_artifact(
             for index, argument in enumerate(command_tuple[1:], start=1)
         ):
             raise McpRegistryError("runtime download URLs are forbidden in MCP argv")
+        if environment_names != credential_environment_names:
+            raise McpRegistryError(
+                "environment must equal the exact credential references consumed by argv"
+            )
         timeout_seconds, _ = _validate_timeout(data.get("timeoutSeconds", 15))
         coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
         return McpArtifact(
@@ -465,7 +504,7 @@ def load_mcp_artifact(
             approved_forgejo_base=approved_base,
             _validation_token=_VALIDATED_ARTIFACT_TOKEN,
             command=command_tuple,
-            environment=tuple(environment),
+            environment=tuple(sorted(credential_environment_names)),
             timeout_seconds=timeout_seconds,
         )
 

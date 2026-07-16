@@ -91,7 +91,7 @@
 
 ### - [ ] Task 2.4 MCP 构件分发 — Owner: Codex
 - 锚点：`+src/skillify/mcp/registry.py`、复用 `packaging/pack.py`、`publish/`
-- MCP 作为并列构件元数据；本地 stdio / 远程 Streamable HTTP；安装前命令/来源/网络/权限预览；本地 stdio 仅允许构件内经审查的直接服务二进制，参数仅限安全选项闭集和显式凭据引用，禁止解释器包装脚本、自由位置参数及子命令，预览必须显示执行与参数约束；**S0 给出 runtime 复用与许可结论**。
+- MCP 作为并列构件元数据；本地 stdio / 远程 Streamable HTTP；安装前命令/来源/网络/权限预览；本地 stdio 仅允许构件内经审查的直接服务二进制，参数仅限安全选项闭集和显式凭据引用，环境必须精确等于命令实际消费且符合 `SKILLIFY_MCP_[A-Z0-9]+(?:_[A-Z0-9]+)*` 规范分段的凭据引用集合，从正向边界排除 loader/runtime 控制变量；禁止解释器包装脚本、自由位置参数及子命令，预览必须显示执行、参数与环境约束；**S0 给出 runtime 复用与许可结论**。
 - **Dev-DoD**：元数据模型 + 预览生成 + 本地 echo MCP 契约（stdio）离线单测。
 - **[test-env]**：内网远程 MCP smoke。
 - commit：`feat(mcp): distribute governed mcp configurations`

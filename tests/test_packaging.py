@@ -116,7 +116,7 @@ def _mcp_metadata(checksum: str) -> dict[str, object]:
         "source": "https://forgejo.internal/approved/echo/releases/download/v1.2.3/approved-echo-1.2.3.tar.gz",
         "transport": "stdio",
         "command": ["/opt/skillify/mcp/echo/bin/server"],
-        "environment": ["PATH"],
+        "environment": [],
         "permissions": {
             "readPaths": [], "writePaths": [], "commands": {}, "networkDomains": [],
             "mcpServers": [], "databaseResources": [], "unattended": False, "confirm": [],
