@@ -22,6 +22,20 @@ class SkillSummary(BaseModel):
     starCount: int
 
 
+class SkillGovernance(BaseModel):
+    compatibleExecutors: list[str] = Field(default_factory=list)
+    requiredMcp: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    scanStatus: str = "not-reported"
+    examples: list[str] = Field(default_factory=list)
+    codeMapReferences: list[str] = Field(default_factory=list)
+    successRate: float | None = None
+    testPassRate: float | None = None
+    sampleSize: int = 0
+    failureReasons: dict[str, int] = Field(default_factory=dict)
+    taskContentCollected: bool = False
+
+
 class SkillDetail(SkillSummary):
     versions: list[str]
     readme: str | None
@@ -36,6 +50,7 @@ class SkillDetail(SkillSummary):
     starCount: int
     starred: bool
     subscribed: bool
+    governance: SkillGovernance = Field(default_factory=SkillGovernance)
 
 
 class SearchResult(BaseModel):

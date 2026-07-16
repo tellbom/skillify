@@ -42,6 +42,7 @@ async function request(path, { params, method = 'GET', body, json, auth = false 
     err.detail = payload.detail
     throw err
   }
+  if (resp.status === 204) return null
   return resp.json()
 }
 
@@ -187,6 +188,12 @@ export function getLeaderboard(dimension, window) {
 
 export function postRating(namespace, name, score) {
   return request(`/skills/${namespace}/${name}/rating`, { method: 'POST', json: { score }, auth: true })
+}
+
+export function reportSkillSignal(namespace, name, version, eventType, success) {
+  return request(`/skills/${namespace}/${name}/events`, {
+    method: 'POST', json: { version, eventType, success }, auth: true,
+  })
 }
 
 // C-2 "我的 Skill" workspace (Task 4 endpoints). All four require auth like every other call

@@ -272,7 +272,7 @@
 - **[test-env]**：真实运行数据 + Promptfoo/Phoenix trace。
 - commit：`feat(evals): gate workflow releases with evidence`
 
-### - [ ] Task 8.3 社区分发与反馈闭环 — Owner: Claude Code
+### - [x] Task 8.3 社区分发与反馈闭环 — Owner: Claude Code
 - 锚点：`web/src/views/SkillDetailView.vue`、`LeaderboardView.vue`
 - 详情页展示兼容执行器/所需 MCP/权限/扫描/示例/Code Map/验收数据；团队精选 Pack；收集安装/成功/卸载/反馈，任务内容不作默认遥测；**以真实数据决定是否做 Claude Code Provider 与可视化执行画布**。
 - **Dev-DoD**：前端 `vue-tsc`/`vitest`/`build` 过；聚合展示对 fake 数据渲染单测。
@@ -280,13 +280,14 @@
 - commit：`feat(community): expose governed workflow catalog`
 
 > **门禁 G8** — Dev：8.1–8.3 Dev-DoD 过。**[test-env] G8**：能回答"哪个 Workflow 在什么 Linux/OpenCode/模型版本、以何权限、完成什么任务、失败原因"，不依赖采集源码/完整 prompt。
+> **状态（2026-07-16）**：Dev G8 扫描/SBOM、TaskEvent 指标/回放门禁、治理详情/精选 Pack/匿名结果反馈已通过；**[test-env] G8 待真实工具链、运行样本和展示数据验证**。
 
 ---
 
 ## 执行看板
 
 ### Dev 完成度（当前环境，编译 + 离线单测）
-- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [x] G6 Dev　- [x] G7 Dev　- [ ] G8 Dev
+- [x] G0 Dev　- [x] G1 Dev　- [x] G2 Dev　- [x] G3 Dev　- [x] G4 Dev　- [x] G5 Dev　- [x] G6 Dev　- [x] G7 Dev　- [x] G8 Dev
 
 ### 测试环境待验收（接入后销账）
 - [ ] G1 [test-env]　- [ ] G2 [test-env]　- [ ] G3 [test-env]　- [ ] G4 [test-env]　- [ ] G5 [test-env]　- [ ] G6 [test-env]　- [ ] G7 [test-env]　- [ ] G8 [test-env]

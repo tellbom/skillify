@@ -21,8 +21,11 @@ def record_event(
     success: bool | None = None,
     machine_id: str | None = None,
 ) -> SkillEvent:
-    if event_type not in ("install", "run"):
-        raise ValueError(f"unknown event_type {event_type!r} (expected 'install' or 'run')")
+    if event_type not in ("install", "run", "uninstall", "feedback"):
+        raise ValueError(
+            f"unknown event_type {event_type!r} "
+            "(expected install, run, uninstall, or feedback)"
+        )
     event = SkillEvent(
         namespace=namespace, name=name, version=version, event_type=event_type,
         success=success, machine_id=machine_id, occurred_at=occurred_at,

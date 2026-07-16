@@ -13,6 +13,7 @@ import { useMenuStore } from '../stores/menu.js'
 import CopyButton from '../components/CopyButton.vue'
 import CommentSection from '../components/CommentSection.vue'
 import RatingWidget from '../components/RatingWidget.vue'
+import SkillGovernancePanel from '../components/SkillGovernancePanel.vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -278,6 +279,13 @@ async function toggleSubscribe() {
               <a v-if="detail.checksumUrl" :href="detail.checksumUrl" class="link-action muted">{{ t('skills.checksum') }}</a>
             </div>
           </section>
+
+          <SkillGovernancePanel
+            :namespace="detail.namespace"
+            :name="detail.name"
+            :version="viewingVersion"
+            :governance="detail.governance"
+          />
 
           <!-- Docs tabs -->
           <section class="docs-section">

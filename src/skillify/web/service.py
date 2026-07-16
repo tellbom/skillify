@@ -156,6 +156,9 @@ def get_skill_detail(
         else False
     )
 
+    governance = latest.orchestration.get("governance", {}) if isinstance(latest.orchestration, dict) else {}
+    if not isinstance(governance, dict):
+        governance = {}
     return SkillDetail(
         namespace=latest.namespace,
         name=latest.name,
@@ -177,6 +180,7 @@ def get_skill_detail(
         starCount=star_count,
         starred=starred,
         subscribed=subscribed,
+        governance=governance,
     )
 
 

@@ -3,6 +3,7 @@ import { ref, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getLeaderboard } from '../lib/api.js'
 import { formatDate } from '../lib/datetime.js'
+import FeaturedWorkflowPacks from '../components/FeaturedWorkflowPacks.vue'
 
 const { t } = useI18n()
 const dimension = ref('installs')
@@ -45,6 +46,8 @@ onMounted(load)
       <h1>{{ t('leaderboard.title') }}</h1>
       <p>发现组织内高质量、热门与最新发布的 Agent Skill</p>
     </header>
+
+    <FeaturedWorkflowPacks />
 
     <div class="dimension-tabs" role="tablist" aria-label="排行榜维度">
       <button
