@@ -1,0 +1,28 @@
+manifestVersion: 1
+namespace: skillify
+name: bugfix
+version: 1.0.0
+description: Reproduce, diagnose, fix, test, and review a bug using explicit evidence gates.
+author: Skillify Team
+license: Apache-2.0
+runtime: custom
+targets: [opencode, codex, project]
+entrypoints:
+  commands:
+    bugfix: workflow.yaml
+permissions:
+  readPaths: ["*"]
+  writePaths: ["*"]
+  commands:
+    "pytest *": allow
+    "git diff *": allow
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [write, command]
+tags: [workflow, bugfix, evidence]
+orchestration:
+  definition: workflow.yaml
+reporting:
+  enabled: false

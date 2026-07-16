@@ -139,7 +139,7 @@
 - **[test-env]**：真实 OpenCode 执行产出质量。
 - commit：`feat(workflows): add project onboarding pack`
 
-### - [ ] Task 4.2 Bugfix Pack
+### - [x] Task 4.2 Bugfix Pack
 - 锚点：`+workflows/bugfix/`
 - 串行角色（复现→根因→实现→测试→Review）；无可复现证据不改码；产物含复现命令/失败测试/补丁/通过测试/剩余风险。
 - **Dev-DoD**：Pack 结构 + 角色编排定义离线校验；golden tests（Fake）过。

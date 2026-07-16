@@ -1,0 +1,31 @@
+workflowVersion: 1
+id: evidence-bugfix
+execution: serial
+mode: workspace-write
+roles:
+  - id: reproduce
+    prompt: Reproduce the reported behavior and record the exact command plus failing evidence. Stop without editing if it cannot be reproduced.
+    output: artifacts/reproduction.md
+    requiresEvidence: true
+  - id: root-cause
+    prompt: Trace the failure to the smallest evidence-backed root cause and cite relevant Code Map positions.
+    output: artifacts/root-cause.md
+    requiresEvidence: true
+  - id: implementation
+    prompt: Apply the smallest patch that addresses the demonstrated root cause.
+    output: artifacts/change.patch
+  - id: test
+    prompt: Run the failing test and focused regression suite, recording commands and outcomes.
+    output: artifacts/test-results.md
+    requiresEvidence: true
+  - id: review
+    prompt: Review the patch against the reproduction, test evidence, and scope; report remaining risks.
+    output: artifacts/review.md
+    requiresEvidence: true
+gates:
+  - id: reproduction-evidence
+    beforeRole: implementation
+    requiredByDefault: true
+artifacts:
+  - bugfix-report.md
+  - change.patch
