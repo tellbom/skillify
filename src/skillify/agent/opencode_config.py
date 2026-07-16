@@ -30,6 +30,7 @@ from skillify.agent.capability_lock import (
     LockedDependency,
 )
 from skillify.agent.permissions import MergedPermissions, summarize_permissions
+from skillify.agent.codegraph import mcp_environment
 from skillify.install.resolver import Coordinate
 from skillify.mcp.registry import McpRegistry, render_opencode_mcp
 from skillify.validator import validate_skill_dir
@@ -1207,3 +1208,37 @@ def rollback_install(
         permission_summary={}, resulting_lock=target, expected_current_digest=current.digest,
     )
     return apply_install(plan)
+
+
+def configure_codegraph_mcp(
+    paths: OpenCodeScopePaths,
+    *,
+    executable: str = "codegraph",
+    dry_run: bool = False,
+) -> bool:
+    """Add the pinned CodeGraph MCP entry without owning unrelated OpenCode config."""
+    original, config = _read_config(paths)
+    mcp = dict(config.get("mcp", {}))
+    desired = {
+        "type": "local",
+        "command": [executable, "serve", "--mcp"],
+        "environment": mcp_environment(paths.workspace),
+        "enabled": True,
+    }
+    existing = mcp.get("codegraph_explore")
+    if existing is not None and existing != desired:
+        raise OpenCodeConfigConflict("MCP key is not owned by Skillify: /mcp/codegraph_explore")
+    if existing == desired:
+        return False
+    if dry_run:
+        return True
+    mcp["codegraph_explore"] = desired
+    config["mcp"] = mcp
+    relative = paths.relative(paths.config_file)
+    _atomic_target_write(
+        paths,
+        relative,
+        _canonical_json(config),
+        expected_sha256=None if original is None else _sha(original),
+    )
+    return True
