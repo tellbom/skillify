@@ -22,7 +22,7 @@ from skillify.agent.shogun.config_gen import GeneratedShogunConfig, generate_con
 from skillify.agent.shogun.contract import COMMAND_FILE, scan_queue
 from skillify.agent.shogun.distribution import (
     SHOGUN_VERSION, ShogunDistributionError, check_bundle_layout,
-    check_host_dependencies, load_manifest, verify_artifact,
+    check_host_dependencies, load_manifest, require_installable, verify_artifact,
 )
 from skillify.agent.shogun.events import TeamEventMapper
 from skillify.agent.shogun.lifecycle import ActiveTeam, ProcessRuntime, RuntimeControl, ShogunLifecycle
@@ -64,6 +64,7 @@ class ShogunProvider(AgentProvider):
     def probe(self) -> ProviderProbe:
         try:
             manifest = load_manifest(self.manifest_path)
+            require_installable(manifest)
             verify_artifact(self.artifact_path, manifest)
             check_bundle_layout(self.install_root, manifest)
             cli = "opencode" if check_host_dependencies("opencode").available else "claude-code"
@@ -78,6 +79,7 @@ class ShogunProvider(AgentProvider):
         if spec.execution_mode != "team" or spec.preferred_cli not in {"opencode", "claude-code"}:
             raise ValueError("Shogun provider requires team execution")
         manifest = load_manifest(self.manifest_path)
+        require_installable(manifest)
         verify_artifact(self.artifact_path, manifest)
         check_bundle_layout(self.install_root, manifest)
         dependencies = check_host_dependencies(spec.preferred_cli)

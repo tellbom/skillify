@@ -26,7 +26,8 @@ from skillify.install.opencode_distribution import (
 from skillify.install.projector import agent_skills_root, load_agent_rule
 from skillify.credentials.store import EncryptedFileSecretStore
 from skillify.agent.shogun.distribution import (
-    ShogunDistributionError, check_host_dependencies, load_manifest, verify_artifact,
+    ShogunDistributionError, check_host_dependencies, load_manifest, require_installable,
+    verify_artifact,
 )
 
 REQUIRED_BINARIES = ["uv"]
@@ -200,6 +201,7 @@ def _check_shogun(config: AgentLocalConfig) -> CheckResult:
         )
     try:
         manifest = load_manifest(Path(config.shogun_manifest_path or ""))
+        require_installable(manifest)
         verify_artifact(Path(config.shogun_artifact_path or ""), manifest)
         status = check_host_dependencies(config.provider)
     except (OSError, ValueError, ShogunDistributionError) as exc:

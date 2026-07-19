@@ -41,6 +41,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise ShogunDistributionError("Shogun approval metadata is unsupported")
+    if type(value.get("installable")) is not bool:
+        raise ShogunDistributionError("Shogun installable approval flag is invalid")
     artifact = value.get("artifact")
     if not isinstance(artifact, dict) or set(artifact) != {
         "filename", "sha256", "sourceUrl", "intranetUri",
@@ -59,6 +61,13 @@ def load_manifest(path: Path) -> dict[str, Any]:
     }.issubset(requirements):
         raise ShogunDistributionError("Shogun offline bundle requirements are incomplete")
     return value
+
+
+def require_installable(manifest: dict[str, Any]) -> None:
+    if manifest.get("installable") is not True:
+        raise ShogunDistributionError(
+            "Shogun offline bundle is not approved; single/delegated remain available"
+        )
 
 
 def verify_artifact(path: Path, manifest: dict[str, Any]) -> None:
