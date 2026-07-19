@@ -141,16 +141,15 @@ class ShogunProvider(AgentProvider):
         for _ in self.runtime.queue_states(runtime.generated.queue_dir):
             terminal = False
             for item in scan_queue(runtime.generated.queue_dir):
-                event = mapper.map(
+                events = mapper.map_all(
                     task_id=session.task_id, session_id=session.session_id,
                     item=item, occurred_at=datetime.now(timezone.utc),
                 )
-                if event is None:
-                    continue
-                yield event
-                terminal = event.type in {
-                    EventType.TEAM_COMPLETED, EventType.TEAM_FAILED, EventType.TEAM_CANCELLED,
-                }
+                for event in events:
+                    yield event
+                    terminal = terminal or event.type in {
+                        EventType.TEAM_COMPLETED, EventType.TEAM_FAILED, EventType.TEAM_CANCELLED,
+                    }
             if terminal:
                 return
 

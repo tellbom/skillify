@@ -29,24 +29,19 @@ _STATUS_EVENTS: dict[tuple[str, str], tuple[EventType, TaskState]] = {
 class TeamEventMapper:
     def __init__(self) -> None:
         self._seen: dict[tuple[str, str], str] = {}
+        self._started_workers: set[str] = set()
         self._sequence = 0
 
-    def map(
+    def _event(
         self,
         *,
         task_id: str,
         session_id: str,
         item: QueueItem,
         occurred_at: datetime,
-    ) -> TaskEvent | None:
-        identity = (item.kind, item.item_id)
-        if not item.status or self._seen.get(identity) == item.status:
-            return None
-        self._seen[identity] = item.status
-        mapped = _STATUS_EVENTS.get((item.kind, item.status))
-        if mapped is None:
-            return None
-        event_type, state = mapped
+        event_type: EventType,
+        state: TaskState,
+    ) -> TaskEvent:
         self._sequence += 1
         work_package_id = item.parent_id or (item.item_id if item.kind == "task" else None)
         details = {
@@ -63,3 +58,45 @@ class TeamEventMapper:
             timestamp=occurred_at, type=event_type, state=state,
             details={key: value for key, value in details.items() if value is not None},
         )
+
+    def map_all(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        item: QueueItem,
+        occurred_at: datetime,
+    ) -> tuple[TaskEvent, ...]:
+        identity = (item.kind, item.item_id)
+        if not item.status or self._seen.get(identity) == item.status:
+            return ()
+        self._seen[identity] = item.status
+        mapped = _STATUS_EVENTS.get((item.kind, item.status))
+        if mapped is None:
+            return ()
+        event_type, state = mapped
+        if item.worker_id == "gunshi":
+            if item.kind == "task" and item.status in {"assigned", "in_progress"}:
+                event_type, state = EventType.REVIEW_STARTED, TaskState.RUNNING
+            elif item.kind == "report" and item.status == "done":
+                event_type, state = EventType.REVIEW_COMPLETED, TaskState.RUNNING
+        events = []
+        if item.kind == "task" and item.worker_id and item.worker_id not in self._started_workers:
+            self._started_workers.add(item.worker_id)
+            events.append(self._event(
+                task_id=task_id, session_id=session_id, item=item, occurred_at=occurred_at,
+                event_type=EventType.WORKER_STARTED, state=TaskState.RUNNING,
+            ))
+        events.append(self._event(
+            task_id=task_id, session_id=session_id, item=item, occurred_at=occurred_at,
+            event_type=event_type, state=state,
+        ))
+        return tuple(events)
+
+    def map(
+        self, *, task_id: str, session_id: str, item: QueueItem, occurred_at: datetime,
+    ) -> TaskEvent | None:
+        events = self.map_all(
+            task_id=task_id, session_id=session_id, item=item, occurred_at=occurred_at,
+        )
+        return events[-1] if events else None
