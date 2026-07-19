@@ -32,6 +32,10 @@ def generate_config(
     model: str,
     credential_refs: Mapping[str, str] | None = None,
     endpoint_environment: Mapping[str, str] | None = None,
+    work_packages: tuple[dict[str, object], ...] = (),
+    mcp_servers: Mapping[str, dict[str, object]] | None = None,
+    network_allowlist: tuple[str, ...] = (),
+    mcp_network_allowlist: Mapping[str, tuple[str, ...]] | None = None,
 ) -> GeneratedShogunConfig:
     if preferred_cli not in {"opencode", "claude-code"}:
         raise ValueError("Shogun supports only OpenCode or Claude Code")
@@ -71,17 +75,58 @@ def generate_config(
     settings_path.write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
     settings_path.chmod(0o600)
 
+    package_permissions: dict[str, dict[str, object]] = {}
+    worker_mcp: dict[str, list[str]] = {}
+    available_mcp = set((mcp_servers or {}).keys())
+    for index, package in enumerate(work_packages, start=1):
+        worker = f"ashigaru{index}"
+        allowed_paths = package.get("allowedPaths", [])
+        if not isinstance(allowed_paths, (list, tuple)) or any(
+            not isinstance(path, str) or not path or path.startswith("/") or ".." in Path(path).parts
+            for path in allowed_paths
+        ):
+            raise ValueError("Shogun work-package paths must be relative and bounded")
+        read_only = package.get("readOnly") is True or package.get("access") == "read"
+        requested_mcp = package.get("recommendedMcp", [])
+        if not isinstance(requested_mcp, (list, tuple)):
+            raise ValueError("Shogun work-package MCP declarations must be a list")
+        package_permissions[worker] = {
+            "read": list(allowed_paths),
+            "edit": [] if read_only else list(allowed_paths),
+        }
+        worker_mcp[worker] = sorted(set(requested_mcp) & available_mcp)
+    package_network = {
+        target for name, targets in (mcp_network_allowlist or {}).items()
+        if name in available_mcp for target in targets
+    }
+    effective_network = sorted(set(network_allowlist) & package_network)
     permissions = {
-        "common": {"edit_deny": [".git/**", "queue/inbox/*.yaml"]},
+        "common": {
+            "edit_deny": [".git/**", "queue/inbox/*.yaml"],
+            "network_default": "deny",
+            "network_allow": effective_network,
+        },
         "roles": {
-            "coordinator": {"read": ["**/*"], "edit": []},
-            "worker": {"read": ["**/*"], "edit": []},
-            "reviewer": {"read": ["**/*"], "edit": []},
+            "karo": {"display_name": "Coordinator", "read": ["queue/reports/**"], "edit": []},
+            **package_permissions,
+            "gunshi": {"display_name": "Reviewer", "read": ["**/*"], "edit": []},
+            "integration": {
+                "display_name": "Integration", "read": ["**/*"],
+                "edit": sorted({path for item in package_permissions.values() for path in item["edit"]}),
+                "git_push": "deny",
+            },
         },
     }
     permissions_path = config_dir / "opencode-permissions.yaml"
     permissions_path.write_text(yaml.safe_dump(permissions, sort_keys=False), encoding="utf-8")
     permissions_path.chmod(0o600)
+    settings["skillify"].update({
+        "worker_mcp": worker_mcp,
+        "network_allowlist": effective_network,
+        "worker_shell_residual_risk": "trusted-intranet-host-only",
+    })
+    settings_path.write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
+    settings_path.chmod(0o600)
 
     entrypoint = Path(install_root) / "shutsujin_departure.sh"
     environment = {

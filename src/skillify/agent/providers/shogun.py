@@ -87,6 +87,10 @@ class ShogunProvider(AgentProvider):
             model=spec.runtime.model,
             credential_refs=spec.credential_refs,
             endpoint_environment=spec.network_environment,
+            work_packages=spec.work_packages,
+            mcp_servers=spec.mcp_servers,
+            network_allowlist=spec.network_allowlist,
+            mcp_network_allowlist=spec.mcp_network_allowlist,
         )
         team = self.lifecycle.start(spec.config_dir.name, generated, install_root=self.install_root)
         handle_id = uuid.uuid4().hex

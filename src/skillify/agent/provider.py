@@ -76,6 +76,8 @@ class ProviderStartSpec:
     work_packages: tuple[dict[str, object], ...] = ()
     credential_refs: dict[str, str] = field(default_factory=dict)
     network_environment: dict[str, str] = field(default_factory=dict)
+    network_allowlist: tuple[str, ...] = ()
+    mcp_network_allowlist: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:
