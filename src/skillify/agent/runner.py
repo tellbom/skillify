@@ -68,10 +68,11 @@ class TaskRunner:
             f"Fixed inputs: {json.dumps(dict(envelope.parameters), sort_keys=True, ensure_ascii=False)}"
         )
         start_spec = self.start_spec(envelope)
+        injection_runtime = envelope.preferred_cli if envelope.runtime == "shogun" else envelope.runtime
         plan = select_task_mcp(
-            envelope.mcp_packages, self.mcp_catalog, runtime=envelope.runtime,
+            envelope.mcp_packages, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,
             workspace=start_spec.workspace,
-            per_task_supported=self.per_task_mcp.get(envelope.runtime, True),
+            per_task_supported=self.per_task_mcp.get(injection_runtime or envelope.runtime, True),
         )
         if plan.log:
             self.log(plan.log)
@@ -101,6 +102,12 @@ class TaskRunner:
                     reason_code=str(event.details["reason_code"]) if event.details.get("reason_code") else None,
                     nonce=envelope.nonce,
                     state_version=version,
+                    worker_id=str(event.details["worker_id"]) if event.details.get("worker_id") else None,
+                    work_package_id=(
+                        str(event.details["work_package_id"])
+                        if event.details.get("work_package_id") else None
+                    ),
+                    stage=str(event.details["stage"]) if event.details.get("stage") else None,
                 )
                 self.outbox.enqueue(event_id, payload)
                 version += 1

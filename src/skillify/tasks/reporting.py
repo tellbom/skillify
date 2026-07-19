@@ -18,6 +18,11 @@ EVENT_TYPES = frozenset({
     "task.received", "task.confirmed", "task.started", "test.completed",
     "artifact.created", "task.succeeded", "task.failed", "task.rejected",
     "task.cancelled", "task.rolled_back",
+    "team.preparing", "team.started", "worker.started",
+    "work_package.assigned", "work_package.blocked", "work_package.started",
+    "work_package.completed", "review.started", "review.completed",
+    "team.waiting_approval", "team.cancelling", "team.cancelled",
+    "team.completed", "team.failed",
 })
 
 
@@ -90,6 +95,9 @@ def build_task_event(
     reason_code: str | None = None,
     nonce: str | None = None,
     state_version: int | None = None,
+    worker_id: str | None = None,
+    work_package_id: str | None = None,
+    stage: str | None = None,
 ) -> dict[str, Any]:
     """Construct a closed payload with no free-form prompt, source, path, or secret field."""
     identifiers = (event_id, task_id, workflow_id, provider)
@@ -124,6 +132,13 @@ def build_task_event(
         payload["nonce"] = nonce
     if state_version is not None:
         payload["stateVersion"] = state_version
+    for key, value in (
+        ("workerId", worker_id), ("workPackageId", work_package_id), ("stage", stage),
+    ):
+        if value is not None:
+            if not _IDENTIFIER.fullmatch(value):
+                raise ValueError(f"{key} must be a stable identifier")
+            payload[key] = value
     return payload
 
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from skillify.index.models import (
     EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
-    WorkPackageRecord,
+    EndpointTeamRecord, EndpointTeamWorkerEventRecord, WorkPackageRecord,
 )
 from skillify.tasks.protocol import TaskConflictError, TaskEnvelope, TaskReplayError
 from skillify.tasks.work_package import WorkPackage
@@ -67,6 +67,9 @@ def dispatch_task(
     workspace_alias: str,
     inputs: dict[str, Any],
     runtime: str = "opencode",
+    execution_mode: str = "single",
+    preferred_cli: str | None = None,
+    team_policy: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> EndpointTaskRecord:
     endpoint = session.get(EndpointBinding, endpoint_id)
@@ -78,8 +81,15 @@ def dispatch_task(
         raise ValueError("workspace alias is not registered by this endpoint")
     if not re.fullmatch(r"\d+\.\d+\.\d+", workflow_version):
         raise ValueError("workflow version must be a published semantic version")
-    if runtime not in {"opencode", "claude-code"}:
+    if execution_mode not in {"single", "delegated", "team"}:
+        raise ValueError("execution mode is unsupported")
+    if execution_mode == "team":
+        if preferred_cli not in {"opencode", "claude-code"}:
+            raise ValueError("team mode requires an approved preferred CLI")
+        runtime = "shogun"
+    elif runtime not in {"opencode", "claude-code"}:
         raise ValueError("runtime must be opencode or claude-code")
+    policy = dict(team_policy or {})
     _validate_inputs(workflow_id, inputs)
     timestamp = now or datetime.now(timezone.utc)
     task = EndpointTaskRecord(
@@ -91,6 +101,10 @@ def dispatch_task(
         workspace_alias=workspace_alias,
         inputs=dict(inputs),
         runtime=runtime,
+        execution_mode=execution_mode,
+        collaboration_runtime="shogun" if execution_mode == "team" else None,
+        preferred_cli=preferred_cli if execution_mode == "team" else runtime,
+        team_policy=policy,
         state="awaiting_confirmation",
         approval_required=True,
         created_at=timestamp,
@@ -98,12 +112,19 @@ def dispatch_task(
     )
     session.add(task)
     session.flush()
+    if execution_mode == "team":
+        session.add(EndpointTeamRecord(
+            task_id=task.task_id, execution_mode="team", collaboration_runtime="shogun",
+            preferred_cli=preferred_cli or "opencode", team_policy=policy, state="pending",
+            created_at=timestamp, updated_at=timestamp,
+        ))
     summary = next((value for value in inputs.values() if isinstance(value, str)), workflow_id)
     session.add(WorkPackageRecord(
         package_id=uuid.uuid4().hex, task_id=task.task_id,
         objective=f"Complete {workflow_id}: {summary}", allowed_paths=["**/*"],
         dependencies=[], access="write", recommended_skills=[], recommended_mcp=["codegraph"],
         acceptance_commands=[], parallelizable=False, confirmed=False,
+        depends_on=[], read_only=False, verification=[],
     ))
     session.flush()
     return task
@@ -140,6 +161,12 @@ def issue_task_envelope(
             name for package in list_work_packages(session, task.task_id) if package.confirmed
             for name in package.recommended_mcp
         })),
+        execution_mode=task.execution_mode,
+        preferred_cli=task.preferred_cli,
+        team_policy=task.team_policy or {},
+        work_packages=tuple(_work_package_record_dict(package) for package in list_work_packages(
+            session, task.task_id,
+        ) if package.confirmed),
     ).sign(secret)
     task.envelope_json = envelope.to_dict()
     task.issued_at = now
@@ -207,6 +234,9 @@ def record_task_event(
     diff_stats: dict[str, Any] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
     failure_reason: str | None = None,
+    worker_id: str | None = None,
+    work_package_id: str | None = None,
+    stage: str | None = None,
 ) -> tuple[EndpointTaskEventRecord, bool]:
     existing = session.scalar(select(EndpointTaskEventRecord).where(
         EndpointTaskEventRecord.event_id == event_id,
@@ -221,6 +251,8 @@ def record_task_event(
         "task.started": "running", "task.succeeded": "succeeded",
         "task.failed": "failed", "task.rejected": "rejected",
         "task.cancelled": "cancelled",
+        "team.started": "running", "team.completed": "succeeded",
+        "team.failed": "failed", "team.cancelled": "cancelled",
     }.get(event_type)
     task.state_version += 1
     if terminal is not None:
@@ -231,8 +263,20 @@ def record_task_event(
         occurred_at=occurred_at, summary=summary, test_summary=test_summary,
         diff_stats=diff_stats, artifacts=artifacts or [],
         failure_reason=failure_reason,
+        worker_id=worker_id, work_package_id=work_package_id, stage=stage,
     )
-    session.add(record); session.flush()
+    session.add(record)
+    if event_type.startswith(("team.", "worker.", "work_package.", "review.")):
+        session.add(EndpointTeamWorkerEventRecord(
+            event_id=event_id, task_id=task_id, event_type=event_type,
+            worker_id=worker_id, work_package_id=work_package_id, stage=stage,
+            summary=summary, occurred_at=occurred_at,
+        ))
+        team = session.get(EndpointTeamRecord, task_id)
+        if team is not None:
+            team.state = event_type
+            team.updated_at = occurred_at
+    session.flush()
     return record, True
 
 
@@ -257,6 +301,20 @@ def list_work_packages(session: Session, task_id: str) -> list[WorkPackageRecord
     ))
 
 
+def _work_package_record_dict(item: WorkPackageRecord) -> dict[str, Any]:
+    return {
+        "packageId": item.package_id, "taskId": item.task_id, "objective": item.objective,
+        "allowedPaths": list(item.allowed_paths),
+        "dependencies": list(item.dependencies), "dependsOn": list(item.depends_on or item.dependencies),
+        "access": item.access, "readOnly": item.read_only or item.access == "read",
+        "recommendedSkills": list(item.recommended_skills),
+        "recommendedMcp": list(item.recommended_mcp),
+        "acceptanceCommands": list(item.acceptance_commands),
+        "verification": list(item.verification or item.acceptance_commands),
+        "parallelizable": item.parallelizable, "confirmed": item.confirmed,
+    }
+
+
 def replace_work_packages(
     session: Session, task: EndpointTaskRecord, packages: tuple[WorkPackage, ...]
 ) -> list[WorkPackageRecord]:
@@ -278,6 +336,9 @@ def replace_work_packages(
             recommended_mcp=list(package.recommended_mcp),
             acceptance_commands=list(package.acceptance_commands),
             parallelizable=package.parallelizable, confirmed=False,
+            depends_on=list(package.depends_on or package.dependencies),
+            read_only=package.read_only or package.access == "read",
+            verification=list(package.verification or package.acceptance_commands),
         )
         session.add(record); records.append(record)
     session.flush()

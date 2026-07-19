@@ -262,6 +262,9 @@ class EndpointTaskCreateIn(BaseModel):
     workspaceAlias: str
     inputs: dict[str, Any]
     runtime: str = "opencode"
+    executionMode: str = "single"
+    preferredCli: str | None = None
+    teamPolicy: dict[str, Any] = Field(default_factory=dict)
 
 
 class EndpointTaskEventOut(BaseModel):
@@ -272,6 +275,9 @@ class EndpointTaskEventOut(BaseModel):
     diffStats: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     failureReason: str | None = None
+    workerId: str | None = None
+    workPackageId: str | None = None
+    stage: str | None = None
 
 
 class WorkPackageIn(BaseModel):
@@ -286,6 +292,9 @@ class WorkPackageIn(BaseModel):
     acceptanceCommands: list[str] = Field(default_factory=list)
     parallelizable: bool = False
     confirmed: bool = False
+    dependsOn: list[str] = Field(default_factory=list)
+    readOnly: bool = False
+    verification: list[str] = Field(default_factory=list)
 
 
 class WorkPackageListIn(BaseModel):
@@ -299,6 +308,10 @@ class EndpointTaskOut(BaseModel):
     workflowVersion: str
     workspaceAlias: str
     runtime: str
+    executionMode: str = "single"
+    collaborationRuntime: str | None = None
+    preferredCli: str | None = None
+    teamPolicy: dict[str, Any] = Field(default_factory=dict)
     state: str
     approvalRequired: bool
     createdAt: datetime
@@ -322,3 +335,6 @@ class EndpointEventIn(EndpointTaskLifecycleIn):
     diffStats: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     failureReason: str | None = None
+    workerId: str | None = None
+    workPackageId: str | None = None
+    stage: str | None = None

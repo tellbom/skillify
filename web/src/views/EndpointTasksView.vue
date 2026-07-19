@@ -18,7 +18,19 @@ const tasks = ref([])
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
-const form = reactive({ endpointId: '', workspaceAlias: '', runtime: 'opencode', workflowId: 'evidence-bugfix', value: '' })
+const TEAM_ENABLED = import.meta.env.VITE_SHOGUN_TEAM_ENABLED === 'true'
+const form = reactive({
+  endpointId: '', workspaceAlias: '', runtime: 'opencode', executionMode: 'single',
+  workflowId: 'evidence-bugfix', value: '',
+})
+
+function workerLabel(workerId) {
+  if (!workerId) return ''
+  if (workerId === 'karo' || workerId === 'coordinator') return 'Coordinator'
+  if (workerId === 'gunshi') return 'Reviewer'
+  const match = /^ashigaru(\d+)$/.exec(workerId)
+  return match ? `Worker ${match[1]}` : workerId
+}
 
 function editableTask(task) {
   return {
@@ -68,6 +80,15 @@ async function submit() {
       endpointId: form.endpointId,
       workspaceAlias: form.workspaceAlias,
       runtime: form.runtime,
+      executionMode: form.executionMode,
+      preferredCli: form.executionMode === 'team' ? form.runtime : null,
+      teamPolicy: form.executionMode === 'team' ? {
+        min_workers: 2,
+        max_active_workers: 3,
+        max_parallel_model_calls: 2,
+        max_team_duration_minutes: 120,
+        require_independent_review: true,
+      } : {},
       workflowId: form.workflowId,
       workflowVersion: '1.0.0',
       inputs,
@@ -140,6 +161,13 @@ onMounted(load)
               <option value="claude-code">Claude Code</option>
             </select>
           </label>
+          <label>执行模式
+            <select v-model="form.executionMode" data-testid="execution-mode-select">
+              <option value="single">Single</option>
+              <option value="delegated">Delegated</option>
+              <option value="team" :disabled="!TEAM_ENABLED">Team {{ TEAM_ENABLED ? '' : '（待测试环境验收）' }}</option>
+            </select>
+          </label>
           <label>Workflow
             <select v-model="form.workflowId" data-testid="workflow-select">
               <option v-for="workflow in WORKFLOWS" :key="workflow.id" :value="workflow.id">{{ workflow.label }}</option>
@@ -157,11 +185,11 @@ onMounted(load)
         <article v-for="task in tasks" :key="task.taskId" class="task-row">
           <div class="task-summary">
             <span class="status-dot" :class="task.state" />
-            <div><strong>{{ task.workflowId }}</strong><small>{{ task.runtime }}</small><code>{{ task.taskId }}</code></div>
+            <div><strong>{{ task.workflowId }}</strong><small>{{ task.executionMode || 'single' }} · {{ task.preferredCli || task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
           </div>
           <section v-if="task.workPackages?.length" class="work-packages">
-            <header><strong>委派工作包</strong><span>确认后由执行器原生管理子 Agent</span></header>
+            <header><strong>协作工作包</strong><span>确认后由所选执行器管理 Agent</span></header>
             <div v-for="item in task.workPackages" :key="item.packageId" class="work-package">
               <label>目标<input v-model="item.objective" data-testid="package-objective"></label>
               <label>允许路径<input v-model="item.pathsText" data-testid="package-paths"></label>
@@ -169,6 +197,7 @@ onMounted(load)
                 <select v-model="item.access"><option value="read">只读</option><option value="write">读写</option></select>
               </label>
               <label class="parallel"><input v-model="item.parallelizable" type="checkbox">可并行</label>
+              <label class="parallel"><input v-model="item.readOnly" type="checkbox">只读</label>
             </div>
             <div class="package-actions">
               <button type="button" @click="savePackages(task)">保存工作包</button>
@@ -178,7 +207,7 @@ onMounted(load)
           </section>
           <ol v-if="task.events?.length" class="timeline">
             <li v-for="event in task.events" :key="`${event.eventType}-${event.occurredAt}`">
-              <div><strong>{{ event.eventType }}</strong><time>{{ event.occurredAt }}</time></div>
+              <div><strong>{{ event.eventType }} <em v-if="event.workerId">· {{ workerLabel(event.workerId) }}</em></strong><time>{{ event.occurredAt }}</time></div>
               <p v-if="event.summary">{{ event.summary }}</p>
               <p v-if="event.failureReason" class="failure">{{ event.failureReason }}</p>
               <p v-if="event.testSummary" class="evidence">

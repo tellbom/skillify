@@ -934,6 +934,10 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
         workflowVersion=task.workflow_version,
         workspaceAlias=task.workspace_alias,
         runtime=task.runtime,
+        executionMode=task.execution_mode,
+        collaborationRuntime=task.collaboration_runtime,
+        preferredCli=task.preferred_cli,
+        teamPolicy=task.team_policy or {},
         state=task.state,
         approvalRequired=task.approval_required,
         createdAt=task.created_at,
@@ -946,6 +950,9 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
             diffStats=event.diff_stats,
             artifacts=event.artifacts,
             failureReason=event.failure_reason,
+            workerId=event.worker_id,
+            workPackageId=event.work_package_id,
+            stage=event.stage,
         ) for event in events],
         workPackages=[WorkPackageIn(
             packageId=item.package_id, taskId=item.task_id, objective=item.objective,
@@ -953,6 +960,9 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
             recommendedSkills=item.recommended_skills, recommendedMcp=item.recommended_mcp,
             acceptanceCommands=item.acceptance_commands, parallelizable=item.parallelizable,
             confirmed=item.confirmed,
+            dependsOn=item.depends_on or item.dependencies,
+            readOnly=item.read_only or item.access == "read",
+            verification=item.verification or item.acceptance_commands,
         ) for item in packages],
     )
 
@@ -992,6 +1002,8 @@ def create_endpoint_task(
     session = _session()
     try:
         try:
+            if payload.executionMode == "team" and not load_config().shogun_team_enabled:
+                raise RuntimeError("team runtime is unavailable until test-environment gates pass")
             task = dispatch_task(
                 session,
                 owner=username,
@@ -1001,6 +1013,9 @@ def create_endpoint_task(
                 workspace_alias=payload.workspaceAlias,
                 inputs=payload.inputs,
                 runtime=payload.runtime,
+                execution_mode=payload.executionMode,
+                preferred_cli=payload.preferredCli,
+                team_policy=payload.teamPolicy,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc

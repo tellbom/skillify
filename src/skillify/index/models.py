@@ -247,6 +247,10 @@ class EndpointTaskRecord(Base):
     workspace_alias: Mapped[str] = mapped_column(String(64))
     inputs: Mapped[dict] = mapped_column(JSONText(), default=dict)
     runtime: Mapped[str] = mapped_column(String(32), default="opencode", nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), default="single", nullable=False)
+    collaboration_runtime: Mapped[str | None] = mapped_column(String(32), default=None)
+    preferred_cli: Mapped[str | None] = mapped_column(String(32), default=None)
+    team_policy: Mapped[dict] = mapped_column(JSONText(), default=dict)
     envelope_json: Mapped[dict | None] = mapped_column(JSONText(), default=None)
     state: Mapped[str] = mapped_column(String(32), index=True)
     state_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -275,6 +279,9 @@ class EndpointTaskEventRecord(Base):
     diff_stats: Mapped[dict | None] = mapped_column(JSONText(), default=None)
     artifacts: Mapped[list] = mapped_column(JSONText(), default=list)
     failure_reason: Mapped[str | None] = mapped_column(String(128), default=None)
+    worker_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    work_package_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    stage: Mapped[str | None] = mapped_column(String(64), default=None)
 
 
 class EndpointTaskNonce(Base):
@@ -301,3 +308,34 @@ class WorkPackageRecord(Base):
     acceptance_commands: Mapped[list] = mapped_column(JSONText(), default=list)
     parallelizable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    depends_on: Mapped[list] = mapped_column(JSONText(), default=list)
+    read_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    verification: Mapped[list] = mapped_column(JSONText(), default=list)
+
+
+class EndpointTeamRecord(Base):
+    __tablename__ = "endpoint_team_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    execution_mode: Mapped[str] = mapped_column(String(16), default="team", nullable=False)
+    collaboration_runtime: Mapped[str] = mapped_column(String(32), default="shogun", nullable=False)
+    preferred_cli: Mapped[str] = mapped_column(String(32), nullable=False)
+    team_policy: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EndpointTeamWorkerEventRecord(Base):
+    __tablename__ = "endpoint_team_worker_events"
+    __table_args__ = (UniqueConstraint("event_id", name="uq_team_worker_event_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(128))
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    worker_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    work_package_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    stage: Mapped[str | None] = mapped_column(String(64), default=None)
+    summary: Mapped[str | None] = mapped_column(String(500), default=None)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

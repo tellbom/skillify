@@ -53,6 +53,7 @@ class AgentLocalConfig:
     shogun_manifest_path: str | None = None
     shogun_artifact_path: str | None = None
     shogun_install_root: str | None = None
+    shogun_team_enabled: bool = False
 
 
 def load_agent_paths(
@@ -102,6 +103,10 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     }.items():
         if env_name in os.environ:
             data[key] = [value.strip() for value in os.environ[env_name].split(",") if value.strip()]
+    if "SKILLIFY_AGENT_SHOGUN_TEAM_ENABLED" in os.environ:
+        data["shogun_team_enabled"] = os.environ["SKILLIFY_AGENT_SHOGUN_TEAM_ENABLED"].strip().lower() in {
+            "1", "true", "yes", "on",
+        }
     config = AgentLocalConfig(
         provider=str(data.get("provider", "opencode")),
         allowed_workspaces=tuple(data.get("allowed_workspaces", ())),
@@ -117,6 +122,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         shogun_manifest_path=data.get("shogun_manifest_path"),
         shogun_artifact_path=data.get("shogun_artifact_path"),
         shogun_install_root=data.get("shogun_install_root"),
+        shogun_team_enabled=bool(data.get("shogun_team_enabled", False)),
     )
     if config.provider not in {"opencode", "claude-code"}:
         raise ValueError("provider must be opencode or claude-code")
@@ -158,6 +164,7 @@ class SkillifyConfig:
     webhook_secret: str | None = None  # T2.1: shared secret for Forgejo webhook HMAC verification
     endpoint_task_signing_secret: str | None = None
     endpoint_device_secret: str | None = None
+    shogun_team_enabled: bool = False
     # Skillify business DB. Production uses the external DM8 schema initialized by
     # infra/dm8-init/01-skillify-schema.sql; SQLite remains available for local tests.
     index_db_url: str | None = None
@@ -250,6 +257,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         webhook_secret=data.get("webhook_secret"),
         endpoint_task_signing_secret=data.get("endpoint_task_signing_secret"),
         endpoint_device_secret=data.get("endpoint_device_secret"),
+        shogun_team_enabled=bool(data.get("shogun_team_enabled", False)),
         index_db_url=data.get("index_db_url"),
         keycloak_realm_url=data.get("keycloak_realm_url"),
         keycloak_audience=data.get("keycloak_audience"),
@@ -286,5 +294,9 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
     web_git_env = os.environ.get("SKILLIFY_WEB_UPLOAD_GIT_ENABLED")
     if web_git_env is not None:
         cfg.web_upload_git_enabled = web_git_env.strip().lower() in ("1", "true", "yes", "on")
+
+    team_env = os.environ.get("SKILLIFY_SHOGUN_TEAM_ENABLED")
+    if team_env is not None:
+        cfg.shogun_team_enabled = team_env.strip().lower() in ("1", "true", "yes", "on")
 
     return cfg

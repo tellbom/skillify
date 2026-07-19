@@ -258,12 +258,33 @@ def _build_runner(outbox: LocalOutbox):
         if raw is None:
             raise ValueError("workspace alias is not configured on this endpoint")
         workspace = Path(raw).resolve(strict=True)
+        endpoint_name = "ANTHROPIC_BASE_URL" if envelope.preferred_cli == "claude-code" else "OPENCODE_BASE_URL"
         return ProviderStartSpec(
             workspace, (workspace,), paths.cache_dir / envelope.runtime / envelope.task_id, runtime,
+            execution_mode=envelope.execution_mode,
+            preferred_cli=envelope.preferred_cli,
+            team_policy=dict(envelope.team_policy),
+            work_packages=tuple(dict(item) for item in envelope.work_packages),
+            network_environment={endpoint_name: runtime.endpoint} if envelope.runtime == "shogun" else {},
+            network_allowlist=runtime.allowed_endpoint_hosts,
         )
 
+    providers = {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()}
+    if config.shogun_team_enabled:
+        from skillify.agent.providers.shogun import ShogunProvider
+        required = (
+            config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
+        )
+        if not all(required):
+            raise ValueError("enabled Shogun team runtime requires manifest, artifact, and install root")
+        providers["shogun"] = ShogunProvider(
+            manifest_path=Path(config.shogun_manifest_path or ""),
+            artifact_path=Path(config.shogun_artifact_path or ""),
+            install_root=Path(config.shogun_install_root or ""),
+            cache_root=paths.cache_dir / "shogun",
+        )
     return TaskRunner(
-        {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()},
+        providers,
         start_spec, outbox,
         mcp_catalog={"codegraph": McpPackageConfig(
             "codegraph", "codegraph", ("serve", "--mcp"),

@@ -87,9 +87,14 @@ class TaskEnvelope:
     nonce: str
     runtime: str = "opencode"
     mcp_packages: tuple[str, ...] = ()
+    execution_mode: str = "single"
+    preferred_cli: str | None = None
+    team_policy: Mapping[str, Any] = field(default_factory=dict)
+    work_packages: tuple[Mapping[str, Any], ...] = ()
     state_version: int = 0
     signature: str = ""
     task_protocol_version: int = TASK_PROTOCOL_VERSION
+    team_fields_present: bool = field(default=True, repr=False)
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -102,8 +107,15 @@ class TaskEnvelope:
             raise TaskProtocolError("workflow_version is required")
         if type(self.workspace_alias) is not str or not _ALIAS.fullmatch(self.workspace_alias):
             raise TaskProtocolError("workspace_alias must be a relative configured alias")
-        if self.runtime not in {"opencode", "claude-code"}:
+        if self.runtime not in {"opencode", "claude-code", "shogun"}:
             raise TaskProtocolError("task runtime is unsupported")
+        if self.execution_mode not in {"single", "delegated", "team"}:
+            raise TaskProtocolError("task execution mode is unsupported")
+        if self.execution_mode == "team":
+            if self.runtime != "shogun" or self.preferred_cli not in {"opencode", "claude-code"}:
+                raise TaskProtocolError("team task requires Shogun and an approved preferred CLI")
+        elif self.runtime == "shogun" or self.preferred_cli not in {None, self.runtime}:
+            raise TaskProtocolError("non-team task runtime is inconsistent")
         if any(type(name) is not str or not _IDENTIFIER.fullmatch(name) for name in self.mcp_packages):
             raise TaskProtocolError("task MCP package names are invalid")
         if type(self.state_version) is not int or self.state_version < 0:
@@ -115,6 +127,15 @@ class TaskEnvelope:
             raise TaskProtocolError("task parameters cannot contain arbitrary prompt, shell, or source")
         _canonical(copied)
         object.__setattr__(self, "parameters", MappingProxyType(copied))
+        if not isinstance(self.team_policy, (dict, MappingProxyType)):
+            raise TaskProtocolError("team policy must be an object")
+        policy = dict(self.team_policy)
+        packages = tuple(dict(item) for item in self.work_packages)
+        _canonical(policy)
+        for package in packages:
+            _canonical(package)
+        object.__setattr__(self, "team_policy", MappingProxyType(policy))
+        object.__setattr__(self, "work_packages", packages)
         _utc(self.issued_at, "issued_at")
         _utc(self.expires_at, "expires_at")
         if self.expires_at <= self.issued_at:
@@ -125,7 +146,7 @@ class TaskEnvelope:
             raise TaskProtocolError("signature must be a string")
 
     def unsigned_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "taskProtocolVersion": self.task_protocol_version,
             "taskId": self.task_id,
             "endpointId": self.endpoint_id,
@@ -140,6 +161,14 @@ class TaskEnvelope:
             "mcpPackages": list(self.mcp_packages),
             "stateVersion": self.state_version,
         }
+        if self.team_fields_present:
+            value.update({
+                "executionMode": self.execution_mode,
+                "preferredCli": self.preferred_cli,
+                "teamPolicy": dict(self.team_policy),
+                "workPackages": [dict(item) for item in self.work_packages],
+            })
+        return value
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.unsigned_dict(), "signature": self.signature}
@@ -160,13 +189,15 @@ class TaskEnvelope:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "TaskEnvelope":
-        expected = {
+        required = {
             "taskProtocolVersion", "taskId", "endpointId", "workflowId",
             "workflowVersion", "workspaceAlias", "parameters", "issuedAt",
             "expiresAt", "nonce", "signature",
             "runtime", "mcpPackages", "stateVersion",
         }
-        if set(value) != expected:
+        team_fields = {"executionMode", "preferredCli", "teamPolicy", "workPackages"}
+        present = team_fields <= set(value)
+        if set(value) != required | (team_fields if present else set()):
             raise TaskProtocolError("task envelope fields are invalid")
         try:
             return cls(
@@ -178,7 +209,12 @@ class TaskEnvelope:
                 nonce=value["nonce"], signature=value["signature"],
                 runtime=value["runtime"], state_version=value["stateVersion"],
                 mcp_packages=tuple(value["mcpPackages"]),
+                execution_mode=value.get("executionMode", "single"),
+                preferred_cli=value.get("preferredCli", value["runtime"]),
+                team_policy=value.get("teamPolicy", {}),
+                work_packages=tuple(value.get("workPackages", ())),
                 task_protocol_version=value["taskProtocolVersion"],
+                team_fields_present=present,
             )
         except (KeyError, TypeError, ValueError) as exc:
             if isinstance(exc, TaskProtocolError):

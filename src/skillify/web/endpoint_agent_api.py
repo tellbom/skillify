@@ -45,6 +45,9 @@ def _package_dict(item) -> dict:
         "recommendedMcp": item.recommended_mcp,
         "acceptanceCommands": item.acceptance_commands,
         "parallelizable": item.parallelizable, "confirmed": item.confirmed,
+        "dependsOn": item.depends_on or item.dependencies,
+        "readOnly": item.read_only or item.access == "read",
+        "verification": item.verification or item.acceptance_commands,
     }
 
 
@@ -228,6 +231,8 @@ def endpoint_event(
             summary=payload.summary, test_summary=payload.testSummary,
             diff_stats=payload.diffStats, artifacts=payload.artifacts,
             failure_reason=payload.failureReason,
+            worker_id=payload.workerId, work_package_id=payload.workPackageId,
+            stage=payload.stage,
         )
         task = session.get(EndpointTaskRecord, payload.taskId)
         session.commit()
