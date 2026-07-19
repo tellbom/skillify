@@ -14,6 +14,7 @@ from skillify.validator import validate_skill_dir
 
 SUPPORTED_RUNTIMES = frozenset({"opencode", "claude-code"})
 DELEGATION_MODES = frozenset({"adaptive", "suggested", "required"})
+EXECUTION_MODES = frozenset({"single", "delegated", "team"})
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,22 @@ class DelegationConfig:
 
 
 @dataclass(frozen=True)
+class ExecutionConfig:
+    mode: str = "single"
+    collaboration_runtime: str | None = None
+    preferred_cli: str = "opencode"
+
+
+@dataclass(frozen=True)
+class TeamPolicy:
+    min_workers: int = 2
+    max_active_workers: int = 3
+    max_parallel_model_calls: int = 2
+    max_team_duration_minutes: int = 120
+    require_independent_review: bool = True
+
+
+@dataclass(frozen=True)
 class WorkflowPack:
     path: Path
     id: str
@@ -43,6 +60,8 @@ class WorkflowPack:
     gates: tuple[WorkflowGate, ...]
     permissions: PermissionManifest
     delegation: DelegationConfig
+    execution: ExecutionConfig
+    team_policy: TeamPolicy
 
 
 def _safe_relative(value: object) -> str:
@@ -122,9 +141,44 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
         or delegation_config.executor_managed is not True
     ):
         raise ValueError("workflow delegation configuration is unsupported")
+    raw_execution = _mapping(document.get("execution") or {}, "execution")
+    execution = ExecutionConfig(
+        mode=raw_execution.get("mode", "single"),
+        collaboration_runtime=raw_execution.get("collaboration_runtime"),
+        preferred_cli=raw_execution.get("preferred_cli", runtimes[0]),
+    )
+    if execution.mode not in EXECUTION_MODES or execution.preferred_cli not in SUPPORTED_RUNTIMES:
+        raise ValueError("workflow execution configuration is unsupported")
+    if execution.preferred_cli not in runtimes:
+        raise ValueError("workflow preferred CLI must be a supported pack runtime")
+    if execution.mode == "team":
+        if execution.collaboration_runtime != "shogun":
+            raise ValueError("team execution requires collaboration_runtime=shogun")
+    elif execution.collaboration_runtime is not None:
+        raise ValueError("collaboration runtime is only valid for team execution")
+    raw_team_policy = _mapping(document.get("team_policy") or {}, "team_policy")
+    team_policy = TeamPolicy(
+        min_workers=raw_team_policy.get("min_workers", 2),
+        max_active_workers=raw_team_policy.get("max_active_workers", 3),
+        max_parallel_model_calls=raw_team_policy.get("max_parallel_model_calls", 2),
+        max_team_duration_minutes=raw_team_policy.get("max_team_duration_minutes", 120),
+        require_independent_review=raw_team_policy.get("require_independent_review", True),
+    )
+    numeric_policy = (
+        team_policy.min_workers, team_policy.max_active_workers,
+        team_policy.max_parallel_model_calls, team_policy.max_team_duration_minutes,
+    )
+    if (
+        any(type(value) is not int or value < 1 for value in numeric_policy)
+        or team_policy.min_workers > team_policy.max_active_workers
+        or team_policy.max_parallel_model_calls > team_policy.max_active_workers
+        or type(team_policy.require_independent_review) is not bool
+    ):
+        raise ValueError("workflow team policy is unsupported")
     return WorkflowPack(
         root, workflow_id, runtimes, entry_agent, skills, mcp, mode, artifacts, tuple(gates),
         PermissionManifest.from_value(f"workflow:{workflow_id}", permission_value), delegation_config,
+        execution, team_policy,
     )
 
 

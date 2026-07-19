@@ -28,20 +28,29 @@ class WorkPackage:
     acceptance_commands: tuple[str, ...]
     parallelizable: bool
     confirmed: bool = False
+    depends_on: tuple[str, ...] = ()
+    read_only: bool = False
+    verification: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "WorkPackage":
+        dependencies = _names(value.get("dependsOn", value.get("dependencies", [])), "dependsOn")
+        verification = _names(
+            value.get("verification", value.get("acceptanceCommands", [])), "verification",
+        )
+        read_only = value.get("readOnly", value.get("access") == "read")
         package = cls(
             package_id=value.get("packageId", ""), task_id=value.get("taskId", ""),
             objective=value.get("objective", ""),
             allowed_paths=_names(value.get("allowedPaths", []), "allowedPaths"),
-            dependencies=_names(value.get("dependencies", []), "dependencies"),
-            access=value.get("access", ""),
+            dependencies=dependencies,
+            access="read" if read_only else value.get("access", ""),
             recommended_skills=_names(value.get("recommendedSkills", []), "recommendedSkills"),
             recommended_mcp=_names(value.get("recommendedMcp", []), "recommendedMcp"),
-            acceptance_commands=_names(value.get("acceptanceCommands", []), "acceptanceCommands"),
+            acceptance_commands=verification,
             parallelizable=value.get("parallelizable", False),
             confirmed=value.get("confirmed", False),
+            depends_on=dependencies, read_only=read_only, verification=verification,
         )
         if not package.package_id or not package.task_id or not package.objective.strip():
             raise ValueError("work package identity and objective are required")
@@ -52,7 +61,11 @@ class WorkPackage:
             raise ValueError("work package allowedPaths must be relative and bounded")
         if package.access not in {"read", "write"}:
             raise ValueError("work package access must be read or write")
-        if not isinstance(package.parallelizable, bool) or not isinstance(package.confirmed, bool):
+        if (
+            not isinstance(package.parallelizable, bool)
+            or not isinstance(package.confirmed, bool)
+            or not isinstance(package.read_only, bool)
+        ):
             raise ValueError("work package flags must be booleans")
         if package.package_id in package.dependencies:
             raise ValueError("work package cannot depend on itself")
@@ -66,6 +79,9 @@ class WorkPackage:
             "recommendedMcp": list(self.recommended_mcp),
             "acceptanceCommands": list(self.acceptance_commands),
             "parallelizable": self.parallelizable, "confirmed": self.confirmed,
+            "dependsOn": list(self.depends_on or self.dependencies),
+            "readOnly": self.read_only or self.access == "read",
+            "verification": list(self.verification or self.acceptance_commands),
         }
 
 
@@ -75,7 +91,7 @@ def validate_delegation_result(mode: str, packages: tuple[WorkPackage, ...]) -> 
     identifiers = {package.package_id for package in packages}
     if len(identifiers) != len(packages):
         raise ValueError("work package ids must be unique")
-    if any(not set(package.dependencies) <= identifiers for package in packages):
+    if any(not set(package.depends_on or package.dependencies) <= identifiers for package in packages):
         raise ValueError("work package dependency is unknown")
     if mode == "required" and len(packages) < 2:
         raise ValueError("required delegation needs at least two independent work packages")

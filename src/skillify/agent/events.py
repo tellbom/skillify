@@ -12,6 +12,7 @@ JsonScalar = str | int | float | bool | None
 _DETAIL_KEYS = frozenset({
     "sequence", "tool_name", "tool_call_id", "exit_code", "test_count",
     "artifact_count", "reason_code", "result_state",
+    "worker_id", "work_package_id", "stage",
 })
 
 
@@ -34,6 +35,20 @@ class EventType(str, Enum):
     ARTIFACT_CREATED = "artifact.created"
     TASK_BLOCKED = "task.blocked"
     TASK_FINISHED = "task.finished"
+    TEAM_PREPARING = "team.preparing"
+    TEAM_STARTED = "team.started"
+    WORKER_STARTED = "worker.started"
+    WORK_PACKAGE_ASSIGNED = "work_package.assigned"
+    WORK_PACKAGE_BLOCKED = "work_package.blocked"
+    WORK_PACKAGE_STARTED = "work_package.started"
+    WORK_PACKAGE_COMPLETED = "work_package.completed"
+    REVIEW_STARTED = "review.started"
+    REVIEW_COMPLETED = "review.completed"
+    TEAM_WAITING_APPROVAL = "team.waiting_approval"
+    TEAM_CANCELLING = "team.cancelling"
+    TEAM_CANCELLED = "team.cancelled"
+    TEAM_COMPLETED = "team.completed"
+    TEAM_FAILED = "team.failed"
 
 
 @dataclass(frozen=True)
