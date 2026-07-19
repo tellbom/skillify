@@ -1,5 +1,7 @@
 # Skillify 端侧 MCP 与 Agent 委派 · 测试环境 E2E 清单
 
+> 归并状态（2026-07-19）：本文验收项已完整归并至 `docs/testing/2026-07-17-post-ba3-test-environment-handoff.md`。本文冻结为历史来源，不在此勾选或销账；统一交付文档是唯一测试状态来源。
+>
 > 状态：待测试环境执行。勾选项必须附任务 ID、事件审计和脱敏日志证据。
 
 ## 官方 SDK 与 Adapter

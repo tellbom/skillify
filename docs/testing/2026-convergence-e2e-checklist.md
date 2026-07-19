@@ -1,5 +1,7 @@
 # Skillify Agent 架构收敛 · 测试环境 E2E 清单
 
+> 归并状态（2026-07-19）：本文验收项已完整归并至 `docs/testing/2026-07-17-post-ba3-test-environment-handoff.md`。本文冻结为历史来源，不在此勾选或销账；统一交付文档是唯一测试状态来源。
+>
 > 状态：待测试环境执行。本文只定义验收项，不代表已通过。
 > 范围：真实 Linux、DM8、Keycloak/RBAC、OpenCode、Claude Code、CodeGraph、独立 devpi 与目标内网模型。
 

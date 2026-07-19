@@ -1,5 +1,7 @@
 # Skillify Shogun Team Runtime · 测试环境验收清单
 
+> 归并状态（2026-07-19）：本文验收项已完整归并至 `docs/testing/2026-07-17-post-ba3-test-environment-handoff.md` 的 TP-13。本文冻结为历史来源，不在此勾选或销账；统一交付文档是唯一测试状态来源。
+>
 > 状态：待测试环境执行。开发环境只完成编译/静态装载校验，以下项目均未验证。
 >
 > 启用原则：全部 Go/No-Go 门禁通过前，`SKILLIFY_SHOGUN_TEAM_ENABLED` 与 `SKILLIFY_AGENT_SHOGUN_TEAM_ENABLED` 必须保持关闭；`single/delegated` 不受影响。
