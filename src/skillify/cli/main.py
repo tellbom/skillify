@@ -31,10 +31,12 @@ app = typer.Typer(
 from skillify.cli.agent_cmd import agent_app
 from skillify.cli.mcp_cmd import mcp_app
 from skillify.cli.credential_cmd import credential_app
+from skillify.cli.codemap_cmd import codemap_app
 
 app.add_typer(agent_app, name="agent")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(credential_app, name="credential")
+app.add_typer(codemap_app, name="codemap")
 
 console = Console()
 err_console = Console(stderr=True)

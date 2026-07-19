@@ -23,6 +23,11 @@ EVENT_TYPES = frozenset({
     "work_package.completed", "review.started", "review.completed",
     "team.waiting_approval", "team.cancelling", "team.cancelled",
     "team.completed", "team.failed",
+    "codemap.visualization.requested", "codemap.visualization.scan_started",
+    "codemap.visualization.scan_completed", "codemap.visualization.started",
+    "codemap.visualization.ready", "codemap.visualization.opened",
+    "codemap.visualization.status", "codemap.visualization.browser_blocked",
+    "codemap.visualization.failed", "codemap.visualization.stopped",
 })
 
 
@@ -98,6 +103,7 @@ def build_task_event(
     worker_id: str | None = None,
     work_package_id: str | None = None,
     stage: str | None = None,
+    summary: str | None = None,
 ) -> dict[str, Any]:
     """Construct a closed payload with no free-form prompt, source, path, or secret field."""
     identifiers = (event_id, task_id, workflow_id, provider)
@@ -111,6 +117,8 @@ def build_task_event(
         raise ValueError("workflow and provider versions are required")
     if reason_code is not None and not _IDENTIFIER.fullmatch(reason_code):
         raise ValueError("reason_code must be a stable identifier")
+    if summary is not None and (type(summary) is not str or not summary.strip() or len(summary) > 500):
+        raise ValueError("summary must contain 1 to 500 characters")
     payload: dict[str, Any] = {
         "eventId": event_id,
         "taskId": task_id,
@@ -128,6 +136,8 @@ def build_task_event(
         payload["artifacts"] = [artifact.as_dict() for artifact in artifacts]
     if reason_code is not None:
         payload["reasonCode"] = reason_code
+    if summary is not None:
+        payload["summary"] = summary
     if nonce is not None:
         payload["nonce"] = nonce
     if state_version is not None:

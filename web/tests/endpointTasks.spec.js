@@ -97,9 +97,34 @@ describe('EndpointTasksView', () => {
     expect(dispatchEndpointTask).toHaveBeenCalledWith({
       endpointId: 'endpoint-1', workspaceAlias: 'billing',
       runtime: 'claude-code',
+      executionMode: 'single', preferredCli: null, teamPolicy: {},
       workflowId: 'evidence-bugfix', workflowVersion: '1.0.0',
       inputs: { issueReference: 'BUG-42' },
     })
     expect(wrapper.text()).toContain('task-new')
+  })
+
+  it('dispatches a fixed noncommercial Code Map action without prompt or path fields', async () => {
+    dispatchEndpointTask.mockResolvedValue({
+      taskId: 'codemap-1', workflowId: 'codemap.visualization.start', runtime: 'codemap',
+      state: 'awaiting_confirmation', events: [], workPackages: [],
+    })
+    const wrapper = mount(EndpointTasksView)
+    await flushPromises()
+    await wrapper.get('[data-testid="endpoint-select"]').setValue('endpoint-1')
+    await wrapper.get('[data-testid="workspace-select"]').setValue('billing')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="endpoint-select"]').element.value).toBe('endpoint-1')
+    expect(wrapper.get('[data-testid="workspace-select"]').element.value).toBe('billing')
+    expect(wrapper.get('[data-testid="codemap-start"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="codemap-start"]').trigger('click')
+    await flushPromises()
+
+    expect(dispatchEndpointTask).toHaveBeenCalledWith({
+      endpointId: 'endpoint-1', workspaceAlias: 'billing', runtime: 'codemap',
+      workflowId: 'codemap.visualization.start', workflowVersion: '1.0.0', inputs: {},
+    })
+    expect(wrapper.text()).toContain('仅限个人非商业使用')
+    expect(wrapper.text()).toContain('codemap-1')
   })
 })

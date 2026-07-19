@@ -518,6 +518,34 @@ Content-Type: application/json
 源码提交、打包、checksum、Forgejo Release、索引和发布任务记录。成功发布的 build 不再
 允许修改或重复确认；发布失败会恢复为可重试状态，前端可使用同一 build/revision 重试。
 
+## Endpoint Code Map（个人非商业）
+
+人用 Code Map 使用固定的 GitNexus v1.6.9，只在 Endpoint 本机扫描 Skillify 状态目录中的
+工作区快照，并通过本机 Chrome 打开。它不替换 Agent CodeGraph，也不把图谱、源码或
+localhost URL 返回中央 Web。
+
+该功能受 PolyForm Noncommercial 1.0.0 约束，仅允许个人开发、研究、实验和无预期商业
+应用；许可证没有按天到期的试用期限。如果项目用途转为商业应用，必须停用该功能，直到
+取得适用商业授权或更换引擎。
+
+Endpoint 配置固定 manifest 和已构建的 GitNexus runtime：
+
+```bash
+export SKILLIFY_GITNEXUS_MANIFEST=/opt/skillify/offline/codemap/gitnexus-visualizer-manifest.json
+export SKILLIFY_GITNEXUS_ROOT=/opt/skillify/codemap/gitnexus/1.6.9
+
+skillctl codemap visualize doctor
+skillctl codemap visualize start --workspace <alias>
+skillctl codemap visualize status --workspace <alias>
+skillctl codemap visualize open --workspace <alias>
+skillctl codemap visualize stop --workspace <alias>
+```
+
+源码归档和离线 runtime 构建入口见
+`infra/offline/gitnexus-visualizer-manifest.json` 与
+`scripts/build-gitnexus-visualizer-artifact.sh`。最终 Linux 构件 SHA256、Chrome 最低版本、
+强制断网和完整 Endpoint 链路必须在测试环境验收。
+
 常见错误：
 
 | HTTP | 场景 |

@@ -81,6 +81,25 @@ def test_dispatches_fixed_workflow_to_owned_online_endpoint(monkeypatch, tmp_pat
         app.dependency_overrides.clear()
 
 
+def test_dispatches_codemap_as_confirmed_read_only_endpoint_action(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    try:
+        payload = _task()
+        payload.update({
+            "workflowId": "codemap.visualization.start", "runtime": "codemap", "inputs": {},
+        })
+        response = client.post("/api/endpoint-tasks", json=payload)
+        assert response.status_code == 200, response.text
+        task = response.json()
+        assert task["runtime"] == "codemap"
+        assert task["preferredCli"] == "codemap"
+        assert task["workPackages"][0]["confirmed"] is True
+        assert task["workPackages"][0]["readOnly"] is True
+        assert task["workPackages"][0]["recommendedMcp"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_rejects_other_users_endpoint_offline_endpoint_and_arbitrary_input(
     monkeypatch, tmp_path: Path,
 ) -> None:

@@ -3,7 +3,7 @@
 > 日期：2026-07-19
 > 配套任务：`docs/2026-07-19-skillify-codemap-visualization-task.md`
 > 交付对象：Codex 核实官方 GitHub 项目后连续实施。
-> 状态：P0 完成；P1/G1 NO-GO；P2–P6 按 Gate 未启动。
+> 状态：用户接受个人非商业使用边界后，GitNexus 受限通过 G1；P2–P4 已实现，P5 开发期验证部分完成，P6 待测试环境。
 
 ## 0. 本轮纠正
 

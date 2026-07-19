@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "engine": "gitnexus",
+  "version": "1.6.9",
+  "commitSha": "4227194ad7bdfbedc29a7fe20e09c6737ce0e744",
+  "sourceArchive": {
+    "filename": "GitNexus-v1.6.9.tar.gz",
+    "sha256": "468138d074bb1c3bf4c0094a813d426a2146510d13a5f747c51b950a1f877c90",
+    "sourceUrl": "https://github.com/abhigyanpatwari/GitNexus/archive/refs/tags/v1.6.9.tar.gz",
+    "intranetUri": "file:///opt/skillify/offline/codemap/gitnexus/v1.6.9/GitNexus-v1.6.9.tar.gz"
+  },
+  "license": {
+    "id": "PolyForm-Noncommercial-1.0.0",
+    "sha256": "b3e617e5e5eea01b2e9153156c88706c14899e78b4a5d48b9fc14f4f10115c72",
+    "usePolicy": "personal-noncommercial-only",
+    "expiresAt": null,
+    "requiredNotice": "Copyright Abhigyan Patwari (https://github.com/abhigyanpatwari/GitNexus)"
+  },
+  "runtime": {
+    "nodeMajor": 22,
+    "entrypoint": "gitnexus/dist/cli/index.js"
+  },
+  "browser": {
+    "minChromeMajor": null,
+    "testedChromeMajors": []
+  },
+  "isolation": {
+    "workspaceMode": "snapshot",
+    "bindHost": "127.0.0.1",
+    "networkMode": "test-environment-pending"
+  }
+}

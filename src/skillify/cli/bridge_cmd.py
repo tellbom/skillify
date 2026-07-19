@@ -37,6 +37,20 @@ class BridgeReporter(Protocol):
     def flush(self) -> int: ...
 
 
+class RoutedBridgeRunner:
+    """Keep fixed Code Map actions out of the Agent provider execution path."""
+
+    def __init__(self, agent_runner: BridgeRunner, codemap_factory: Callable[[], BridgeRunner]) -> None:
+        self.agent_runner = agent_runner
+        self.codemap_factory = codemap_factory
+
+    def run(self, envelope, *, state_version: int) -> int:
+        from skillify.codemap.visualizer import CODEMAP_WORKFLOWS
+        if envelope.workflow_id in CODEMAP_WORKFLOWS:
+            return self.codemap_factory().run(envelope, state_version=state_version)
+        return self.agent_runner.run(envelope, state_version=state_version)
+
+
 class HttpBridgeTransport:
     def __init__(self, server_url: str, token: str, *, session: requests.Session | None = None) -> None:
         self.server_url = server_url.rstrip("/")
@@ -283,7 +297,7 @@ def _build_runner(outbox: LocalOutbox):
             install_root=Path(config.shogun_install_root or ""),
             cache_root=paths.cache_dir / "shogun",
         )
-    return TaskRunner(
+    agent_runner = TaskRunner(
         providers,
         start_spec, outbox,
         mcp_catalog={"codegraph": McpPackageConfig(
@@ -291,6 +305,30 @@ def _build_runner(outbox: LocalOutbox):
             {"CODEGRAPH_NO_DOWNLOAD": "1", "CODEGRAPH_TELEMETRY": "0", "CODEGRAPH_PROJECT_ROOT": "{workspace}"},
             ("codegraph_explore",), 4000,
         )},
+    )
+    return RoutedBridgeRunner(agent_runner, lambda: _build_codemap_runner(outbox))
+
+
+def _build_codemap_runner(outbox: LocalOutbox):
+    from skillify.codemap.task_runner import CodemapTaskRunner
+    from skillify.codemap.visualizer import GitNexusVisualizer, load_manifest, resolve_workspace_alias
+
+    paths = load_agent_paths()
+    config = load_agent_local_config(paths)
+    aliases = dict(config.workspace_aliases)
+    for raw in config.allowed_workspaces:
+        aliases.setdefault(Path(raw).name, raw)
+    manifest_default = Path(__file__).resolve().parents[3] / "infra" / "offline" / "gitnexus-visualizer-manifest.json"
+    manifest_path = Path(os.environ.get("SKILLIFY_GITNEXUS_MANIFEST", manifest_default))
+    runtime_raw = os.environ.get(
+        "SKILLIFY_GITNEXUS_ROOT", "/opt/skillify/codemap/gitnexus/1.6.9",
+    )
+    visualizer = GitNexusVisualizer(
+        manifest=load_manifest(manifest_path), runtime_root=Path(runtime_raw),
+        state_root=paths.state_dir / "codemap-visualizer",
+    )
+    return CodemapTaskRunner(
+        visualizer, lambda alias: resolve_workspace_alias(alias, aliases), outbox,
     )
 
 

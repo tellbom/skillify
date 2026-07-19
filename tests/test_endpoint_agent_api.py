@@ -100,6 +100,27 @@ def test_pull_confirm_event_and_duplicate_event(monkeypatch, tmp_path: Path) -> 
         app.dependency_overrides.clear()
 
 
+def test_codemap_action_is_pullable_without_agent_work_package_confirmation(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    app.dependency_overrides[require_keycloak_user] = lambda: {"preferred_username": "jane", "sub": "jane"}
+    response = client.post("/api/endpoint-tasks", json={
+        "endpointId": "endpoint-1", "workflowId": "codemap.visualization.status",
+        "workflowVersion": "1.0.0", "workspaceAlias": "billing",
+        "runtime": "codemap", "inputs": {},
+    })
+    assert response.status_code == 200, response.text
+    _as_endpoint()
+    try:
+        pulled = client.get("/api/endpoint/tasks/pull")
+        assert pulled.status_code == 200, pulled.text
+        envelope = TaskEnvelope.from_dict(pulled.json()["tasks"][0])
+        assert envelope.runtime == "codemap"
+        assert envelope.workflow_id == "codemap.visualization.status"
+        assert envelope.mcp_packages == ()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_heartbeat_rejects_expired_lease_and_other_endpoint(monkeypatch, tmp_path: Path) -> None:
     url = _configure(monkeypatch, tmp_path); task_id = _dispatch(); _as_endpoint()
     try:

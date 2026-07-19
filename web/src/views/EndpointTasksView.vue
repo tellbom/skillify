@@ -17,6 +17,7 @@ const endpoints = ref([])
 const tasks = ref([])
 const loading = ref(true)
 const submitting = ref(false)
+const codemapSubmitting = ref(null)
 const error = ref('')
 const TEAM_ENABLED = import.meta.env.VITE_SHOGUN_TEAM_ENABLED === 'true'
 const form = reactive({
@@ -47,6 +48,7 @@ const canSubmit = computed(() => Boolean(
   selectedEndpoint.value?.online && form.workspaceAlias &&
   (!selectedWorkflow.value.required || form.value.trim()),
 ))
+const canUseCodemap = computed(() => Boolean(selectedEndpoint.value?.online && form.workspaceAlias))
 
 watch(selectedEndpoint, (endpoint) => {
   form.workspaceAlias = endpoint?.workspaceAliases?.[0] || ''
@@ -102,6 +104,27 @@ async function submit() {
   }
 }
 
+async function runCodemapAction(action) {
+  if (!canUseCodemap.value || codemapSubmitting.value) return
+  codemapSubmitting.value = action
+  error.value = ''
+  try {
+    const task = await dispatchEndpointTask({
+      endpointId: form.endpointId,
+      workspaceAlias: form.workspaceAlias,
+      runtime: 'codemap',
+      workflowId: `codemap.visualization.${action}`,
+      workflowVersion: '1.0.0',
+      inputs: {},
+    })
+    tasks.value.unshift(editableTask(task))
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    codemapSubmitting.value = null
+  }
+}
+
 async function savePackages(task) {
   error.value = ''
   try {
@@ -140,6 +163,27 @@ onMounted(load)
     <p v-if="error" class="error-banner">{{ error }}</p>
     <div v-if="loading" class="state-card">正在载入端点…</div>
     <template v-else>
+      <section class="codemap-card" aria-labelledby="codemap-title">
+        <div class="codemap-intro">
+          <p class="eyebrow">LOCAL CODE ATLAS</p>
+          <h2 id="codemap-title">在代码所在机器打开关系图</h2>
+          <p>GitNexus 只扫描本机快照。图谱和源码不会传回 Skillify。</p>
+        </div>
+        <div class="codemap-context">
+          <span>{{ selectedEndpoint?.label || '未选择端点' }}</span>
+          <strong>{{ form.workspaceAlias || '未选择工作区' }}</strong>
+          <small>GitNexus 1.6.9 · 仅限个人非商业使用</small>
+        </div>
+        <div class="codemap-actions" aria-label="Code Map actions">
+          <button type="button" :disabled="!canUseCodemap || codemapSubmitting" data-testid="codemap-start" @click="runCodemapAction('start')">
+            {{ codemapSubmitting === 'start' ? '建立索引中…' : '启动地图' }}
+          </button>
+          <button type="button" :disabled="!canUseCodemap || codemapSubmitting" @click="runCodemapAction('open')">在端点打开</button>
+          <button type="button" :disabled="!canUseCodemap || codemapSubmitting" @click="runCodemapAction('status')">刷新状态</button>
+          <button type="button" class="quiet" :disabled="!canUseCodemap || codemapSubmitting" @click="runCodemapAction('stop')">停止</button>
+        </div>
+      </section>
+
       <section class="dispatch-card" aria-labelledby="dispatch-title">
         <div class="section-title"><span>01</span><div><h2 id="dispatch-title">创建受控任务</h2><p>不支持任意 Prompt 或 Shell 命令</p></div></div>
         <form @submit.prevent="submit">
@@ -188,7 +232,7 @@ onMounted(load)
             <div><strong>{{ task.workflowId }}</strong><small>{{ task.executionMode || 'single' }} · {{ task.preferredCli || task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
           </div>
-          <section v-if="task.workPackages?.length" class="work-packages">
+          <section v-if="!task.workflowId.startsWith('codemap.') && task.workPackages?.length" class="work-packages">
             <header><strong>协作工作包</strong><span>确认后由所选执行器管理 Agent</span></header>
             <div v-for="item in task.workPackages" :key="item.packageId" class="work-package">
               <label>目标<input v-model="item.objective" data-testid="package-objective"></label>
@@ -234,6 +278,17 @@ onMounted(load)
 .task-heading > p { margin: 0; color: #858585; font-size: 12px; }
 .eyebrow { margin: 0 0 7px; color: #80cbc4; font: 650 10px ui-monospace, monospace; letter-spacing: 1.4px; }
 .dispatch-card, .task-list { padding: 20px; border: 1px solid #2c2c2c; border-radius: 12px; background: #181818; }
+.codemap-card { display: grid; grid-template-columns: minmax(260px, 1.4fr) minmax(190px, .8fr) auto; align-items: center; margin-bottom: 16px; padding: 22px; overflow: hidden; border: 1px solid #30504c; border-radius: 12px; background: linear-gradient(112deg, #17201f 0%, #181818 58%); gap: 24px; }
+.codemap-intro h2 { margin: 0 0 7px; color: #f0f5f4; font-size: 19px; letter-spacing: -.25px; }
+.codemap-intro > p:last-child { margin: 0; color: #82918f; font-size: 11px; }
+.codemap-context { display: grid; padding-left: 18px; border-left: 1px solid #2b403d; gap: 4px; }
+.codemap-context span, .codemap-context small { color: #70817f; font-size: 10px; }
+.codemap-context strong { color: #9fd8d1; font: 600 13px ui-monospace, monospace; }
+.codemap-actions { display: grid; grid-template-columns: repeat(2, minmax(94px, 1fr)); gap: 7px; }
+.codemap-actions button { min-height: 34px; padding: 0 11px; border: 1px solid #3b625d; border-radius: 6px; color: #c3e4e0; background: #203632; font-size: 11px; cursor: pointer; }
+.codemap-actions button:first-child { border-color: #80cbc4; color: #10201f; background: #80cbc4; font-weight: 650; }
+.codemap-actions button.quiet { color: #9a8585; border-color: #493535; background: #251c1c; }
+.codemap-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .task-list { margin-top: 16px; }
 .section-title { display: flex; align-items: start; margin-bottom: 18px; gap: 11px; }
 .section-title > span { color: #80cbc4; font: 600 10px ui-monospace, monospace; }
@@ -275,5 +330,7 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .state-card { padding: 28px; border: 1px dashed #333; border-radius: 10px; color: #777; text-align: center; }
 .error-banner { padding: 10px 12px; border: 1px solid rgb(239 141 141 / 30%); border-radius: 7px; color: #efaaaa; background: rgb(239 141 141 / 6%); font-size: 12px; }
 @media (max-width: 1050px) { form { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 620px) { .task-heading { align-items: start; flex-direction: column; } form { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .codemap-card { grid-template-columns: 1fr 1fr; }.codemap-actions { grid-column: 1 / -1; } }
+@media (max-width: 620px) { .task-heading { align-items: start; flex-direction: column; } .codemap-card { grid-template-columns: 1fr; }.codemap-context { padding: 0; border: 0; }.codemap-actions { grid-column: auto; } form { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .task-page { animation: none; } }
 </style>

@@ -4,7 +4,7 @@ from pathlib import Path
 from skillify.agent.fake_provider import FakeProvider
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
 from skillify.agent.runner import TaskRunner
-from skillify.cli.bridge_cmd import BridgeLoop, LocalOutbox
+from skillify.cli.bridge_cmd import BridgeLoop, LocalOutbox, RoutedBridgeRunner
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import TaskEventReporter
 
@@ -65,3 +65,28 @@ def test_bridge_confirms_runs_provider_and_retries_outbox_without_reexecution(tm
     assert transport.confirmations == 1
     assert outbox.pending() == ()
     assert provider.live_handle_count == provider.live_session_count == 0
+
+
+def test_bridge_routes_codemap_without_starting_an_agent_provider() -> None:
+    calls: list[str] = []
+
+    class Runner:
+        def __init__(self, name: str):
+            self.name = name
+
+        def run(self, envelope, *, state_version: int) -> int:
+            calls.append(self.name)
+            return state_version + 1
+
+    envelope = _envelope()
+    codemap = TaskEnvelope(
+        task_id="codemap-1", endpoint_id=envelope.endpoint_id,
+        workflow_id="codemap.visualization.status", workflow_version="1.0.0",
+        workspace_alias=envelope.workspace_alias, parameters={}, issued_at=envelope.issued_at,
+        expires_at=envelope.expires_at, nonce="codemap-nonce", runtime="codemap",
+        state_version=1,
+    ).sign(b"secret")
+    routed = RoutedBridgeRunner(Runner("agent"), lambda: Runner("codemap"))
+
+    assert routed.run(codemap, state_version=2) == 3
+    assert calls == ["codemap"]

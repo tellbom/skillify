@@ -107,7 +107,7 @@ class TaskEnvelope:
             raise TaskProtocolError("workflow_version is required")
         if type(self.workspace_alias) is not str or not _ALIAS.fullmatch(self.workspace_alias):
             raise TaskProtocolError("workspace_alias must be a relative configured alias")
-        if self.runtime not in {"opencode", "claude-code", "shogun"}:
+        if self.runtime not in {"opencode", "claude-code", "shogun", "codemap"}:
             raise TaskProtocolError("task runtime is unsupported")
         if self.execution_mode not in {"single", "delegated", "team"}:
             raise TaskProtocolError("task execution mode is unsupported")

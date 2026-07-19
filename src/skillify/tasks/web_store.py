@@ -14,6 +14,7 @@ from skillify.index.models import (
     EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
     EndpointTeamRecord, EndpointTeamWorkerEventRecord, WorkPackageRecord,
 )
+from skillify.codemap.visualizer import CODEMAP_WORKFLOWS
 from skillify.tasks.protocol import TaskConflictError, TaskEnvelope, TaskReplayError
 from skillify.tasks.work_package import WorkPackage
 
@@ -27,6 +28,7 @@ WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "evidence-review": (frozenset({"changeReference"}), frozenset({"changeReference"})),
     "behavior-preserving-refactor": (frozenset({"target"}), frozenset({"target"})),
+    **{workflow_id: (frozenset(), frozenset()) for workflow_id in CODEMAP_WORKFLOWS},
 }
 _ALIAS = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _TEAM_POLICY_KEYS = frozenset({
@@ -112,7 +114,13 @@ def dispatch_task(
         raise ValueError("workflow version must be a published semantic version")
     if execution_mode not in {"single", "delegated", "team"}:
         raise ValueError("execution mode is unsupported")
-    if execution_mode == "team":
+    is_codemap = workflow_id in CODEMAP_WORKFLOWS
+    if is_codemap:
+        if execution_mode != "single" or runtime not in {"codemap", "opencode"}:
+            raise ValueError("Code Map actions require the fixed codemap runtime")
+        runtime = "codemap"
+        preferred_cli = "codemap"
+    elif execution_mode == "team":
         if preferred_cli not in {"opencode", "claude-code"}:
             raise ValueError("team mode requires an approved preferred CLI")
         runtime = "shogun"
@@ -150,10 +158,11 @@ def dispatch_task(
     summary = next((value for value in inputs.values() if isinstance(value, str)), workflow_id)
     session.add(WorkPackageRecord(
         package_id=uuid.uuid4().hex, task_id=task.task_id,
-        objective=f"Complete {workflow_id}: {summary}", allowed_paths=["**/*"],
-        dependencies=[], access="write", recommended_skills=[], recommended_mcp=["codegraph"],
-        acceptance_commands=[], parallelizable=False, confirmed=False,
-        depends_on=[], read_only=False, verification=[],
+        objective=(f"View Code Map for {workspace_alias}" if is_codemap else f"Complete {workflow_id}: {summary}"),
+        allowed_paths=["**/*"], dependencies=[], access="read" if is_codemap else "write",
+        recommended_skills=[], recommended_mcp=[] if is_codemap else ["codegraph"],
+        acceptance_commands=[], parallelizable=False, confirmed=is_codemap,
+        depends_on=[], read_only=is_codemap, verification=[],
     ))
     session.flush()
     return task
@@ -282,6 +291,16 @@ def record_task_event(
         "task.cancelled": "cancelled",
         "team.started": "running", "team.completed": "succeeded",
         "team.failed": "failed", "team.cancelled": "cancelled",
+        "codemap.visualization.requested": "running",
+        "codemap.visualization.scan_started": "running",
+        "codemap.visualization.scan_completed": "running",
+        "codemap.visualization.started": "running",
+        "codemap.visualization.ready": "succeeded",
+        "codemap.visualization.opened": "succeeded",
+        "codemap.visualization.status": "succeeded",
+        "codemap.visualization.browser_blocked": "failed",
+        "codemap.visualization.failed": "failed",
+        "codemap.visualization.stopped": "succeeded",
     }.get(event_type)
     task.state_version += 1
     if terminal is not None:

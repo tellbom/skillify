@@ -14,7 +14,7 @@
 - 不用模型记忆、搜索摘要或 README 单独替代官方源码和真实运行证据。
 - 不提交只有目录/指标而缺少调用、依赖和定位的半成品。
 
-状态：P0 已完成；P1/G1 为 NO-GO；P2–P6 因 Gate 阻断未启动。`implemented / dev_verified / env_verified` 分开记录。
+状态：用户接受个人非商业使用边界后，GitNexus 受限通过 G1；P2–P4 已实现，P5/G2 等待真实 Endpoint 终链，P6/G3 待测试环境。`implemented / dev_verified / env_verified` 分开记录。
 
 ---
 
@@ -220,16 +220,16 @@ skillctl codemap visualize doctor
 - [x] T0.2 通讯链
 - [x] T1.1 官方候选仓库身份
 - [x] T1.2 源码/构建/断网 Spike
-- [x] T1.3 唯一引擎 / G1（NO-GO：三个计划内候选全部失败）
-- [ ] T2.1 冻结离线构件（G1 NO-GO，未启动）
-- [ ] T3.1 生命周期（G1 NO-GO，未启动）
-- [ ] T3.2 只读/断网/无凭据（G1 NO-GO，未启动）
-- [ ] T3.3 Chrome/CLI（G1 NO-GO，未启动）
-- [ ] T4.1 Bridge dispatch（G1 NO-GO，未启动）
-- [ ] T4.2 事件（G1 NO-GO，未启动）
-- [ ] T4.3 Web 入口（G1 NO-GO，未启动）
-- [ ] T5.1 Dev 终链 / G2（G1 NO-GO，未启动）
-- [ ] T6.1 内网终验 / G3（G1 NO-GO，未启动）
+- [x] T1.3 唯一引擎 / G1（GitNexus，`personal-noncommercial-only` 受限通过）
+- [x] T2.1 冻结源码、manifest、许可证和离线 runtime 构建脚本（Linux 构件 SHA/SBOM 待测试环境）
+- [x] T3.1 生命周期
+- [ ] T3.2 只读快照/无凭据/localhost 已实现；OS 强制断网待测试环境
+- [ ] T3.3 CLI 已实现；Chrome 最低版本和真实打开待测试环境
+- [x] T4.1 Bridge dispatch
+- [x] T4.2 事件
+- [x] T4.3 Web 入口
+- [ ] T5.1 编译、契约和前端构建已通过；真实 Endpoint 终链 / G2 待测试环境
+- [ ] T6.1 内网终验 / G3
 
 执行关系：`P0 → P1/G1 → P2 → P3 → P4 → P5 → P6`。G1 通过后连续开发；G1 失败则提交官方源码和真实运行证据，不留下半成品生产入口。
 
@@ -237,3 +237,4 @@ skillctl codemap visualize doctor
 
 - `docs/assessments/2026-07-19-codemap-visualizer-baseline.md`
 - `docs/assessments/2026-07-19-codemap-visualizer-selection.md`
+- `docs/testing/2026-codemap-visualizer-dev-verification.md`

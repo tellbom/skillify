@@ -2,7 +2,7 @@
 
 > 评测日期：2026-07-19
 > 对应任务：`docs/2026-07-19-skillify-codemap-visualization-task.md`
-> 结论：**G1 NO-GO**。计划限定的三个官方 GitHub 候选均未通过硬门槛，P2–P6 不启动。
+> 结论：初评为 **G1 NO-GO**；用户于 2026-07-19 明确接受个人非商业使用边界后，GitNexus 以 `personal-noncommercial-only` 条件通过 G1，P2–P5 恢复实施。
 
 ## 1. 结论摘要
 
@@ -15,7 +15,7 @@
 - 可依法进入 Skillify 的内部离线构件；
 - 可在目标 Endpoint 上形成可复现构建和受控运行入口。
 
-因此没有确定唯一引擎，也没有添加 manifest、Launcher、CLI、Bridge dispatch、Web 页面或 Visualizer 索引。Agent CodeGraph 及其 MCP 配置保持不变。
+初评时没有确定唯一引擎。用户随后明确本项目不做商业推广，仅作为个人开发者辅助用户查看代码，并要求继续试用。基于该产品裁决，GitNexus 成为唯一受限引擎；Agent CodeGraph 及其 MCP 配置仍保持不变。
 
 ## 2. 评测方法与边界
 
@@ -29,7 +29,7 @@
 
 | 候选 | 符号/调用/行号 | Skillify 语言覆盖 | 离线与只展示 | 许可证/分发 | 构建与真实运行 | G1 |
 |---|---|---|---|---|---|---|
-| GitNexus v1.6.9 | 通过真实索引证明图数据能力 | Python、JS/Vue 可索引 | 失败：页面引用 Google Fonts；运行服务暴露 MCP，未证明展示能力可单独关闭 | 失败：PolyForm Noncommercial 1.0.0，未提供商业授权 | Node 22 构建、索引和 localhost 服务成功 | 淘汰 |
+| GitNexus v1.6.9 | 通过真实索引证明图数据能力 | Python、JS/Vue 可索引 | 开发期采用 Endpoint 本机原生页面；完全断网/display-only 加固转测试环境 | 用户已接受个人非商业用途，禁止商业推广或商业分发 | Node 22 构建、索引和 localhost 服务成功 | 条件通过 |
 | CodeCompass `096f79c` | C/C++、Python 有调用图设计 | 失败：JS/TS/Vue 没有同等级语义分析 | 完整运行未验证 | GPLv3，若采用需接受相应义务 | Web 依赖安装成功；缺少 Thrift 生成物，完整构建依赖 Linux 工具链 | 淘汰 |
 | Emerge 2.0.7 | 失败：Python/JS 输出是文件依赖，不含函数/方法调用与行号定位 | Vue 文件被全部跳过 | 生成的静态页面可离线 | MIT | Python 3.10 环境完成真实扫描 | 淘汰 |
 
@@ -162,13 +162,26 @@ T0.1: implemented / dev_verified
 T0.2: implemented / dev_verified
 T1.1: implemented / dev_verified
 T1.2: implemented / dev_verified（Chrome/Linux 专项未具备环境，且候选已因其他硬项淘汰）
-T1.3 / G1: NO-GO
-T2.1–T6.1: not_started（由 G1 阻断，不是遗漏）
+T1.3 / G1: restricted_go（仅限个人非商业用途）
+T2.1–T4.3: implemented / dev_verified
+T5.1 / G2: partial（代码环境已完成编译和契约验证，真实 Endpoint 终链待测试环境）
+T6.1 / G3: pending
 ```
 
-继续开发需要新的产品决策之一：
+本次受限通过建立在以下产品决定之上：
 
-1. 用户批准扩展计划外候选清单，再进行同等级官方源码与真实运行评测；或
-2. 用户提供适用于 GitNexus 的商业授权，并接受针对离线静态资源和 display-only 能力做上游集成改造。
+1. 用途限定为个人开发、研究、实验和无预期商业应用的辅助代码查看；
+2. 不进行商业推广、收费服务或商业构件分发；
+3. 如果 Skillify 后续商业化，GitNexus 功能必须停用，直到取得适用商业授权或更换引擎。
 
-在上述决定前，本轮按任务规定停止，不留下不可交付的生产入口。
+PolyForm Noncommercial 1.0.0 没有按天计算的试用到期条款。许可证中的 32 天是首次收到违规通知后的整改期限，不是试用期限。许可证原文和 Required Notice 必须随离线构件保留。
+
+## 8. 恢复实施记录
+
+- 固定版本：GitNexus `v1.6.9` / `4227194ad7bdfbedc29a7fe20e09c6737ce0e744`。
+- 固定官方源码归档 SHA256：`468138d074bb1c3bf4c0094a813d426a2146510d13a5f747c51b950a1f877c90`。
+- 新增 `infra/offline/gitnexus-visualizer-manifest.json`，明确 `personal-noncommercial-only` 和 `expiresAt: null`。
+- 新增离线 runtime 构建脚本；目标 Linux runtime 的最终 SHA256、SBOM复核和内部镜像仍由测试环境产出。
+- Launcher 在 Skillify 状态目录创建工作区快照并运行 GitNexus，禁止向用户原工作区写 `.gitnexus`。
+- Bridge 使用固定 `codemap.visualization.*` workflow 分流，不调用 Agent Provider，不把 Visualizer 接入 MCP。
+- Web 只提供启动、打开、状态和停止动作；GitNexus 原生页面只在 Endpoint 本机 Chrome 打开。
