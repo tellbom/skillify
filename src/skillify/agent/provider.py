@@ -70,6 +70,12 @@ class ProviderStartSpec:
     shutdown_timeout_seconds: float = 5.0
     source_config_path: Path | None = None
     mcp_servers: dict[str, dict[str, object]] = field(default_factory=dict)
+    execution_mode: str = "single"
+    preferred_cli: str | None = None
+    team_policy: dict[str, object] = field(default_factory=dict)
+    work_packages: tuple[dict[str, object], ...] = ()
+    credential_refs: dict[str, str] = field(default_factory=dict)
+    network_environment: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:
@@ -83,6 +89,10 @@ class ProviderStartSpec:
             for value in (self.startup_timeout_seconds, self.shutdown_timeout_seconds)
         ):
             raise ValueError("timeouts must be positive")
+        if self.execution_mode not in {"single", "delegated", "team"}:
+            raise ValueError("execution mode is unsupported")
+        if self.execution_mode == "team" and self.preferred_cli not in {"opencode", "claude-code"}:
+            raise ValueError("team execution requires an approved preferred CLI")
 
 
 @dataclass(frozen=True)

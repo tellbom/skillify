@@ -24,6 +24,8 @@ class EventOutbox(Protocol):
 
 
 def _reported_type(event: TaskEvent) -> str | None:
+    if event.type.value.startswith(("team.", "worker.", "work_package.", "review.")):
+        return event.type.value
     if event.type is EventType.TASK_ACCEPTED:
         return "task.started"
     if event.type is EventType.TEST_COMPLETED:
