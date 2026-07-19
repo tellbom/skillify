@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "name": "multi-agent-shogun",
+  "version": "v5.2.0",
+  "commit": "431b86a6907dd9ce2a0e9789f1e917ba71d1d184",
+  "license": "MIT",
+  "platform": "linux-x86_64",
+  "installable": false,
+  "artifact": {
+    "filename": "multi-agent-shogun-431b86a-linux-x86_64.tar.gz",
+    "sha256": "04bc3a1115302759bb7f1007d5ae7508641cbe72440e0d5977fe79a8d5edafbe",
+    "sourceUrl": "https://github.com/yohey-w/multi-agent-shogun/archive/431b86a6907dd9ce2a0e9789f1e917ba71d1d184.tar.gz",
+    "intranetUri": "file:///opt/skillify/offline/shogun/v5.2.0/multi-agent-shogun-431b86a-linux-x86_64.tar.gz"
+  },
+  "bundleRequirements": [
+    ".venv/bin/python",
+    "config/settings.yaml",
+    "shutsujin_departure.sh",
+    "scripts/inbox_write.sh"
+  ],
+  "hostDependencies": ["tmux", "flock", "inotifywait", "python3", "od"],
+  "allowedClis": ["opencode", "claude"],
+  "forbiddenEntrypoints": ["first_setup.sh"],
+  "excludedComponents": ["bats", "android", "ntfy"]
+}

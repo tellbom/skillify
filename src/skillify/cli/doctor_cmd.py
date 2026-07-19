@@ -25,6 +25,9 @@ from skillify.install.opencode_distribution import (
 )
 from skillify.install.projector import agent_skills_root, load_agent_rule
 from skillify.credentials.store import EncryptedFileSecretStore
+from skillify.agent.shogun.distribution import (
+    ShogunDistributionError, check_host_dependencies, load_manifest, verify_artifact,
+)
 
 REQUIRED_BINARIES = ["uv"]
 
@@ -185,6 +188,26 @@ def _check_credentials(cfg: SkillifyConfig) -> CheckResult:
         "credentials", count > 0, f"{count} local credential reference(s)",
         "add credentials only for tasks that require them", required=False,
     )
+
+
+def _check_shogun(config: AgentLocalConfig) -> CheckResult:
+    configured = (config.shogun_manifest_path, config.shogun_artifact_path)
+    if not all(configured):
+        return CheckResult(
+            "shogun-team-runtime", False, "offline Shogun bundle is not configured",
+            "single/delegated remain available; configure the approved bundle for team mode",
+            required=False,
+        )
+    try:
+        manifest = load_manifest(Path(config.shogun_manifest_path or ""))
+        verify_artifact(Path(config.shogun_artifact_path or ""), manifest)
+        status = check_host_dependencies(config.provider)
+    except (OSError, ValueError, ShogunDistributionError) as exc:
+        return CheckResult("shogun-team-runtime", False, str(exc), required=False)
+    return CheckResult(
+        "shogun-team-runtime", status.available, status.detail,
+        "install missing host dependencies for team mode", required=False,
+    )
 def _opencode_distribution_paths(config: AgentLocalConfig) -> tuple[Path, Path] | None:
     return resolve_distribution_paths(
         config.opencode_manifest_path, config.opencode_artifact_root,
@@ -254,6 +277,7 @@ def run_doctor(
     checks.append(_check_forgejo_token(cfg))
     checks.append(_check_devpi_reachable(cfg))
     checks.append(_check_credentials(cfg))
+    checks.append(_check_shogun(local_config))
     checks += _check_configured_agent_dirs(cfg)
 
     all_ok = True

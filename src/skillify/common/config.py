@@ -50,6 +50,9 @@ class AgentLocalConfig:
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
     opencode_user_config_path: str | None = None
+    shogun_manifest_path: str | None = None
+    shogun_artifact_path: str | None = None
+    shogun_install_root: str | None = None
 
 
 def load_agent_paths(
@@ -86,6 +89,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_OPENCODE_MANIFEST_PATH": "opencode_manifest_path",
         "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
         "SKILLIFY_OPENCODE_USER_CONFIG_PATH": "opencode_user_config_path",
+        "SKILLIFY_SHOGUN_MANIFEST_PATH": "shogun_manifest_path",
+        "SKILLIFY_SHOGUN_ARTIFACT_PATH": "shogun_artifact_path",
+        "SKILLIFY_SHOGUN_INSTALL_ROOT": "shogun_install_root",
     }
     for env_name, key in scalar_overrides.items():
         if env_name in os.environ:
@@ -108,6 +114,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
         opencode_user_config_path=data.get("opencode_user_config_path"),
+        shogun_manifest_path=data.get("shogun_manifest_path"),
+        shogun_artifact_path=data.get("shogun_artifact_path"),
+        shogun_install_root=data.get("shogun_install_root"),
     )
     if config.provider not in {"opencode", "claude-code"}:
         raise ValueError("provider must be opencode or claude-code")
@@ -121,6 +130,11 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     if (config.opencode_user_config_path is not None and
             not Path(config.opencode_user_config_path).is_absolute()):
         raise ValueError("OpenCode user config path must be absolute")
+    shogun_paths = (
+        config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
+    )
+    if any(value is not None and not Path(value).is_absolute() for value in shogun_paths):
+        raise ValueError("Shogun paths must be absolute")
     sequence_fields = (config.allowed_model_hosts, config.credential_env_names)
     if any(not isinstance(item, str) for sequence in sequence_fields for item in sequence):
         raise ValueError("model host and credential names must be strings")
