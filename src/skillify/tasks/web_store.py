@@ -29,6 +29,35 @@ WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "behavior-preserving-refactor": (frozenset({"target"}), frozenset({"target"})),
 }
 _ALIAS = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_TEAM_POLICY_KEYS = frozenset({
+    "min_workers", "max_active_workers", "max_parallel_model_calls",
+    "max_team_duration_minutes", "require_independent_review",
+})
+
+
+def _validate_team_policy(value: dict[str, Any]) -> dict[str, Any]:
+    if set(value) - _TEAM_POLICY_KEYS:
+        raise ValueError("team policy contains unsupported fields")
+    policy = {
+        "min_workers": value.get("min_workers", 2),
+        "max_active_workers": value.get("max_active_workers", 3),
+        "max_parallel_model_calls": value.get("max_parallel_model_calls", 2),
+        "max_team_duration_minutes": value.get("max_team_duration_minutes", 120),
+        "require_independent_review": value.get("require_independent_review", True),
+    }
+    numeric = tuple(policy[key] for key in (
+        "min_workers", "max_active_workers", "max_parallel_model_calls",
+        "max_team_duration_minutes",
+    ))
+    if (
+        any(type(item) is not int or item < 1 for item in numeric)
+        or policy["min_workers"] > policy["max_active_workers"]
+        or policy["max_active_workers"] > 7
+        or policy["max_parallel_model_calls"] > policy["max_active_workers"]
+        or type(policy["require_independent_review"]) is not bool
+    ):
+        raise ValueError("team policy limits are invalid")
+    return policy
 
 
 def _validate_inputs(workflow_id: str, inputs: dict[str, Any]) -> None:
@@ -89,7 +118,7 @@ def dispatch_task(
         runtime = "shogun"
     elif runtime not in {"opencode", "claude-code"}:
         raise ValueError("runtime must be opencode or claude-code")
-    policy = dict(team_policy or {})
+    policy = _validate_team_policy(dict(team_policy or {})) if execution_mode == "team" else {}
     _validate_inputs(workflow_id, inputs)
     timestamp = now or datetime.now(timezone.utc)
     task = EndpointTaskRecord(

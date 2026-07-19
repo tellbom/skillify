@@ -77,6 +77,12 @@ class ShogunProvider(AgentProvider):
     def start(self, spec: ProviderStartSpec) -> ProviderHandle:
         if spec.execution_mode != "team" or spec.preferred_cli not in {"opencode", "claude-code"}:
             raise ValueError("Shogun provider requires team execution")
+        manifest = load_manifest(self.manifest_path)
+        verify_artifact(self.artifact_path, manifest)
+        check_bundle_layout(self.install_root, manifest)
+        dependencies = check_host_dependencies(spec.preferred_cli)
+        if not dependencies.available:
+            raise ShogunDistributionError(dependencies.detail)
         policy = spec.team_policy
         workers = int(policy.get("max_active_workers", 2))
         generated = generate_config(
