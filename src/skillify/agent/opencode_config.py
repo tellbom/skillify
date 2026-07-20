@@ -1221,7 +1221,7 @@ def configure_codegraph_mcp(
     mcp = dict(config.get("mcp", {}))
     desired = {
         "type": "local",
-        "command": [executable, "serve", "--mcp"],
+        "command": [executable, "serve", "--mcp", "--path", str(paths.workspace.absolute())],
         "environment": mcp_environment(paths.workspace),
         "enabled": True,
     }

@@ -536,6 +536,13 @@ class OpenCodeProvider:
                     part = props.get("part")
                     if not isinstance(part, dict):
                         raise _MalformedSseEvent()
+                    # OpenCode emits this event for every message-part kind, including
+                    # ordinary text, reasoning and step markers.  Only tool parts carry
+                    # the state/tool/callID contract translated below; treating text as
+                    # a malformed tool event makes every successful text-only task fail.
+                    part_type = self._event_text(part.get("type"))
+                    if part_type != "tool":
+                        continue
                     state = part.get("state")
                     if not isinstance(state, dict):
                         raise _MalformedSseEvent()

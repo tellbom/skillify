@@ -6,10 +6,11 @@ import json
 import uuid
 from dataclasses import replace
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from typing import Protocol
 
 from skillify.agent.events import EventType, TaskEvent, TaskState
-from skillify.agent.provider import AgentProvider, ProviderStartSpec, TaskSpec
+from skillify.agent.provider import AgentProvider, ProviderRecovery, ProviderStartSpec, TaskSpec
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import build_task_event
 from skillify.tasks.mcp_injection import McpPackageConfig, select_task_mcp
@@ -67,18 +68,44 @@ class TaskRunner:
             f"Execute published workflow {envelope.workflow_id}@{envelope.workflow_version}. "
             f"Fixed inputs: {json.dumps(dict(envelope.parameters), sort_keys=True, ensure_ascii=False)}"
         )
-        start_spec = self.start_spec(envelope)
-        injection_runtime = envelope.preferred_cli if envelope.runtime == "shogun" else envelope.runtime
-        plan = select_task_mcp(
-            envelope.mcp_packages, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,
-            workspace=start_spec.workspace,
-            per_task_supported=self.per_task_mcp.get(injection_runtime or envelope.runtime, True),
-        )
-        if plan.log:
-            self.log(plan.log)
-        start_spec = replace(start_spec, mcp_servers=plan.servers)
-        handle = provider.start(start_spec)
-        session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
+        recovery = ProviderRecovery("absent")
+        recover = getattr(provider, "recover", None)
+        if envelope.runtime == "shogun" and callable(recover):
+            recovery = recover(envelope.task_id)
+        if recovery.status == "dead":
+            event_id = uuid.uuid5(
+                uuid.NAMESPACE_URL, f"skillify:{envelope.task_id}:team-recovery-dead",
+            ).hex
+            self.outbox.enqueue(event_id, build_task_event(
+                event_id=event_id,
+                task_id=envelope.task_id,
+                event_type="task.failed",
+                occurred_at=datetime.now(timezone.utc),
+                workflow_id=envelope.workflow_id,
+                workflow_version=envelope.workflow_version,
+                provider="shogun",
+                provider_version=str(getattr(provider, "provider_version", "unknown")),
+                reason_code="team-recovery-dead",
+                nonce=envelope.nonce,
+                state_version=state_version,
+            ))
+            return state_version + 1
+        if recovery.status == "live":
+            assert recovery.handle is not None and recovery.session is not None
+            handle, session = recovery.handle, recovery.session
+        else:
+            start_spec = self.start_spec(envelope)
+            injection_runtime = envelope.preferred_cli if envelope.runtime == "shogun" else envelope.runtime
+            plan = select_task_mcp(
+                envelope.mcp_packages, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,
+                workspace=start_spec.workspace,
+                per_task_supported=self.per_task_mcp.get(injection_runtime or envelope.runtime, True),
+            )
+            if plan.log:
+                self.log(plan.log)
+            start_spec = replace(start_spec, mcp_servers=plan.servers)
+            handle = provider.start(start_spec)
+            session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
         version = state_version
         try:
             for event in provider.stream_events(handle, session):

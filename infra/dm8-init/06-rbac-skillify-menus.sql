@@ -20,6 +20,9 @@ USING (
         UNION ALL SELECT 'skillify:upload', 'menu:skillify.upload', NULL, 'Menu',
                '上传技能', 'upload', '/upload', 'Tab',
                '/src/views/UploadView.vue', NULL, 80 FROM dual
+        UNION ALL SELECT 'endpoint-tasks', 'menu:skillify.endpoint-tasks', NULL, 'Menu',
+               'Endpoint Tasks', 'endpoint-tasks', '/endpoint-tasks', 'Tab',
+               '/src/views/EndpointTasksView.vue', NULL, 75 FROM dual
         UNION ALL SELECT 'leaderboard', 'menu:skillify.leaderboard', NULL, 'Menu',
                '排行榜', 'leaderboard', '/leaderboard', 'Tab',
                '/src/views/LeaderboardView.vue', NULL, 70 FROM dual

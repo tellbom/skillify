@@ -1,0 +1,25 @@
+services:
+  gitnexus:
+    image: skillify/gitnexus-test:1.6.9
+    build:
+      context: ${GITNEXUS_BUILD_CONTEXT:?set the extracted GitNexus source directory}
+      dockerfile: ${SKILLIFY_ROOT:?set the Skillify source directory}/infra/gitnexus-test/Dockerfile
+    networks:
+      gitnexus-offline:
+        ipv4_address: 172.24.0.2
+    volumes:
+      - ${GITNEXUS_WORKSPACE:?set the indexed snapshot directory}:/workspace:rw
+      - ${GITNEXUS_EVAL_ROOT:?set the evaluation snapshot root}:/repos:rw
+      - gitnexus-home:/var/lib/gitnexus
+    working_dir: /workspace
+    restart: unless-stopped
+
+volumes:
+  gitnexus-home:
+
+networks:
+  gitnexus-offline:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16

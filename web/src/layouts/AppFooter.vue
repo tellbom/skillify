@@ -33,7 +33,7 @@ const quickLinks = computed(() => collectLeafItems(props.navItems))
 
         <nav class="footer-section" aria-label="业务快捷入口">
           <h2>快捷入口</h2>
-          <!-- <div v-if="quickLinks.length" class="footer-link-list">
+          <div v-if="quickLinks.length" class="footer-link-list">
             <router-link
               v-for="item in quickLinks"
               :key="item.name || item.path"
@@ -42,8 +42,8 @@ const quickLinks = computed(() => collectLeafItems(props.navItems))
             >
               {{ item.title }}
             </router-link>
-          </div> -->
-          <span class="empty-links">暂无可用入口</span>
+          </div>
+          <span v-else class="empty-links">暂无可用入口</span>
         </nav>
 
         <section class="footer-section" aria-labelledby="footer-resources-title">

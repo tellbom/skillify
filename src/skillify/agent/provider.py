@@ -136,6 +136,21 @@ class ProviderResult:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class ProviderRecovery:
+    status: str
+    handle: ProviderHandle | None = None
+    session: ProviderSession | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"absent", "live", "dead"}:
+            raise ValueError("provider recovery status is invalid")
+        if self.status == "live" and (self.handle is None or self.session is None):
+            raise ValueError("live provider recovery requires handle and session")
+        if self.status != "live" and (self.handle is not None or self.session is not None):
+            raise ValueError("non-live provider recovery cannot carry handles")
+
+
 class AgentProvider(Protocol):
     def probe(self) -> ProviderProbe: """Return local availability and capability."""
     def start(self, spec: ProviderStartSpec) -> ProviderHandle: """Start one isolated provider."""

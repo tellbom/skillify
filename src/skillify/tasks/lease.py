@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import exists, false, or_, select, update
 from sqlalchemy.orm import Session
 
 from skillify.index.models import EndpointTaskRecord, WorkPackageRecord
@@ -12,6 +12,11 @@ from skillify.index.models import EndpointTaskRecord, WorkPackageRecord
 
 class LeaseError(RuntimeError):
     pass
+
+
+def _is_false(column):
+    """Render a portable boolean comparison (DM8 rejects ``IS 0``)."""
+    return column == false()
 
 
 def _utc(value: datetime) -> datetime:
@@ -31,21 +36,21 @@ def claim_next_task(
     now = _utc(now)
     has_unconfirmed_package = exists(select(WorkPackageRecord.id).where(
         WorkPackageRecord.task_id == EndpointTaskRecord.task_id,
-        WorkPackageRecord.confirmed.is_(False),
+        _is_false(WorkPackageRecord.confirmed),
     ))
     active = session.scalar(select(EndpointTaskRecord).where(
         EndpointTaskRecord.endpoint_id == endpoint_id,
         EndpointTaskRecord.lease_owner == lease_owner,
         EndpointTaskRecord.lease_expires_at > now,
         EndpointTaskRecord.state.in_(("awaiting_confirmation", "running")),
-        EndpointTaskRecord.revoked.is_(False),
+        _is_false(EndpointTaskRecord.revoked),
     ).order_by(EndpointTaskRecord.created_at))
     if active is not None:
         return active
     candidate = session.scalar(select(EndpointTaskRecord).where(
         EndpointTaskRecord.endpoint_id == endpoint_id,
         EndpointTaskRecord.state == "awaiting_confirmation",
-        EndpointTaskRecord.revoked.is_(False),
+        _is_false(EndpointTaskRecord.revoked),
         ~has_unconfirmed_package,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).order_by(EndpointTaskRecord.created_at))
@@ -55,7 +60,7 @@ def claim_next_task(
     changed = session.execute(update(EndpointTaskRecord).where(
         EndpointTaskRecord.task_id == candidate.task_id,
         EndpointTaskRecord.state_version == candidate.state_version,
-        EndpointTaskRecord.revoked.is_(False),
+        _is_false(EndpointTaskRecord.revoked),
         ~has_unconfirmed_package,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).values(

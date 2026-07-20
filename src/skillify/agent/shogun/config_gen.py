@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -21,6 +22,45 @@ class GeneratedShogunConfig:
     queue_dir: Path
     command: tuple[str, ...]
     environment: dict[str, str]
+
+
+_MUTABLE_TOP_LEVEL = frozenset({"config", "queue", "logs", "dashboard.md"})
+
+
+def _project_runtime(install_root: Path, run_dir: Path) -> None:
+    """Project the immutable bundle into a task directory without copying source."""
+    source = Path(install_root).resolve(strict=True)
+    target = Path(run_dir).resolve()
+    if source == target or source in target.parents:
+        raise ValueError("Shogun run directory must be outside the install root")
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for item in source.rglob("*"):
+        relative = item.relative_to(source)
+        if relative.parts[0] in _MUTABLE_TOP_LEVEL:
+            continue
+        destination = target / relative
+        if item.is_symlink():
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if destination.exists() or destination.is_symlink():
+                if destination.is_symlink() and os.readlink(destination) == os.readlink(item):
+                    continue
+                raise FileExistsError(f"Shogun runtime projection conflicts at {relative}")
+            destination.symlink_to(os.readlink(item), target_is_directory=item.is_dir())
+            continue
+        if item.is_dir():
+            destination.mkdir(exist_ok=True, mode=0o700)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if destination.exists():
+            if not destination.samefile(item):
+                raise FileExistsError(f"Shogun runtime projection conflicts at {relative}")
+            continue
+        try:
+            os.link(item, destination)
+        except OSError as exc:
+            raise OSError(
+                f"Shogun runtime projection requires same-filesystem hard links: {relative}"
+            ) from exc
 
 
 def generate_config(
@@ -52,6 +92,7 @@ def generate_config(
         raise ValueError("Shogun endpoint environment cannot contain secrets")
 
     root = Path(run_dir)
+    _project_runtime(Path(install_root), root)
     config_dir = root / "config"
     queue_dir = root / "queue"
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -128,10 +169,13 @@ def generate_config(
     settings_path.write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
     settings_path.chmod(0o600)
 
-    entrypoint = Path(install_root) / "shutsujin_departure.sh"
+    home_dir = root / "home"
+    home_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    entrypoint = root / "shutsujin_departure.sh"
     environment = {
         "SHOGUN_QUEUE_DIR": str(queue_dir),
         "SHOGUN_SETTINGS_FILE": str(settings_path),
+        "HOME": str(home_dir),
         **public_env,
     }
     return GeneratedShogunConfig(

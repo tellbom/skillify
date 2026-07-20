@@ -18,15 +18,27 @@
   },
   "runtime": {
     "nodeMajor": 22,
-    "entrypoint": "gitnexus/dist/cli/index.js"
+    "entrypoint": "gitnexus/dist/cli/index.js",
+    "containerImage": "skillify/gitnexus-test:1.6.9",
+    "containerArchive": {
+      "filename": "skillify-gitnexus-test-1.6.9-image.tar.gz",
+      "sha256": "13cba5252faeaba7741a11ff954711e01695cac5a9c2b1b49d3d08fe197c8ba9",
+      "intranetUri": "file:///opt/skillify/offline/codemap/gitnexus/v1.6.9/skillify-gitnexus-test-1.6.9-image.tar.gz"
+    },
+    "sbom": {
+      "format": "CycloneDX JSON",
+      "filename": "gitnexus-1.6.9.cdx.json",
+      "sha256": "a7b823f40b22f6431b08e86b882f7af8f78b69e0e9ddbbc287a84cb118afe3d0"
+    }
   },
   "browser": {
     "minChromeMajor": null,
-    "testedChromeMajors": []
+    "testedChromeMajors": [145],
+    "status": "blocked-headless-localhost-network"
   },
   "isolation": {
     "workspaceMode": "snapshot",
     "bindHost": "127.0.0.1",
-    "networkMode": "test-environment-pending"
+    "networkMode": "internal-docker-with-restricted-loopback-tunnel"
   }
 }

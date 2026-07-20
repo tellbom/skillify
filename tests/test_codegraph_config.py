@@ -20,7 +20,9 @@ def test_opencode_codegraph_config_is_dry_run_and_idempotent(tmp_path: Path) -> 
     assert configure_opencode(paths) is True
     assert configure_opencode(paths) is False
     entry = json.loads(paths.config_file.read_text())["mcp"]["codegraph_explore"]
-    assert entry["command"] == ["codegraph", "serve", "--mcp"]
+    assert entry["command"] == [
+        "codegraph", "serve", "--mcp", "--path", str(tmp_path.absolute()),
+    ]
     assert entry["environment"]["CODEGRAPH_NO_DOWNLOAD"] == "1"
     assert entry["environment"]["CODEGRAPH_PROJECT_ROOT"] == str(tmp_path.absolute())
 
@@ -39,7 +41,7 @@ def test_claude_codegraph_config_is_dry_run_idempotent_and_conflict_safe(tmp_pat
     assert configure_claude(tmp_path) is True
     assert configure_claude(tmp_path) is False
     entry = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["codegraph_explore"]
-    assert entry["args"] == ["serve", "--mcp"]
+    assert entry["args"] == ["serve", "--mcp", "--path", str(tmp_path.absolute())]
     assert entry["env"]["CODEGRAPH_TELEMETRY"] == "0"
     entry["command"] = "other"
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"codegraph_explore": entry}}))

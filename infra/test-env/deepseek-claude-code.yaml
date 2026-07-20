@@ -1,0 +1,19 @@
+provider: claude-code
+allowed_workspaces:
+  - /home/fzq/.skillify-test/e1761ec/workspace
+workspace_aliases:
+  acceptance: /home/fzq/.skillify-test/e1761ec/workspace
+model_endpoint: https://api.deepseek.com/anthropic
+model_provider: deepseek
+model_name: deepseek-v4-flash
+allowed_model_hosts:
+  - api.deepseek.com
+credential_env_names:
+  - ANTHROPIC_AUTH_TOKEN
+opencode_manifest_path: /home/fzq/.skillify-test/e1761ec/opencode-manifest.json
+opencode_artifact_root: /home/fzq/.skillify-test/e1761ec
+opencode_user_config_path: null
+shogun_manifest_path: null
+shogun_artifact_path: null
+shogun_install_root: null
+shogun_team_enabled: false

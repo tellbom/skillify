@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -16,7 +18,7 @@ from skillify.agent.events import (
 )
 from skillify.agent.provider import (
     AgentProvider, ProviderCapability, ProviderHandle, ProviderProbe, ProviderResult,
-    ProviderSession, ProviderStartSpec, TaskSpec,
+    ProviderRecovery, ProviderSession, ProviderStartSpec, TaskSpec,
 )
 from skillify.agent.shogun.config_gen import GeneratedShogunConfig, generate_config
 from skillify.agent.shogun.contract import COMMAND_FILE, scan_queue
@@ -25,14 +27,20 @@ from skillify.agent.shogun.distribution import (
     check_host_dependencies, load_manifest, require_installable, verify_artifact,
 )
 from skillify.agent.shogun.events import TeamEventMapper
-from skillify.agent.shogun.lifecycle import ActiveTeam, ProcessRuntime, RuntimeControl, ShogunLifecycle
+from skillify.agent.shogun.credentials import (
+    CredentialBrokerLike, InjectionChannel, PaneCredentialInjector,
+)
+from skillify.agent.shogun.lifecycle import (
+    ActiveTeam, ProcessRuntime, RuntimeControl, ShogunLifecycle, TeamHandle,
+)
 
 
 @dataclass
 class _RuntimeState:
-    spec: ProviderStartSpec
+    spec: ProviderStartSpec | None
     generated: GeneratedShogunConfig
     team: ActiveTeam
+    credential_channel: InjectionChannel | None = None
 
 
 def _atomic_yaml(path: Path, value: object) -> None:
@@ -43,6 +51,8 @@ def _atomic_yaml(path: Path, value: object) -> None:
 
 
 class ShogunProvider(AgentProvider):
+    provider_version = SHOGUN_VERSION
+
     def __init__(
         self,
         *,
@@ -51,12 +61,16 @@ class ShogunProvider(AgentProvider):
         install_root: Path,
         cache_root: Path,
         runtime: RuntimeControl | None = None,
+        credential_broker: CredentialBrokerLike | None = None,
+        credential_injector: PaneCredentialInjector | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.artifact_path = Path(artifact_path)
         self.install_root = Path(install_root)
         self.cache_root = Path(cache_root)
         self.runtime = runtime or ProcessRuntime()
+        self.credential_broker = credential_broker
+        self.credential_injector = credential_injector or PaneCredentialInjector()
         self.lifecycle = ShogunLifecycle(self.runtime, self.cache_root / "active-team.lock")
         self._handles: dict[str, _RuntimeState] = {}
         self._sessions: dict[str, ProviderSession] = {}
@@ -78,6 +92,8 @@ class ShogunProvider(AgentProvider):
     def start(self, spec: ProviderStartSpec) -> ProviderHandle:
         if spec.execution_mode != "team" or spec.preferred_cli not in {"opencode", "claude-code"}:
             raise ValueError("Shogun provider requires team execution")
+        if set(spec.credential_refs) != set(spec.runtime.credential_env_names):
+            raise ValueError("Shogun requires one credential reference per approved model environment name")
         manifest = load_manifest(self.manifest_path)
         require_installable(manifest)
         verify_artifact(self.artifact_path, manifest)
@@ -87,25 +103,51 @@ class ShogunProvider(AgentProvider):
             raise ShogunDistributionError(dependencies.detail)
         policy = spec.team_policy
         workers = int(policy.get("max_active_workers", 2))
-        generated = generate_config(
-            install_root=self.install_root,
-            run_dir=spec.config_dir,
-            preferred_cli=spec.preferred_cli,
-            worker_count=workers,
-            model=spec.runtime.model,
-            credential_refs=spec.credential_refs,
-            endpoint_environment=spec.network_environment,
-            work_packages=spec.work_packages,
-            mcp_servers=spec.mcp_servers,
-            network_allowlist=spec.network_allowlist,
-            mcp_network_allowlist=spec.mcp_network_allowlist,
-        )
-        team = self.lifecycle.start(spec.config_dir.name, generated, install_root=self.install_root)
+        channel = None
+        try:
+            if spec.credential_refs:
+                if self.credential_broker is None:
+                    raise ValueError("Shogun credential references require a CredentialBroker")
+                channel = self.credential_injector.prepare(
+                    spec.credential_refs, broker=self.credential_broker, run_dir=spec.config_dir,
+                )
+            generated = generate_config(
+                install_root=self.install_root,
+                run_dir=spec.config_dir,
+                preferred_cli=spec.preferred_cli,
+                worker_count=workers,
+                model=spec.runtime.model,
+                credential_refs=spec.credential_refs,
+                endpoint_environment=spec.network_environment,
+                work_packages=spec.work_packages,
+                mcp_servers=spec.mcp_servers,
+                network_allowlist=spec.network_allowlist,
+                mcp_network_allowlist=spec.mcp_network_allowlist,
+            )
+            if channel is not None:
+                environment = dict(generated.environment)
+                environment["PATH"] = os.pathsep.join((
+                    str(channel.launcher_dir), os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                ))
+                environment["SKILLIFY_SHOGUN_CREDENTIAL_SOCKET"] = str(channel.socket_path)
+                generated = replace(generated, environment=environment)
+            team = self.lifecycle.start(spec.config_dir.name, generated, install_root=self.install_root)
+        except Exception:
+            if channel is not None:
+                self.credential_injector.destroy(channel)
+            raise
         handle_id = uuid.uuid4().hex
         handle = ProviderHandle(
-            handle_id, "shogun", SHOGUN_VERSION, generated.queue_dir.as_uri(), team.pid,
+            handle_id, "shogun", SHOGUN_VERSION, generated.queue_dir.as_uri(), 0,
         )
-        self._handles[handle_id] = _RuntimeState(spec, generated, team)
+        try:
+            team.handle.write(team.run_dir / "team-handle.json")
+        except Exception:
+            if channel is not None:
+                self.credential_injector.destroy(channel)
+            self.lifecycle.stop(team)
+            raise
+        self._handles[handle_id] = _RuntimeState(spec, generated, team, channel)
         return handle
 
     def create_session(self, handle: ProviderHandle, spec: TaskSpec) -> ProviderSession:
@@ -120,9 +162,100 @@ class ShogunProvider(AgentProvider):
             "work_packages": list(runtime.spec.work_packages),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        _atomic_yaml(runtime.generated.queue_dir / COMMAND_FILE, {"commands": [command]})
+        try:
+            _atomic_yaml(runtime.generated.queue_dir / COMMAND_FILE, {"commands": [command]})
+            state_path = runtime.team.run_dir / "provider-state.json"
+            temporary = state_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps({
+                "handle_id": handle.handle_id,
+                "task_id": session.task_id,
+                "session_id": session.session_id,
+            }, sort_keys=True), encoding="utf-8")
+            temporary.chmod(0o600)
+            os.replace(temporary, state_path)
+        except Exception:
+            self._handles.pop(handle.handle_id, None)
+            if runtime.credential_channel is not None:
+                self.credential_injector.destroy(runtime.credential_channel)
+            self.lifecycle.stop(runtime.team)
+            raise
         self._sessions[session.session_id] = session
         return session
+
+    def recover(self, task_id: str) -> ProviderRecovery:
+        run_dir = (self.cache_root / task_id).resolve()
+        handle_path = run_dir / "team-handle.json"
+        state_path = run_dir / "provider-state.json"
+        if not handle_path.exists():
+            guard_matches = False
+            try:
+                guard_matches = self.lifecycle.guard_path.read_text(encoding="utf-8") == task_id
+            except FileNotFoundError:
+                pass
+            if run_dir.exists() or guard_matches:
+                shutil.rmtree(run_dir, ignore_errors=True)
+                if guard_matches:
+                    self.lifecycle.guard_path.unlink(missing_ok=True)
+                return ProviderRecovery("dead")
+            return ProviderRecovery("absent")
+        try:
+            team_handle = TeamHandle.read(handle_path)
+            if team_handle.run_dir.resolve() != run_dir:
+                raise ValueError("persisted Shogun run directory does not match task")
+        except (OSError, ValueError, json.JSONDecodeError):
+            shutil.rmtree(run_dir, ignore_errors=True)
+            self.lifecycle.guard_path.unlink(missing_ok=True)
+            return ProviderRecovery("dead")
+        team = ActiveTeam(
+            task_id, team_handle, run_dir, run_dir / "queue", self.lifecycle.guard_path,
+        )
+        if not self.runtime.is_alive(team_handle):
+            self.runtime.terminate(team_handle)
+            self.runtime.cleanup_processes(team_handle)
+            self.lifecycle._release(team)
+            return ProviderRecovery("dead")
+        try:
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            if set(persisted) != {"handle_id", "task_id", "session_id"}:
+                raise ValueError("persisted Shogun provider state has unexpected fields")
+            if persisted["task_id"] != task_id or any(
+                not isinstance(persisted[name], str) or not persisted[name]
+                for name in ("handle_id", "task_id", "session_id")
+            ):
+                raise ValueError("persisted Shogun provider state is invalid")
+        except (OSError, ValueError, json.JSONDecodeError, TypeError):
+            self.runtime.terminate(team_handle)
+            self.runtime.cleanup_processes(team_handle)
+            self.lifecycle._release(team)
+            return ProviderRecovery("dead")
+        channel = None
+        settings_path = run_dir / "config" / "settings.yaml"
+        try:
+            settings = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+            refs = settings.get("skillify", {}).get("credential_refs", {})
+            if refs:
+                if self.credential_broker is None or not isinstance(refs, dict):
+                    raise ValueError("recovering credentialed team requires its CredentialBroker")
+                channel = self.credential_injector.prepare(
+                    refs, broker=self.credential_broker, run_dir=run_dir,
+                )
+        except Exception:
+            self.runtime.terminate(team_handle)
+            self.runtime.cleanup_processes(team_handle)
+            self.lifecycle._release(team)
+            return ProviderRecovery("dead")
+        generated = GeneratedShogunConfig(
+            settings_path, run_dir / "config" / "opencode-permissions.yaml",
+            run_dir / "queue", (str(run_dir / "shutsujin_departure.sh"),), {},
+        )
+        handle = ProviderHandle(
+            persisted["handle_id"], "shogun", SHOGUN_VERSION, generated.queue_dir.as_uri(), 0,
+        )
+        session = ProviderSession(task_id, persisted["session_id"], handle.handle_id)
+        self.lifecycle.active = team
+        self._handles[handle.handle_id] = _RuntimeState(None, generated, team, channel)
+        self._sessions[session.session_id] = session
+        return ProviderRecovery("live", handle, session)
 
     def stream_events(
         self, handle: ProviderHandle, session: ProviderSession,
@@ -138,7 +271,7 @@ class ShogunProvider(AgentProvider):
             EventType.TEAM_PREPARING, TaskState.QUEUED,
             {"sequence": sequence, "stage": "preparing"},
         )
-        for _ in self.runtime.queue_states(runtime.generated.queue_dir):
+        for _ in self.runtime.queue_states(runtime.generated.queue_dir, runtime.team.handle):
             terminal = False
             for item in scan_queue(runtime.generated.queue_dir):
                 events = mapper.map_all(
@@ -157,12 +290,16 @@ class ShogunProvider(AgentProvider):
         runtime = self._handles.pop(handle.handle_id, None)
         self._sessions.pop(session.session_id, None)
         if runtime is not None:
+            if runtime.credential_channel is not None:
+                self.credential_injector.destroy(runtime.credential_channel)
             self.lifecycle.cancel(runtime.team)
         return ProviderResult(TaskState.CANCELLED)
 
     def stop(self, handle: ProviderHandle) -> ProviderResult:
         runtime = self._handles.pop(handle.handle_id, None)
         if runtime is not None:
+            if runtime.credential_channel is not None:
+                self.credential_injector.destroy(runtime.credential_channel)
             self.lifecycle.stop(runtime.team)
         for session_id, session in tuple(self._sessions.items()):
             if session.handle_id == handle.handle_id:

@@ -80,6 +80,8 @@ services:
       SKILLIFY_INDEX_DB_URL: ${SKILLIFY_INDEX_DB_URL:?set the external DM8 SQLAlchemy URL}
       SKILLIFY_KEYCLOAK_REALM_URL: ${SKILLIFY_KEYCLOAK_REALM_URL:?set the Keycloak realm issuer URL}
       SKILLIFY_KEYCLOAK_AUDIENCE: ${SKILLIFY_KEYCLOAK_AUDIENCE:-skillify-web}
+      SKILLIFY_ENDPOINT_DEVICE_SECRET: ${SKILLIFY_ENDPOINT_DEVICE_SECRET:?set the endpoint device token signing secret}
+      SKILLIFY_ENDPOINT_TASK_SIGNING_SECRET: ${SKILLIFY_ENDPOINT_TASK_SIGNING_SECRET:?set the endpoint task envelope signing secret}
       SKILLIFY_WEB_UPLOAD_GIT_ENABLED: "true"
     command: ["skillify-web"]
     healthcheck:
@@ -101,6 +103,8 @@ services:
         VITE_RBAC_BASE_URL: ${VITE_RBAC_BASE_URL:?set the Rbac.Api base URL}
         VITE_RBAC_PROJECT: ${VITE_RBAC_PROJECT:-skillify}
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       skillify-web:
         condition: service_healthy

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import false, select, update
 from sqlalchemy.orm import Session
 
 from skillify.index.models import (
@@ -245,7 +245,7 @@ def transition_task(
         EndpointTaskRecord.task_id == task.task_id,
         EndpointTaskRecord.state == expected_state,
         EndpointTaskRecord.state_version == task.state_version,
-        EndpointTaskRecord.revoked.is_(False),
+        EndpointTaskRecord.revoked == false(),
     ).values(
         state=target_state,
         state_version=EndpointTaskRecord.state_version + 1,

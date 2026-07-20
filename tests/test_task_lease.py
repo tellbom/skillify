@@ -1,14 +1,25 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
 from skillify.index.models import EndpointTaskRecord, WorkPackageRecord
-from skillify.tasks.lease import LeaseError, claim_next_task, heartbeat_task
+from skillify.tasks.lease import LeaseError, _is_false, claim_next_task, heartbeat_task
 
 
 NOW = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
+
+
+def test_false_predicate_compiles_for_dm8_without_invalid_is_zero() -> None:
+    from dmSQLAlchemy.dmpython import DMDialect_dmPython
+
+    sql = str(select(EndpointTaskRecord).where(
+        _is_false(EndpointTaskRecord.revoked),
+    ).compile(dialect=DMDialect_dmPython()))
+    assert " IS 0" not in sql
+    assert " = 0" in sql
 
 
 def _session() -> Session:

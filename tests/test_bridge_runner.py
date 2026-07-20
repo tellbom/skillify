@@ -2,7 +2,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from skillify.agent.fake_provider import FakeProvider
-from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
+from skillify.agent.provider import (
+    ModelRuntimeConfig, ProviderHandle, ProviderRecovery, ProviderResult, ProviderSession,
+    ProviderStartSpec,
+)
+from skillify.agent.events import TaskState
 from skillify.agent.runner import TaskRunner
 from skillify.cli.bridge_cmd import BridgeLoop, LocalOutbox, RoutedBridgeRunner
 from skillify.tasks.protocol import TaskEnvelope
@@ -90,3 +94,63 @@ def test_bridge_routes_codemap_without_starting_an_agent_provider() -> None:
 
     assert routed.run(codemap, state_version=2) == 3
     assert calls == ["codemap"]
+
+
+def test_bridge_reidentifies_existing_team_after_restart(tmp_path: Path) -> None:
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    handle = ProviderHandle("existing-handle", "shogun", "v5.2.0", "file:///queue", 0)
+    session = ProviderSession("task-1", "existing-session", handle.handle_id)
+
+    class RecoveringProvider:
+        stopped = 0
+
+        def recover(self, task_id):
+            assert task_id == "task-1"
+            return ProviderRecovery("live", handle, session)
+
+        def start(self, spec):
+            raise AssertionError("a recovered team must not be started again")
+
+        def create_session(self, value, spec):
+            raise AssertionError("a recovered session must not be recreated")
+
+        def stream_events(self, value, recovered_session):
+            assert value == handle and recovered_session == session
+            return iter(())
+
+        def stop(self, value):
+            self.stopped += 1
+            return ProviderResult(TaskState.SUCCEEDED)
+
+    provider = RecoveringProvider()
+    runner = TaskRunner(
+        {"shogun": provider}, lambda _: (_ for _ in ()).throw(AssertionError("no new spec")), outbox,
+    )
+    envelope = TaskEnvelope(
+        **{**_envelope().__dict__, "runtime": "shogun", "execution_mode": "team", "preferred_cli": "opencode"}
+    )
+
+    assert runner.run(envelope, state_version=2) == 2
+    assert provider.stopped == 1
+
+
+def test_bridge_safe_terminate_when_team_dead(tmp_path: Path) -> None:
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+
+    class DeadProvider:
+        def recover(self, task_id):
+            return ProviderRecovery("dead")
+
+        def start(self, spec):
+            raise AssertionError("a dead recovered team must not be executed again")
+
+    runner = TaskRunner(
+        {"shogun": DeadProvider()}, lambda _: (_ for _ in ()).throw(AssertionError("no new spec")),
+        outbox,
+    )
+    envelope = TaskEnvelope(
+        **{**_envelope().__dict__, "runtime": "shogun", "execution_mode": "team", "preferred_cli": "opencode"}
+    )
+
+    assert runner.run(envelope, state_version=2) == 3
+    assert outbox.pending()[0]["payload"]["reasonCode"] == "team-recovery-dead"

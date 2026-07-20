@@ -205,6 +205,7 @@ def test_normal_completion_maps_only_safe_events(tmp_path, fake_server, monkeypa
     Handler.events = [
         {"type": "todo.updated", "properties": {"sessionID": "session-1", "todos": [{"id": "1"}]}},
         {"type": "permission.asked", "properties": {"sessionID": "session-1", "id": "call-1", "permission": "bash", "prompt": "private"}},
+        {"type": "message.part.updated", "properties": {"sessionID": "session-1", "part": {"type": "text", "text": "private model output"}}},
         {"type": "message.part.updated", "properties": {"sessionID": "session-1", "part": {"type": "tool", "tool": "test", "callID": "call-2", "state": {"status": "completed", "output": "private source", "metadata": {"exit": 0}}}}},
         {"type": "session.diff", "properties": {"sessionID": "session-1", "diff": [{"file": "secret.py", "before": "source"}]}},
         {"type": "session.idle", "properties": {"sessionID": "session-1"}},

@@ -35,7 +35,7 @@ def configure_codegraph_mcp(
     desired = {
         "type": "stdio",
         "command": executable,
-        "args": ["serve", "--mcp"],
+        "args": ["serve", "--mcp", "--path", str(root)],
         "env": mcp_environment(root),
     }
     existing = servers.get("codegraph_explore")

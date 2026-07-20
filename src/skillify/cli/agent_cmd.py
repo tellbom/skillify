@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -707,6 +708,8 @@ def logs(
     """Read redacted local lifecycle logs."""
     path = load_agent_paths().log_path
     try:
+        if path.exists() and not path.stat().st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
+            raise PermissionError(path)
         log_text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         content = []

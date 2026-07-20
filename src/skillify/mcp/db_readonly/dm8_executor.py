@@ -30,7 +30,12 @@ class DM8ReadExecutor:
     def table_names(self) -> tuple[str, ...]:
         cursor = self.connection.cursor()
         try:
-            cursor.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
+            cursor.execute(
+                "SELECT TABLE_NAME FROM USER_TABLES "
+                "UNION SELECT VIEW_NAME FROM USER_VIEWS "
+                "UNION SELECT OWNER || '.' || TABLE_NAME FROM USER_TAB_PRIVS "
+                "WHERE PRIVILEGE = 'SELECT' ORDER BY 1"
+            )
             return tuple(str(row[0]) for row in cursor.fetchall())
         finally:
             cursor.close()
