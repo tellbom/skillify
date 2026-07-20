@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import yaml
+
 from skillify.agent.shogun.config_gen import generate_config
 
 
@@ -39,8 +41,22 @@ def test_generated_queue_dir_is_the_dir_upstream_reads(tmp_path: Path) -> None:
     assert generated.queue_dir == run_dir / "queue"
     assert Path(generated.command[0]) == run_dir / "shutsujin_departure.sh"
     assert generated.environment["HOME"] == str(run_dir / "home")
+    assert generated.environment["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
     assert os.path.samefile(bundle / "shutsujin_departure.sh", generated.command[0])
     assert not (generated.queue_dir / "shared.txt").exists()
+
+
+def test_tmux_3_0_compatibility_launcher_only_rewrites_window_size(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    monkeypatch.setattr("skillify.agent.shogun.config_gen.shutil.which", lambda _: "/usr/bin/tmux")
+    generated = _generate(bundle, tmp_path / "run")
+    launcher = tmp_path / "run" / ".skillify-bin" / "tmux"
+
+    assert launcher.exists()
+    assert "window-size largest" in launcher.read_text(encoding="utf-8")
+    assert generated.environment["PATH"].split(os.pathsep)[0] == str(launcher.parent)
 
 
 def test_two_teams_get_disjoint_queue_dirs(tmp_path: Path) -> None:
@@ -52,3 +68,38 @@ def test_two_teams_get_disjoint_queue_dirs(tmp_path: Path) -> None:
     assert bundle not in first.queue_dir.parents
     assert bundle not in second.queue_dir.parents
     assert first.queue_dir.parent != second.queue_dir.parent
+
+
+def test_preferred_cli_applies_to_every_agent_including_shogun(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    generated = _generate(bundle, tmp_path / "run")
+
+    settings = yaml.safe_load(generated.settings_path.read_text(encoding="utf-8"))
+    agents = settings["cli"]["agents"]
+    assert set(agents) == {"shogun", "karo", "ashigaru1", "ashigaru2", "gunshi"}
+    assert {agent["type"] for agent in agents.values()} == {"opencode"}
+
+
+def test_claude_home_seeds_only_non_secret_first_run_state(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    generated = generate_config(
+        install_root=bundle,
+        run_dir=tmp_path / "run",
+        preferred_cli="claude-code",
+        worker_count=1,
+        model="test-model",
+        credential_refs={"ANTHROPIC_AUTH_TOKEN": "local://model"},
+    )
+
+    state = yaml.safe_load(
+        (tmp_path / "run" / "home" / ".claude.json").read_text(encoding="utf-8")
+    )
+    assert state == {
+        "hasCompletedOnboarding": True,
+        "theme": "dark",
+        "projects": {
+            str((tmp_path / "run").resolve()): {"hasTrustDialogAccepted": True},
+        },
+    }
+    assert generated.environment["HOME"] == str(tmp_path / "run" / "home")
+    assert generated.environment["DISABLE_AUTOUPDATER"] == "1"

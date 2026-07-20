@@ -21,7 +21,7 @@ from skillify.agent.provider import (
     ProviderRecovery, ProviderSession, ProviderStartSpec, TaskSpec,
 )
 from skillify.agent.shogun.config_gen import GeneratedShogunConfig, generate_config
-from skillify.agent.shogun.contract import COMMAND_FILE, scan_queue
+from skillify.agent.shogun.contract import scan_queue
 from skillify.agent.shogun.distribution import (
     SHOGUN_VERSION, ShogunDistributionError, check_bundle_layout,
     check_host_dependencies, load_manifest, require_installable, verify_artifact,
@@ -157,13 +157,18 @@ class ShogunProvider(AgentProvider):
         session = ProviderSession(spec.task_id, uuid.uuid4().hex, handle.handle_id)
         command = {
             "id": spec.task_id,
-            "command": spec.prompt,
-            "status": "pending",
-            "work_packages": list(runtime.spec.work_packages),
+            "from": "skillify",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "task_assigned",
+            "content": spec.prompt,
+            "read": False,
+            "work_packages": list(runtime.spec.work_packages),
         }
         try:
-            _atomic_yaml(runtime.generated.queue_dir / COMMAND_FILE, {"commands": [command]})
+            _atomic_yaml(
+                runtime.generated.queue_dir / "inbox" / "shogun.yaml",
+                {"messages": [command]},
+            )
             state_path = runtime.team.run_dir / "provider-state.json"
             temporary = state_path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps({

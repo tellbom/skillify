@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import signal
 
 from skillify.agent.shogun.config_gen import GeneratedShogunConfig
 from skillify.agent.shogun.fake_runtime import FakeRuntime
@@ -50,3 +52,33 @@ def test_handle_roundtrips_for_recovery(tmp_path: Path) -> None:
     original.write(path)
 
     assert TeamHandle.read(path) == original
+
+
+def test_real_runtime_supplies_noninteractive_terminal_defaults(monkeypatch) -> None:
+    from skillify.agent.shogun.lifecycle import ProcessRuntime
+
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.delenv("LANG", raising=False)
+    runtime = ProcessRuntime()
+    environment = runtime.process_environment({"HOME": "/task/home"})
+
+    assert environment["TERM"] == "xterm-256color"
+    assert environment["LANG"] == "C.UTF-8"
+    assert environment["HOME"] == "/task/home"
+    assert "DEEPSEEK_API_KEY" not in environment
+
+
+def test_cleanup_terminates_processes_still_rooted_in_run_dir(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from skillify.agent.shogun.lifecycle import ProcessRuntime
+
+    runtime = ProcessRuntime()
+    observations = iter(({101, 102}, set()))
+    monkeypatch.setattr(runtime, "_processes_in_run_dir", lambda _: next(observations, set()))
+    killed = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    runtime._terminate_run_dir_processes(tmp_path / "run")
+
+    assert set(killed) == {(101, signal.SIGTERM), (102, signal.SIGTERM)}

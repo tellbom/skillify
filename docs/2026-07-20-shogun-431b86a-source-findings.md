@@ -90,13 +90,12 @@ queue/inbox 的文件锁只保护消息文件，并不提供源码 workspace 所
 
 ## Q6：config-only 或 upstream-change-required
 
-六项结论均为 **adapter/config-only**：
+TP-13 原始三个根因（运行目录、生命周期、pane 凭据）均为 **adapter/config-only**：
 
 1. 运行时目录通过上游“入口目录即根目录”的公开布局实现；
 2. 团队生命周期通过上游固定 tmux 会话实现，并在 Skillify 显式限制单活；
 3. 凭据通过正常 `PATH` 可执行解析和任务专属 Unix Socket launcher 注入；
 4. stop/recovery 由 Skillify 适配层基于稳定 `TeamHandle` 实现；
-5. workspace 风险由 Skillify admission 约束，不声称上游具备不存在的 worktree；
-6. 不需要改动 commit `431b86a`。
+5. 不需要改动 commit `431b86a`。
 
-因此本轮不触发 `upstream-contribution-or-blocker`。在 S9.1-S9.4 和对应 Linux 集成测试全部通过前，`infra/offline/shogun-manifest.json` 的 `installable` 必须保持 `false`，Team 相关 feature flag 必须保持关闭。
+2026-07-20 真实 formation 复核补充：上述判断只适用于 TP-13 三个原始根因，不能外推为完整上线批准。上游 `scripts/build_instructions.sh` 把所有 `ashigaruN` 固定映射到同一个 `ashigaru` 权限角色，并只读取 `read_allow/read_deny/edit_allow/edit_deny`；当前 Skillify 生成的逐 Worker `read/edit` 结构不会被该脚本采用。上游也没有 per-Worker worktree。因此，任意 WorkPackage 的逐 Worker 写路径隔离在当前批准 commit 上不能由公开配置表达，完整 Workspace/Security 门禁标记为 `upstream-contribution-or-blocker`。在该阻断解决且全 formation 任务闭环通过前，`infra/offline/shogun-manifest.json` 的 `installable` 必须保持 `false`，Team 相关 feature flag 必须保持关闭。

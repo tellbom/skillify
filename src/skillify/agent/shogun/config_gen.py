@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 import os
+import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -63,6 +66,28 @@ def _project_runtime(install_root: Path, run_dir: Path) -> None:
             ) from exc
 
 
+def _write_tmux_compatibility_launcher(root: Path) -> Path | None:
+    """Bridge the one cosmetic tmux option missing from the approved 3.0a host."""
+    executable = shutil.which("tmux")
+    if executable is None:
+        return None
+    launcher_dir = root / ".skillify-bin"
+    launcher_dir.mkdir(mode=0o700, exist_ok=True)
+    launcher = launcher_dir / "tmux"
+    quoted = shlex.quote(executable)
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$#\" -eq 4 ] && [ \"$1\" = set-option ] && [ \"$2\" = -g ] "
+        "&& [ \"$3\" = window-size ] && [ \"$4\" = latest ]; then\n"
+        f"  exec {quoted} set-option -g window-size largest\n"
+        "fi\n"
+        f"exec {quoted} \"$@\"\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+    return launcher_dir
+
+
 def generate_config(
     *,
     install_root: Path,
@@ -100,6 +125,7 @@ def generate_config(
         child.mkdir(parents=True, exist_ok=True, mode=0o700)
     cli_type = "opencode" if preferred_cli == "opencode" else "claude"
     agents = {
+        "shogun": {"type": cli_type, "model": model},
         "karo": {"type": cli_type, "model": model},
         **{
             f"ashigaru{index}": {"type": cli_type, "model": model}
@@ -171,13 +197,36 @@ def generate_config(
 
     home_dir = root / "home"
     home_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if preferred_cli == "claude-code":
+        # Each task gets an isolated HOME. Seed only non-secret UI state so the
+        # CLI reaches its prompt instead of blocking every pane on first-run
+        # theme/onboarding dialogs; credentials still arrive over the socket.
+        claude_state = home_dir / ".claude.json"
+        claude_state.write_text(json.dumps({
+            "hasCompletedOnboarding": True,
+            "theme": "dark",
+            "projects": {
+                str(root.resolve()): {"hasTrustDialogAccepted": True},
+            },
+        }), encoding="utf-8")
+        claude_state.chmod(0o600)
+    launcher_dir = _write_tmux_compatibility_launcher(root)
     entrypoint = root / "shutsujin_departure.sh"
     environment = {
         "SHOGUN_QUEUE_DIR": str(queue_dir),
         "SHOGUN_SETTINGS_FILE": str(settings_path),
         "HOME": str(home_dir),
+        **(
+            {"OPENCODE_DISABLE_AUTOUPDATE": "1"}
+            if preferred_cli == "opencode"
+            else {"DISABLE_AUTOUPDATER": "1"}
+        ),
         **public_env,
     }
+    if launcher_dir is not None:
+        environment["PATH"] = os.pathsep.join((
+            str(launcher_dir), os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        ))
     return GeneratedShogunConfig(
         settings_path, permissions_path, queue_dir,
         (str(entrypoint), "-c", "--permission-mode", "default"), environment,

@@ -13,7 +13,6 @@ if os.name != "posix":
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
 from skillify.agent.providers import shogun as shogun_module
 from skillify.agent.providers.shogun import ShogunProvider
-from skillify.agent.shogun.contract import COMMAND_FILE
 from skillify.agent.shogun.fake_runtime import FakeRuntime
 from skillify.credentials.identities import AccessCredential
 
@@ -74,7 +73,7 @@ def test_provider_scans_the_written_queue_dir(tmp_path: Path, monkeypatch) -> No
     provider.create_session(handle, TaskSpec("task-1", "test the team"))
     list(provider.stream_events(handle, provider._sessions[next(iter(provider._sessions))]))
 
-    command_path = run_dir / "queue" / COMMAND_FILE
+    command_path = run_dir / "queue" / "inbox" / "shogun.yaml"
     assert command_path.exists()
-    assert ("queue-states", str(command_path.parent)) in runtime.actions
+    assert ("queue-states", str(run_dir / "queue")) in runtime.actions
     provider.stop(handle)

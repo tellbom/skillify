@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -72,16 +73,23 @@ class ProcessRuntime:
     def __init__(self) -> None:
         self.starters: list[subprocess.Popen[bytes]] = []
 
+    @staticmethod
+    def process_environment(environment: Mapping[str, str]) -> dict[str, str]:
+        inherited = {
+            name: value for name, value in os.environ.items()
+            if name in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR"}
+        }
+        inherited.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+        inherited.setdefault("LANG", "C.UTF-8")
+        inherited.setdefault("TERM", "xterm-256color")
+        return {**inherited, **environment}
+
     def start(
         self, command: Sequence[str], *, cwd: Path, environment: Mapping[str, str],
     ) -> TeamHandle:
         # Only explicitly public process settings are inherited. In particular,
         # API keys from the Bridge environment must never reach the tmux server.
-        inherited = {
-            name: value for name, value in os.environ.items()
-            if name in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR"}
-        }
-        env = {**inherited, **environment}
+        env = self.process_environment(environment)
         process = subprocess.Popen(
             tuple(command), cwd=str(cwd), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -89,11 +97,15 @@ class ProcessRuntime:
         )
         self.starters.append(process)
         handle = TeamHandle("shogun", Path(cwd).resolve())
-        deadline = time.monotonic() + 10
+        # The approved upstream entrypoint has its own 30-second CLI readiness
+        # probe before it starts watchers and exits. Leave enough headroom for
+        # that probe plus the remaining setup on slower endpoint VMs.
+        deadline = time.monotonic() + 75
         while time.monotonic() < deadline:
-            if self.is_alive(handle):
+            exit_code = process.poll()
+            if exit_code == 0 and self.is_alive(handle):
                 return handle
-            if process.poll() not in (None, 0):
+            if exit_code not in (None, 0):
                 break
             time.sleep(0.1)
         self.terminate(handle)
@@ -101,12 +113,15 @@ class ProcessRuntime:
         raise ShogunLifecycleError("Shogun tmux session did not become ready")
 
     def is_alive(self, handle: TeamHandle) -> bool:
-        result = subprocess.run(
-            ("tmux", "has-session", "-t", handle.session), check=False,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        return result.returncode == 0
+        for session in (handle.session, "multiagent"):
+            result = subprocess.run(
+                ("tmux", "has-session", "-t", session), check=False,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return False
+        return True
 
     def terminate(self, handle: TeamHandle) -> None:
         # Stop a possible supervisor first so it cannot recreate watchers.
@@ -122,11 +137,42 @@ class ProcessRuntime:
         subprocess.run(command, check=False, capture_output=True, timeout=5)
 
     def cleanup_processes(self, handle: TeamHandle) -> None:
+        self._terminate_run_dir_processes(handle.run_dir)
         for path in Path("/tmp").glob("shogun_*"):
             if path.is_file() or path.is_symlink():
                 path.unlink(missing_ok=True)
             elif path.is_dir():
                 shutil.rmtree(path)
+
+    @staticmethod
+    def _processes_in_run_dir(run_dir: Path) -> set[int]:
+        root = run_dir.resolve()
+        result = set()
+        for path in Path("/proc").glob("[0-9]*/cwd"):
+            try:
+                cwd = path.resolve(strict=True)
+                if cwd == root or root in cwd.parents:
+                    result.add(int(path.parent.name))
+            except (OSError, ValueError):
+                continue
+        return result
+
+    def _terminate_run_dir_processes(self, run_dir: Path) -> None:
+        pids = self._processes_in_run_dir(run_dir)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 2
+        while pids and time.monotonic() < deadline:
+            time.sleep(0.05)
+            pids &= self._processes_in_run_dir(run_dir)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def queue_states(
         self, queue_dir: Path, handle: TeamHandle,
@@ -172,6 +218,7 @@ class ShogunLifecycle:
             )
         except Exception:
             self.guard_path.unlink(missing_ok=True)
+            shutil.rmtree(generated.queue_dir.parent, ignore_errors=True)
             raise
         self.active = ActiveTeam(
             task_id, handle, generated.queue_dir.parent, generated.queue_dir, self.guard_path,
