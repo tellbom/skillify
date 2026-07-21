@@ -117,6 +117,32 @@ def test_launcher_chdirs_into_worktree_and_sets_local_git_identity_only_when_pre
         injector.destroy(channel)
 
 
+def test_launcher_falls_back_to_tmux_agent_id_when_env_worktree_absent(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The upstream CLI adapter only renders SKILLIFY_WORKER_ID/SKILLIFY_WORKTREE
+    as a per-agent env prefix for opencode panes, not claude panes (confirmed
+    against the real bundle during S10 real-machine testing). Claude-type
+    launchers must fall back to resolving identity via the tmux pane's
+    @agent_id option and the worktree-registry.json this run_dir carries."""
+    monkeypatch.chdir(tmp_path)
+    broker = Broker()
+    injector = PaneCredentialInjector(executables={"claude": "/usr/bin/claude"})
+    channel = injector.prepare(
+        {"ANTHROPIC_API_KEY": "vault://model/current"}, broker=broker, run_dir=tmp_path,
+    )
+    try:
+        source = (channel.launcher_dir / "claude").read_text(encoding="utf-8")
+        assert "tmux" in source
+        assert "@agent_id" in source
+        assert "TMUX_PANE" in source
+        assert "worktree-registry.json" in source
+        # Fallback must only run when the primary channel (env var) is absent.
+        assert "if not worktree:" in source
+    finally:
+        injector.destroy(channel)
+
+
 def test_launcher_source_and_channel_never_contain_the_secret_value(
     tmp_path: Path, monkeypatch,
 ) -> None:

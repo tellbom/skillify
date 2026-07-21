@@ -121,6 +121,7 @@ import os
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.connect({str(socket_path)!r})
@@ -137,9 +138,38 @@ if not data:
 environment = os.environ.copy()
 environment.update(json.loads(data.decode()))
 worktree = os.environ.get("SKILLIFY_WORKTREE")
+worker_id = os.environ.get("SKILLIFY_WORKER_ID")
+if not worktree:
+    # Fallback identity channel: the upstream CLI adapter only renders the
+    # per-agent env prefix (SKILLIFY_WORKER_ID/SKILLIFY_WORKTREE) for
+    # opencode panes, not claude panes. For claude-type panes, resolve
+    # identity via the tmux pane's @agent_id option (set by the upstream
+    # entrypoint for every pane regardless of CLI type) and look up that
+    # worker's worktree in the registry this run_dir carries.
+    tmux_pane = os.environ.get("TMUX_PANE", "")
+    candidate_worker_id = ""
+    if tmux_pane:
+        result = subprocess.run(
+            ["tmux", "show-options", "-p", "-t", tmux_pane, "-v", "@agent_id"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            candidate_worker_id = result.stdout.strip()
+    if candidate_worker_id:
+        registry_path = Path(__file__).resolve().parent.parent / "worktree-registry.json"
+        if registry_path.exists():
+            try:
+                registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                registry = {{}}
+            for worker in registry.get("workers", []):
+                if worker.get("worker_id") == candidate_worker_id:
+                    worktree = worker.get("worktree")
+                    worker_id = candidate_worker_id
+                    break
 if worktree:
     os.chdir(worktree)
-    worker_id = os.environ.get("SKILLIFY_WORKER_ID", "")
+    worker_id = worker_id or ""
     subprocess.run(["git", "config", "--local", "user.name", worker_id], check=True)
     subprocess.run(
         ["git", "config", "--local", "user.email", f"{{worker_id}}@skillify.local.invalid"],
