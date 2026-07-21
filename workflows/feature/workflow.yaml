@@ -4,6 +4,10 @@ runtime: [opencode, claude-code]
 entryAgent: build
 mode: workspace-write
 skills: [requirements-clarification, codegraph-exploration, test-driven-development, requesting-code-review]
+delegation:
+  mode: suggested
+  user_approval: required
+  executor_managed: true
 gates:
   - id: plan-approval
     requiredByDefault: false
@@ -11,3 +15,4 @@ gates:
 artifacts:
   - feature-report.md
   - change.patch
+replayCases: [primary-acceptance, regression-suite]

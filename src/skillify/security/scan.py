@@ -43,10 +43,7 @@ class ScanReport:
             "scanner": self.scanner,
             "blocked": self.blocked,
             "findings": [item.as_dict() for item in self.findings],
-            "externalScanners": [
-                {"name": name, "status": "pending-test-env"}
-                for name in ("Cisco Skill Scanner", "NVIDIA SkillSpector", "Syft", "Grype", "Cosign")
-            ],
+            "coverage": "builtin-rules-only-no-cve-database",
         }
 
 

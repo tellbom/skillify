@@ -10,3 +10,4 @@ gates:
 artifacts:
   - bugfix-report.md
   - change.patch
+replayCases: [regression-failing-case, regression-fixed-case]

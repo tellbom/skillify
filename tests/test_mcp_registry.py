@@ -437,8 +437,11 @@ def test_local_mcp_rejects_mutable_or_unsafe_metadata(changes: dict[str, object]
         load_mcp_artifact(local_artifact(**changes))
 
 
-def test_remote_mcp_requires_https_and_auth_reference_not_secret() -> None:
-    spec = load_mcp_artifact(remote_artifact())
+def test_remote_mcp_accepts_intranet_http_and_auth_reference_not_secret() -> None:
+    value = remote_artifact(
+        url="http://mcp.internal:8080/mcp", tlsRequired=False,
+    )
+    spec = load_mcp_artifact(value)
     assert render_opencode_mcp(spec)["headers"] == {
         "Authorization": "Bearer {env:MCP_TOKEN}"
     }
@@ -465,14 +468,13 @@ def test_timeout_rejects_submillisecond_or_unrepresentable_values(timeout: float
 @pytest.mark.parametrize(
     "changes",
     [
-        {"url": "http://mcp.internal/mcp"},
         {"url": "https://other.internal/mcp"},
         {"url": "https://mcp.internal/mcp?access_token=literal-secret"},
         {"url": "https://MCP.internal/mcp"},
         {"url": "https://mcp.internal/%2e%2e/admin"},
         {"url": "https://mcp.internal/mcp\r\n"},
         {"authEnv": "actual bearer secret"},
-        {"tlsRequired": False},
+        {"tlsRequired": "false"},
         {"authorization": "Bearer secret"},
     ],
 )

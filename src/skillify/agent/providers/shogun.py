@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -112,6 +113,7 @@ class ShogunProvider(AgentProvider):
         credential_broker: CredentialBrokerLike | None = None,
         credential_injector: PaneCredentialInjector | None = None,
         state_root: Path | None = None,
+        monotonic=time.monotonic,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.artifact_path = Path(artifact_path)
@@ -121,6 +123,7 @@ class ShogunProvider(AgentProvider):
         self.runtime = runtime or ProcessRuntime()
         self.credential_broker = credential_broker
         self.credential_injector = credential_injector or PaneCredentialInjector()
+        self.monotonic = monotonic
         self.lifecycle = ShogunLifecycle(self.runtime, self.cache_root / "active-team.lock")
         self._handles: dict[str, _RuntimeState] = {}
         self._sessions: dict[str, ProviderSession] = {}
@@ -369,6 +372,22 @@ class ShogunProvider(AgentProvider):
             EventType.TEAM_PREPARING, TaskState.QUEUED,
             {"sequence": sequence, "stage": "preparing"},
         )
+        expected_packages = {
+            str(package.get("packageId") or package.get("id"))
+            for package in (runtime.spec.work_packages if runtime.spec is not None else ())
+            if package.get("packageId") or package.get("id")
+        }
+        require_review = bool(
+            runtime.spec is not None
+            and runtime.spec.team_policy.get("require_independent_review", True)
+        )
+        duration_minutes = int(
+            runtime.spec.team_policy.get("max_team_duration_minutes", 120)
+            if runtime.spec is not None else 120
+        )
+        deadline = self.monotonic() + duration_minutes * 60
+        completed_packages: set[str] = set()
+        review_completed = False
         for _ in self.runtime.queue_states(runtime.generated.queue_dir, runtime.team.handle):
             terminal = False
             for item in scan_queue(runtime.generated.queue_dir):
@@ -378,11 +397,51 @@ class ShogunProvider(AgentProvider):
                 )
                 for event in events:
                     yield event
+                    sequence = max(sequence, int(event.details.get("sequence", 0)))
+                    if event.type is EventType.WORK_PACKAGE_COMPLETED:
+                        package_id = event.details.get("work_package_id")
+                        if package_id:
+                            completed_packages.add(str(package_id))
+                    elif event.type is EventType.REVIEW_COMPLETED:
+                        review_completed = True
                     terminal = terminal or event.type in {
                         EventType.TEAM_COMPLETED, EventType.TEAM_FAILED, EventType.TEAM_CANCELLED,
                     }
             if terminal:
                 return
+            if expected_packages and expected_packages <= completed_packages and (
+                review_completed or not require_review
+            ):
+                sequence += 1
+                yield TaskEvent(
+                    session.task_id, session.session_id, "shogun", SHOGUN_VERSION,
+                    TASK_PROTOCOL_VERSION, PROVIDER_CONTRACT_VERSION,
+                    datetime.now(timezone.utc), EventType.TEAM_COMPLETED, TaskState.SUCCEEDED,
+                    {"sequence": sequence, "stage": "skillify-derived-terminal"},
+                )
+                return
+            if self.monotonic() >= deadline:
+                sequence += 1
+                yield TaskEvent(
+                    session.task_id, session.session_id, "shogun", SHOGUN_VERSION,
+                    TASK_PROTOCOL_VERSION, PROVIDER_CONTRACT_VERSION,
+                    datetime.now(timezone.utc), EventType.TEAM_FAILED, TaskState.FAILED,
+                    {
+                        "sequence": sequence, "stage": "skillify-timeout",
+                        "reason_code": "team-duration-exceeded",
+                    },
+                )
+                return
+        sequence += 1
+        yield TaskEvent(
+            session.task_id, session.session_id, "shogun", SHOGUN_VERSION,
+            TASK_PROTOCOL_VERSION, PROVIDER_CONTRACT_VERSION,
+            datetime.now(timezone.utc), EventType.TEAM_FAILED, TaskState.FAILED,
+            {
+                "sequence": sequence, "stage": "skillify-runtime-ended",
+                "reason_code": "team-ended-without-terminal",
+            },
+        )
 
     def cancel(self, handle: ProviderHandle, session: ProviderSession) -> ProviderResult:
         runtime = self._handles.pop(handle.handle_id, None)

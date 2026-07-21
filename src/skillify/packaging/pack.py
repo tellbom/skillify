@@ -164,6 +164,15 @@ def pack_skill(skill_dir: Path, output_dir: Path) -> PackResult:
         "scan": scan.as_dict(),
         "skillManifest": manifest,
     }
+    workflow_path = skill_dir / "workflow.yaml"
+    if workflow_path.is_file():
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8")) or {}
+        if isinstance(workflow, dict):
+            artifact_manifest["workflowDefinition"] = {
+                key: workflow[key]
+                for key in ("id", "delegation", "execution", "replayCases")
+                if key in workflow
+            }
     artifact_manifest_path.write_text(
         json.dumps(artifact_manifest, indent=2, sort_keys=False) + "\n", encoding="utf-8"
     )

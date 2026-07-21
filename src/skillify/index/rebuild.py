@@ -10,6 +10,7 @@ from typing import Any
 from skillify.common.config import SkillifyConfig
 from skillify.index.db import init_db, make_engine, session_scope
 from skillify.index.ingest import ReleaseEvent, upsert_release
+from skillify.index.governance import derive_artifact_governance
 from skillify.publish.forgejo_client import ForgejoClient, ForgejoError, Release
 
 
@@ -88,6 +89,7 @@ def rebuild_repository(
                         release_url=release.html_url,
                         published_at=_published_at(release),
                         orchestration=manifest.get("orchestration") or {},
+                        governance=derive_artifact_governance(artifact),
                     ),
                 )
             summary.indexed += 1

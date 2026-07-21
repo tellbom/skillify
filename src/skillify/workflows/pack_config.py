@@ -182,6 +182,21 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
     )
 
 
+def load_bundled_workflow_pack(workflow_id: str, root: Path | None = None) -> WorkflowPack:
+    """Load one shipped workflow by its declared id, never by a caller-supplied path."""
+    workflows_root = Path(root) if root is not None else Path(__file__).resolve().parents[3] / "workflows"
+    matches: list[WorkflowPack] = []
+    for candidate in sorted(workflows_root.iterdir() if workflows_root.is_dir() else ()):
+        if not candidate.is_dir() or not (candidate / "workflow.yaml").is_file():
+            continue
+        pack = load_workflow_pack(candidate)
+        if pack.id == workflow_id:
+            matches.append(pack)
+    if len(matches) != 1:
+        raise ValueError(f"workflow pack is not uniquely available: {workflow_id}")
+    return matches[0]
+
+
 def approval_required(
     pack: WorkflowPack,
     gate_id: str,

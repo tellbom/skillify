@@ -11,6 +11,8 @@ const WORKFLOWS = [
   { id: 'feature-development', label: 'Feature', field: 'title', fieldLabel: '特性标题', required: true },
   { id: 'evidence-review', label: 'Review', field: 'changeReference', fieldLabel: '变更编号或分支', required: true },
   { id: 'behavior-preserving-refactor', label: 'Refactor', field: 'target', fieldLabel: '重构目标模块', required: true },
+  { id: 'local-doc-search', label: '本地文档检索', field: 'query', fieldLabel: '检索内容', required: true, app: 'search' },
+  { id: 'file-processing', label: '文本 / CSV 批处理', field: '', fieldLabel: '', required: false, app: 'processing' },
 ]
 
 const endpoints = ref([])
@@ -22,7 +24,8 @@ const error = ref('')
 const TEAM_ENABLED = import.meta.env.VITE_SHOGUN_TEAM_ENABLED === 'true'
 const form = reactive({
   endpointId: '', workspaceAlias: '', runtime: 'opencode', executionMode: 'single',
-  workflowId: 'evidence-bugfix', value: '',
+  workflowId: 'evidence-bugfix', value: '', processor: 'word-frequency',
+  groupBy: '', valueColumn: '', operation: 'sum',
 })
 
 function workerLabel(workerId) {
@@ -46,7 +49,9 @@ const selectedEndpoint = computed(() => endpoints.value.find((item) => item.endp
 const selectedWorkflow = computed(() => WORKFLOWS.find((item) => item.id === form.workflowId))
 const canSubmit = computed(() => Boolean(
   selectedEndpoint.value?.online && form.workspaceAlias &&
-  (!selectedWorkflow.value.required || form.value.trim()),
+  (!selectedWorkflow.value.required || form.value.trim()) &&
+  (selectedWorkflow.value.app !== 'processing' || form.processor === 'word-frequency' ||
+    (form.groupBy.trim() && form.valueColumn.trim())),
 ))
 const canUseCodemap = computed(() => Boolean(selectedEndpoint.value?.online && form.workspaceAlias))
 
@@ -77,6 +82,15 @@ async function submit() {
   const workflow = selectedWorkflow.value
   const inputs = form.value.trim() ? { [workflow.field]: form.value.trim() } : {}
   if (workflow.id === 'feature-development') inputs.acceptanceCriteria = [form.value.trim()]
+  if (workflow.id === 'local-doc-search') Object.assign(inputs, {
+    directoryAlias: form.workspaceAlias, mode: 'fulltext',
+  })
+  if (workflow.id === 'file-processing') {
+    Object.assign(inputs, { inputAlias: form.workspaceAlias, processor: form.processor })
+    if (form.processor === 'csv-summary') Object.assign(inputs, {
+      groupBy: form.groupBy.trim(), valueColumn: form.valueColumn.trim(), operation: form.operation,
+    })
+  }
   try {
     const task = await dispatchEndpointTask({
       endpointId: form.endpointId,
@@ -217,9 +231,21 @@ onMounted(load)
               <option v-for="workflow in WORKFLOWS" :key="workflow.id" :value="workflow.id">{{ workflow.label }}</option>
             </select>
           </label>
-          <label>{{ selectedWorkflow.fieldLabel }}
+          <label v-if="selectedWorkflow.app !== 'processing'">{{ selectedWorkflow.fieldLabel }}
             <input v-model="form.value" :required="selectedWorkflow.required" maxlength="500" data-testid="workflow-input">
           </label>
+          <template v-else>
+            <label>处理方式
+              <select v-model="form.processor" data-testid="app-processor">
+                <option value="word-frequency">文本词频</option><option value="csv-summary">CSV 汇总</option>
+              </select>
+            </label>
+            <template v-if="form.processor === 'csv-summary'">
+              <label>分组列<input v-model="form.groupBy" maxlength="128" required></label>
+              <label>数值列<input v-model="form.valueColumn" maxlength="128" required></label>
+              <label>操作<select v-model="form.operation"><option value="sum">求和</option><option value="count">计数</option><option value="average">平均值</option></select></label>
+            </template>
+          </template>
           <button type="submit" :disabled="!canSubmit || submitting">{{ submitting ? '下达中…' : '提交并等待端点确认' }}</button>
         </form>
       </section>
@@ -232,7 +258,7 @@ onMounted(load)
             <div><strong>{{ task.workflowId }}</strong><small>{{ task.executionMode || 'single' }} · {{ task.preferredCli || task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
           </div>
-          <section v-if="!task.workflowId.startsWith('codemap.') && task.workPackages?.length" class="work-packages">
+          <section v-if="!task.workflowId.startsWith('codemap.') && !['local-doc-search', 'file-processing'].includes(task.workflowId) && task.workPackages?.length" class="work-packages">
             <header><strong>协作工作包</strong><span>确认后由所选执行器管理 Agent</span></header>
             <div v-for="item in task.workPackages" :key="item.packageId" class="work-package">
               <label>目标<input v-model="item.objective" data-testid="package-objective"></label>

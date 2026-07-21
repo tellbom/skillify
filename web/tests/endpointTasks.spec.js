@@ -47,7 +47,9 @@ describe('EndpointTasksView', () => {
     const wrapper = mount(EndpointTasksView)
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="workflow-select"]').findAll('option')).toHaveLength(5)
+    expect(wrapper.get('[data-testid="workflow-select"]').findAll('option')).toHaveLength(7)
+    expect(wrapper.get('[data-testid="workflow-select"]').text()).toContain('本地文档检索')
+    expect(wrapper.get('[data-testid="workflow-select"]').text()).toContain('文本 / CSV 批处理')
     expect(wrapper.get('[data-testid="runtime-select"]').findAll('option')).toHaveLength(2)
     expect(wrapper.text()).toContain('TEST_FAILED')
     expect(wrapper.text()).toContain('12 passed · 1 failed · 2 skipped')

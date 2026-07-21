@@ -35,6 +35,9 @@ class Transport:
         self.confirmations += 1
         return state_version + 1
 
+    def confirm_scope(self, task_id, nonce, state_version, purpose, aliases):
+        raise AssertionError("non-App tasks must not request App scope confirmation")
+
 
 class EventEndpoint:
     def __init__(self):

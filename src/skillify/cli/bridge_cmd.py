@@ -28,6 +28,9 @@ class BridgeTransportError(RuntimeError):
 class BridgeTransport(Protocol):
     def pull(self, cursor: str | None) -> tuple[list[dict[str, Any]], str | None]: ...
     def confirm(self, task_id: str, nonce: str, state_version: int) -> int: ...
+    def confirm_scope(
+        self, task_id: str, nonce: str, state_version: int, purpose: str, aliases: list[str],
+    ) -> None: ...
 
 
 class BridgeRunner(Protocol):
@@ -41,14 +44,23 @@ class BridgeReporter(Protocol):
 class RoutedBridgeRunner:
     """Keep fixed Code Map actions out of the Agent provider execution path."""
 
-    def __init__(self, agent_runner: BridgeRunner, codemap_factory: Callable[[], BridgeRunner]) -> None:
+    def __init__(
+        self, agent_runner: BridgeRunner, codemap_factory: Callable[[], BridgeRunner],
+        app_factory: Callable[[], BridgeRunner] | None = None,
+    ) -> None:
         self.agent_runner = agent_runner
         self.codemap_factory = codemap_factory
+        self.app_factory = app_factory
 
     def run(self, envelope, *, state_version: int) -> int:
         from skillify.codemap.visualizer import CODEMAP_WORKFLOWS
         if envelope.workflow_id in CODEMAP_WORKFLOWS:
             return self.codemap_factory().run(envelope, state_version=state_version)
+        from skillify.apps.runner import APP_WORKFLOWS
+        if envelope.workflow_id in APP_WORKFLOWS:
+            if self.app_factory is None:
+                raise ValueError("Agent App runner is unavailable")
+            return self.app_factory().run(envelope, state_version=state_version)
         return self.agent_runner.run(envelope, state_version=state_version)
 
 
@@ -89,6 +101,23 @@ class HttpBridgeTransport:
             return int(response.json()["stateVersion"])
         except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
             raise BridgeTransportError("endpoint task confirmation failed") from exc
+
+    def confirm_scope(
+        self, task_id: str, nonce: str, state_version: int, purpose: str, aliases: list[str],
+    ) -> None:
+        try:
+            response = self.session.post(
+                f"{self.server_url}/api/endpoint/tasks/{task_id}/scope-confirmations",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={
+                    "nonce": nonce, "stateVersion": state_version,
+                    "purpose": purpose, "aliases": aliases,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise BridgeTransportError("endpoint App scope confirmation failed") from exc
 
 
 class LocalOutbox:
@@ -177,6 +206,14 @@ class BridgeLoop:
             if envelope.task_id in self._executed:
                 self.reporter.flush()
                 continue
+            if envelope.workflow_id in {"local-doc-search", "file-processing"}:
+                field = "directoryAlias" if envelope.workflow_id == "local-doc-search" else "inputAlias"
+                app_alias = str(envelope.parameters[field])
+                if app_alias != envelope.workspace_alias:
+                    self.transport.confirm_scope(
+                        envelope.task_id, envelope.nonce, envelope.state_version,
+                        "directory-expansion", [app_alias],
+                    )
             state_version = self.transport.confirm(
                 envelope.task_id, envelope.nonce, envelope.state_version,
             )
@@ -258,6 +295,11 @@ def _build_runner(outbox: LocalOutbox):
     from skillify.agent.runner import TaskRunner
     from skillify.tasks.protocol import TaskEnvelope
     from skillify.tasks.mcp_injection import McpPackageConfig
+    from skillify.agent.permissions import PermissionManifest
+    from skillify.tasks.task_permissions import assemble_task_permissions
+    from skillify.tasks.work_package import WorkPackage
+    from skillify.workflows import load_bundled_workflow_pack
+    import yaml
 
     paths = load_agent_paths(); config = load_agent_local_config(paths)
     aliases = dict(config.workspace_aliases)
@@ -321,16 +363,64 @@ def _build_runner(outbox: LocalOutbox):
             install_root=Path(config.shogun_install_root or ""),
             cache_root=paths.cache_dir / "shogun",
         )
+    mcp_catalog = {"codegraph": McpPackageConfig(
+        "codegraph", "codegraph", ("serve", "--mcp"),
+        {"CODEGRAPH_NO_DOWNLOAD": "1", "CODEGRAPH_TELEMETRY": "0", "CODEGRAPH_PROJECT_ROOT": "{workspace}"},
+        ("codegraph_explore",), 4000,
+        PermissionManifest.from_value("mcp:codegraph", {
+            "readPaths": ["*"], "writePaths": ["*"], "commands": {"*": "allow"},
+            "mcpServers": ["codegraph"],
+        }),
+    )}
+
+    def permission_resolver(envelope: TaskEnvelope):
+        workflow = load_bundled_workflow_pack(envelope.workflow_id)
+        cfg = load_config()
+        skill_permissions = {}
+        for skill_name in workflow.skills:
+            candidates = sorted(cfg.skills_dir.glob(f"*/{skill_name}/skill.yaml"))
+            if len(candidates) != 1:
+                raise ValueError(f"installed Skill permission source is not unique: {skill_name}")
+            manifest = yaml.safe_load(candidates[0].read_text(encoding="utf-8"))
+            skill_permissions[skill_name] = PermissionManifest.from_value(
+                f"skill:{manifest['namespace']}.{manifest['name']}", manifest.get("permissions") or {},
+            )
+        packages = tuple(WorkPackage.from_dict(dict(value)) for value in envelope.work_packages)
+        requested_mcp = set(workflow.mcp) | {
+            name for package in packages for name in package.recommended_mcp
+        }
+        return assemble_task_permissions(
+            workflow=workflow, skill_permissions=skill_permissions,
+            mcp_permissions={
+                name: mcp_catalog[name].permissions for name in requested_mcp
+                if name in mcp_catalog and mcp_catalog[name].permissions is not None
+            },
+            packages=packages,
+        )
+
     agent_runner = TaskRunner(
         providers,
         start_spec, outbox,
-        mcp_catalog={"codegraph": McpPackageConfig(
-            "codegraph", "codegraph", ("serve", "--mcp"),
-            {"CODEGRAPH_NO_DOWNLOAD": "1", "CODEGRAPH_TELEMETRY": "0", "CODEGRAPH_PROJECT_ROOT": "{workspace}"},
-            ("codegraph_explore",), 4000,
-        )},
+        mcp_catalog=mcp_catalog,
+        permission_resolver=permission_resolver,
     )
-    return RoutedBridgeRunner(agent_runner, lambda: _build_codemap_runner(outbox))
+    return RoutedBridgeRunner(
+        agent_runner, lambda: _build_codemap_runner(outbox), lambda: _build_app_runner(outbox),
+    )
+
+
+def _build_app_runner(outbox: LocalOutbox):
+    from skillify.apps.runner import AgentAppRunner
+
+    paths = load_agent_paths()
+    config = load_agent_local_config(paths)
+    aliases = dict(config.workspace_aliases)
+    for raw in config.allowed_workspaces:
+        aliases.setdefault(Path(raw).name, raw)
+    return AgentAppRunner(
+        aliases, outbox, state_root=paths.state_dir / "apps",
+        devpi_index_url=load_config().devpi_index_url,
+    )
 
 
 def _build_codemap_runner(outbox: LocalOutbox):

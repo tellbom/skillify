@@ -3,9 +3,11 @@
 from skillify.workflows.pack_config import (
     ExecutionConfig, TeamPolicy, WorkflowPack,
     approval_required,
+    load_bundled_workflow_pack,
     load_workflow_pack,
 )
 
 __all__ = [
-    "ExecutionConfig", "TeamPolicy", "WorkflowPack", "approval_required", "load_workflow_pack",
+    "ExecutionConfig", "TeamPolicy", "WorkflowPack", "approval_required",
+    "load_bundled_workflow_pack", "load_workflow_pack",
 ]

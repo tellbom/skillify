@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import hmac
+import json
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,10 @@ from skillify.publish.forgejo_client import ForgejoClient, ForgejoError
 
 
 class PublishNotConfiguredError(Exception):
+    pass
+
+
+class ReplayGateError(Exception):
     pass
 
 
@@ -91,6 +96,9 @@ def _index_release(cfg: SkillifyConfig, result: PackResult, release_html_url: st
     if not cfg.index_db_url:
         return None
     try:
+        artifact = json.loads(result.artifact_manifest_path.read_text(encoding="utf-8"))
+        from skillify.index.governance import derive_artifact_governance
+
         engine = make_engine(cfg.index_db_url)
         init_db(engine)
         with session_scope(engine) as session:
@@ -107,11 +115,95 @@ def _index_release(cfg: SkillifyConfig, result: PackResult, release_html_url: st
                     release_url=release_html_url,
                     published_at=datetime.now(timezone.utc),
                     orchestration=result.orchestration,
+                    governance=derive_artifact_governance(artifact),
                 ),
             )
         return None
     except Exception as exc:  # noqa: BLE001 - see docstring
         return str(exc)
+
+
+def _replay_outcomes(session, workflow_id: str, version: str, case_ids: tuple[str, ...]) -> dict[str, bool]:
+    from sqlalchemy import select
+    from skillify.index.models import EndpointTaskEventRecord, EndpointTaskRecord
+
+    rows = session.execute(
+        select(EndpointTaskEventRecord)
+        .join(EndpointTaskRecord, EndpointTaskRecord.task_id == EndpointTaskEventRecord.task_id)
+        .where(
+            EndpointTaskRecord.workflow_id == workflow_id,
+            EndpointTaskRecord.workflow_version == version,
+            EndpointTaskEventRecord.event_type.in_((
+                "task.succeeded", "task.failed", "task.rejected", "task.rolled_back",
+            )),
+        )
+        .order_by(EndpointTaskEventRecord.occurred_at)
+    ).scalars()
+    expected = set(case_ids)
+    outcomes: dict[str, bool] = {}
+    for event in rows:
+        stage = event.stage or ""
+        if stage.startswith("replay:"):
+            case_id = stage.removeprefix("replay:")
+            if case_id in expected:
+                outcomes[case_id] = event.event_type == "task.succeeded"
+    return outcomes
+
+
+def _enforce_replay_gate(cfg: SkillifyConfig, result: PackResult) -> None:
+    artifact = json.loads(result.artifact_manifest_path.read_text(encoding="utf-8"))
+    workflow = artifact.get("workflowDefinition")
+    if not isinstance(workflow, dict) or "replayCases" not in workflow:
+        return
+    workflow_id = workflow.get("id")
+    raw_cases = workflow.get("replayCases")
+    if (
+        not isinstance(workflow_id, str)
+        or not isinstance(raw_cases, list)
+        or any(not isinstance(case_id, str) or not case_id for case_id in raw_cases)
+        or len(set(raw_cases)) != len(raw_cases)
+    ):
+        raise ReplayGateError("workflow replayCases must contain stable non-empty identifiers")
+    case_ids = tuple(raw_cases)
+    if not cfg.index_db_url:
+        raise ReplayGateError("workflow replay gate requires the TaskEvent database")
+
+    from sqlalchemy import select
+    from skillify.evals import ReplayGate
+    from skillify.index.models import SkillIndexEntry
+
+    engine = make_engine(cfg.index_db_url); init_db(engine)
+    with session_scope(engine) as session:
+        previous = session.scalars(
+            select(SkillIndexEntry).where(
+                SkillIndexEntry.namespace == result.namespace,
+                SkillIndexEntry.name == result.name,
+                SkillIndexEntry.version != result.version,
+            ).order_by(SkillIndexEntry.published_at.desc())
+        ).first()
+        if previous is None:
+            evaluation = {"status": "initial-version", "caseIds": list(case_ids)}
+        else:
+            baseline = _replay_outcomes(session, workflow_id, previous.version, case_ids)
+            if set(baseline) != set(case_ids):
+                missing = sorted(set(case_ids) - set(baseline))
+                raise ReplayGateError(f"baseline replay cases are incomplete: {', '.join(missing)}")
+            baseline_rate = sum(baseline.values()) / len(case_ids)
+            candidate = _replay_outcomes(session, workflow_id, result.version, case_ids)
+            gate_result = ReplayGate(case_ids, baseline_rate).evaluate(candidate)
+            if not gate_result.stable:
+                details = sorted(set(gate_result.missing_cases) | set(gate_result.failed_cases))
+                raise ReplayGateError(f"candidate replay gate failed: {', '.join(details)}")
+            evaluation = {
+                "status": "passed", "caseIds": list(case_ids),
+                "baselineVersion": previous.version,
+                "baselinePassRate": gate_result.baseline_pass_rate,
+                "candidatePassRate": gate_result.candidate_pass_rate,
+            }
+    artifact["replayEvaluation"] = evaluation
+    result.artifact_manifest_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=False) + "\n", encoding="utf-8",
+    )
 
 
 def publish_skill_dir(
@@ -133,6 +225,8 @@ def publish_skill_dir(
     `ForgejoError` (any other Forgejo API failure).
     """
     result = pack_skill(skill_dir, cfg.cache_dir / "dist")
+    # Evaluate declared fixed cases before any Forgejo mutation.
+    _enforce_replay_gate(cfg, result)
 
     if not cfg.forgejo_url or not cfg.forgejo_token:
         raise PublishNotConfiguredError("forgejo_url / forgejo_token not configured")

@@ -23,12 +23,21 @@ def test_sdk_client_initializes_lists_and_calls_stdio_server() -> None:
     assert result.tools == ("echo", "wait")
 
 
-def test_sdk_client_cancels_bounded_call() -> None:
-    with pytest.raises(McpSdkClientError, match="cancelled") as caught:
+def test_sdk_client_reports_bounded_timeout_to_task_audit() -> None:
+    class Audit:
+        events = []
+
+        def record(self, event_type, reason_code):
+            self.events.append((event_type, reason_code))
+
+    audit = Audit()
+    with pytest.raises(McpSdkClientError, match="timeout") as caught:
         call_stdio_tool(
             [sys.executable, str(SERVER)],
             request={"name": "wait", "arguments": {"seconds": 30}},
             timeout_seconds=0.2,
+            audit_sink=audit,
         )
 
-    assert caught.value.code == "cancelled"
+    assert caught.value.code == "timeout"
+    assert audit.events == [("mcp.adapter.timeout", "timeout")]

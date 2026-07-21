@@ -10,3 +10,4 @@ gates:
 artifacts:
   - refactor-report.json
   - change.patch
+replayCases: [behavior-baseline, regression-suite]

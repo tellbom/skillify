@@ -19,8 +19,11 @@ def _load_builtins() -> None:
     from skillify.mcp.db_readonly.connector import create_configured_server as database
     from skillify.mcp.docs.connector import create_configured_server as documents
     from skillify.mcp.forgejo.connector import create_configured_server as forgejo
+    from skillify.mcp.rest.adapter import create_configured_server as rest
 
-    _FACTORIES.update({"db-readonly": database, "documents": documents, "forgejo": forgejo})
+    _FACTORIES.update({
+        "db-readonly": database, "documents": documents, "forgejo": forgejo, "rest": rest,
+    })
     _BUILTINS_LOADED = True
 
 

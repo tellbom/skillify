@@ -12,11 +12,14 @@ from sqlalchemy.orm import Session
 
 from skillify.index.models import (
     EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
-    EndpointTeamRecord, EndpointTeamWorkerEventRecord, WorkPackageRecord,
+    EndpointTaskScopeGrant, EndpointTeamRecord, EndpointTeamWorkerEventRecord,
+    WorkPackageRecord,
 )
 from skillify.codemap.visualizer import CODEMAP_WORKFLOWS
 from skillify.tasks.protocol import TaskConflictError, TaskEnvelope, TaskReplayError
 from skillify.tasks.work_package import WorkPackage
+from skillify.tasks.work_package import validate_delegation_result
+from skillify.workflows import load_bundled_workflow_pack
 
 
 WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -28,6 +31,14 @@ WORKFLOW_FORMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "evidence-review": (frozenset({"changeReference"}), frozenset({"changeReference"})),
     "behavior-preserving-refactor": (frozenset({"target"}), frozenset({"target"})),
+    "local-doc-search": (
+        frozenset({"directoryAlias", "query", "mode"}),
+        frozenset({"directoryAlias", "query", "mode"}),
+    ),
+    "file-processing": (
+        frozenset({"inputAlias", "processor"}),
+        frozenset({"inputAlias", "processor", "groupBy", "valueColumn", "operation"}),
+    ),
     **{workflow_id: (frozenset(), frozenset()) for workflow_id in CODEMAP_WORKFLOWS},
 }
 _ALIAS = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -79,6 +90,10 @@ def _validate_inputs(workflow_id: str, inputs: dict[str, Any]) -> None:
             raise ValueError("workflow list input is invalid")
         if type(value) not in {str, list}:
             raise ValueError("workflow inputs must be text or text lists")
+    if workflow_id in {"local-doc-search", "file-processing"}:
+        from skillify.apps import load_bundled_app_contract
+
+        load_bundled_app_contract(workflow_id).validate_input(inputs)
 
 
 def list_owned_endpoints(session: Session, owner: str) -> list[EndpointBinding]:
@@ -115,6 +130,10 @@ def dispatch_task(
     if execution_mode not in {"single", "delegated", "team"}:
         raise ValueError("execution mode is unsupported")
     is_codemap = workflow_id in CODEMAP_WORKFLOWS
+    is_app = workflow_id in {"local-doc-search", "file-processing"}
+    delegation_mode = "adaptive" if is_codemap or is_app else load_bundled_workflow_pack(
+        workflow_id,
+    ).delegation.mode
     if is_codemap:
         if execution_mode != "single" or runtime not in {"codemap", "opencode"}:
             raise ValueError("Code Map actions require the fixed codemap runtime")
@@ -135,6 +154,7 @@ def dispatch_task(
         owner_username=owner,
         workflow_id=workflow_id,
         workflow_version=workflow_version,
+        delegation_mode=delegation_mode,
         workspace_alias=workspace_alias,
         inputs=dict(inputs),
         runtime=runtime,
@@ -159,10 +179,11 @@ def dispatch_task(
     session.add(WorkPackageRecord(
         package_id=uuid.uuid4().hex, task_id=task.task_id,
         objective=(f"View Code Map for {workspace_alias}" if is_codemap else f"Complete {workflow_id}: {summary}"),
-        allowed_paths=["**/*"], dependencies=[], access="read" if is_codemap else "write",
+        allowed_paths=["**/*"], dependencies=[],
+        access="read" if is_codemap or workflow_id == "local-doc-search" else "write",
         recommended_skills=[], recommended_mcp=[] if is_codemap else ["codegraph"],
-        acceptance_commands=[], parallelizable=False, confirmed=is_codemap,
-        depends_on=[], read_only=is_codemap, verification=[],
+        acceptance_commands=[], parallelizable=False, confirmed=is_codemap or is_app,
+        depends_on=[], read_only=is_codemap or workflow_id == "local-doc-search", verification=[],
     ))
     session.flush()
     return task
@@ -231,6 +252,50 @@ def verify_task_response(
     if task.state_version != state_version:
         raise TaskConflictError("task state_version is stale")
     return task
+
+
+def confirm_app_scope(
+    session: Session,
+    *,
+    task: EndpointTaskRecord,
+    endpoint: EndpointBinding,
+    purpose: str,
+    aliases: list[str],
+    now: datetime,
+) -> EndpointTaskScopeGrant:
+    """Persist an explicit endpoint confirmation without accepting filesystem paths."""
+    if task.workflow_id not in {"local-doc-search", "file-processing"}:
+        raise ValueError("scope confirmation is only available for Agent App tasks")
+    if purpose not in {"directory-expansion", "content-upload"}:
+        raise ValueError("scope confirmation purpose is unsupported")
+    normalized = sorted(set(aliases))
+    if (
+        not normalized
+        or any(not _ALIAS.fullmatch(alias) for alias in normalized)
+        or not set(normalized) <= set(endpoint.workspace_aliases)
+    ):
+        raise ValueError("scope aliases must be registered by this endpoint")
+    input_alias = task.inputs.get(
+        "directoryAlias" if task.workflow_id == "local-doc-search" else "inputAlias",
+    )
+    if normalized != [input_alias]:
+        raise ValueError("scope confirmation must exactly match the App input alias")
+    if purpose == "directory-expansion" and input_alias == task.workspace_alias:
+        raise ValueError("directory expansion is not required for the primary workspace alias")
+    existing = session.scalar(select(EndpointTaskScopeGrant).where(
+        EndpointTaskScopeGrant.task_id == task.task_id,
+        EndpointTaskScopeGrant.purpose == purpose,
+    ))
+    if existing is not None:
+        if existing.aliases != normalized or existing.endpoint_id != endpoint.endpoint_id:
+            raise TaskConflictError("scope confirmation already exists with different aliases")
+        return existing
+    record = EndpointTaskScopeGrant(
+        task_id=task.task_id, endpoint_id=endpoint.endpoint_id,
+        purpose=purpose, aliases=normalized, confirmed_at=now,
+    )
+    session.add(record); session.flush()
+    return record
 
 
 def transition_task(
@@ -368,6 +433,7 @@ def replace_work_packages(
 ) -> list[WorkPackageRecord]:
     if task.state != "awaiting_confirmation":
         raise TaskConflictError("work packages can only be edited before endpoint confirmation")
+    validate_delegation_result(task.delegation_mode, packages)
     existing = list_work_packages(session, task.task_id)
     for item in existing:
         session.delete(item)
@@ -397,6 +463,10 @@ def confirm_work_packages(session: Session, task: EndpointTaskRecord) -> list[Wo
     packages = list_work_packages(session, task.task_id)
     if not packages:
         raise ValueError("task requires at least one work package")
+    validate_delegation_result(
+        task.delegation_mode,
+        tuple(WorkPackage.from_dict(_work_package_record_dict(package)) for package in packages),
+    )
     for package in packages:
         package.confirmed = True
     session.flush()

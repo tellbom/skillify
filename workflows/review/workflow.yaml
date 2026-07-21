@@ -4,5 +4,10 @@ runtime: [opencode, claude-code]
 entryAgent: plan
 mode: read-only
 skills: [codegraph-exploration, evidence-code-review, evidence-reporting]
+delegation:
+  mode: required
+  user_approval: required
+  executor_managed: true
 artifacts:
   - review-report.json
+replayCases: [defect-detection, clean-change]

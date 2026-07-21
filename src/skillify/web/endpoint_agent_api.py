@@ -13,14 +13,16 @@ from skillify.index.models import EndpointBinding, EndpointTaskRecord
 from skillify.tasks.lease import LeaseError, claim_next_task, heartbeat_task
 from skillify.tasks.protocol import TaskConflictError, TaskProtocolError
 from skillify.tasks.web_store import (
-    confirm_work_packages, issue_task_envelope, list_work_packages, record_task_event,
+    confirm_app_scope, confirm_work_packages, issue_task_envelope, list_work_packages, record_task_event,
     replace_work_packages, transition_task, verify_task_response,
 )
-from skillify.tasks.work_package import WorkPackage, validate_delegation_result
+from skillify.tasks.work_package import WorkPackage
 from skillify.web.auth import require_keycloak_user
 from skillify.web.schemas import WorkPackageListIn
 from skillify.web.endpoint_auth import require_endpoint_machine
-from skillify.web.schemas import EndpointEventIn, EndpointTaskLifecycleIn
+from skillify.web.schemas import (
+    EndpointEventIn, EndpointTaskLifecycleIn, EndpointTaskScopeConfirmationIn,
+)
 
 
 router = APIRouter()
@@ -70,7 +72,6 @@ def put_work_packages(
     try:
         task = _owned_task(session, task_id, _web_owner(claims))
         packages = tuple(WorkPackage.from_dict(item.model_dump()) for item in payload.packages)
-        validate_delegation_result("suggested", packages)
         records = replace_work_packages(session, task, packages)
         session.commit()
         return {"packages": [_package_dict(item) for item in records]}
@@ -208,6 +209,37 @@ def confirm_endpoint_task(
     return _transition(task_id, payload, claims, "running")
 
 
+@router.post("/api/endpoint/tasks/{task_id}/scope-confirmations")
+def confirm_endpoint_task_scope(
+    task_id: str, payload: EndpointTaskScopeConfirmationIn,
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        endpoint = _owned_binding(session, endpoint_id, owner)
+        task = verify_task_response(
+            session, task_id=task_id, endpoint_id=endpoint_id,
+            nonce=payload.nonce, state_version=payload.stateVersion,
+        )
+        grant = confirm_app_scope(
+            session, task=task, endpoint=endpoint, purpose=payload.purpose,
+            aliases=payload.aliases, now=datetime.now(timezone.utc),
+        )
+        session.commit()
+        return {
+            "taskId": task_id, "purpose": grant.purpose,
+            "aliases": grant.aliases, "confirmedAt": grant.confirmed_at,
+        }
+    except PermissionError as exc:
+        session.rollback(); raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        session.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskProtocolError as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
 @router.post("/api/endpoint/tasks/{task_id}/cancel")
 def cancel_endpoint_task(
     task_id: str, payload: EndpointTaskLifecycleIn,
@@ -224,6 +256,21 @@ def endpoint_event(
     endpoint_id, owner = _identity(claims); session = _session()
     try:
         _owned_binding(session, endpoint_id, owner)
+        task = session.get(EndpointTaskRecord, payload.taskId)
+        if task is not None and task.workflow_id in {"local-doc-search", "file-processing"}:
+            from skillify.apps import load_bundled_app_contract
+
+            results = [
+                item.get("result") for item in payload.artifacts
+                if isinstance(item, dict) and item.get("kind") == "app-result"
+            ]
+            if payload.eventType == "task.succeeded":
+                if len(results) != 1:
+                    raise TaskProtocolError("successful Agent App event requires one structured result")
+                try:
+                    load_bundled_app_contract(task.workflow_id).validate_output(results[0])
+                except Exception as exc:
+                    raise TaskProtocolError("Agent App result does not match its published contract") from exc
         _, created = record_task_event(
             session, event_id=payload.eventId, task_id=payload.taskId,
             endpoint_id=endpoint_id, nonce=payload.nonce, state_version=payload.stateVersion,

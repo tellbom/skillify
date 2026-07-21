@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointBinding, EndpointTaskRecord
+from skillify.index.models import EndpointBinding, EndpointTaskRecord, EndpointTaskScopeGrant
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.web.app import app
 from skillify.web.auth import require_keycloak_user
@@ -27,7 +27,7 @@ def _configure(monkeypatch, tmp_path: Path) -> str:
         session.add_all([
             EndpointBinding(
                 endpoint_id="endpoint-1", owner_username="jane", label="Laptop", online=True,
-                workspace_aliases=["billing"], last_seen_at=NOW,
+                workspace_aliases=["billing", "documents"], last_seen_at=NOW,
             ),
             EndpointBinding(
                 endpoint_id="endpoint-2", owner_username="bob", label="Other", online=True,
@@ -117,6 +117,46 @@ def test_codemap_action_is_pullable_without_agent_work_package_confirmation(monk
         assert envelope.runtime == "codemap"
         assert envelope.workflow_id == "codemap.visualization.status"
         assert envelope.mcp_packages == ()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_app_directory_expansion_requires_separate_alias_bound_confirmation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    url = _configure(monkeypatch, tmp_path)
+    app.dependency_overrides[require_keycloak_user] = lambda: {
+        "preferred_username": "jane", "sub": "jane",
+    }
+    response = client.post("/api/endpoint-tasks", json={
+        "endpointId": "endpoint-1", "workflowId": "local-doc-search",
+        "workflowVersion": "1.0.0", "workspaceAlias": "billing",
+        "inputs": {"directoryAlias": "documents", "query": "guide", "mode": "fulltext"},
+    })
+    assert response.status_code == 200, response.text
+    task_id = response.json()["taskId"]
+    _as_endpoint()
+    try:
+        envelope = TaskEnvelope.from_dict(client.get("/api/endpoint/tasks/pull").json()["tasks"][0])
+        rejected = client.post(
+            f"/api/endpoint/tasks/{task_id}/scope-confirmations",
+            json={
+                "nonce": envelope.nonce, "stateVersion": envelope.state_version,
+                "purpose": "directory-expansion", "aliases": ["unknown"],
+            },
+        )
+        assert rejected.status_code == 400
+        confirmed = client.post(
+            f"/api/endpoint/tasks/{task_id}/scope-confirmations",
+            json={
+                "nonce": envelope.nonce, "stateVersion": envelope.state_version,
+                "purpose": "directory-expansion", "aliases": ["documents"],
+            },
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        with Session(make_engine(url)) as session:
+            grant = session.query(EndpointTaskScopeGrant).filter_by(task_id=task_id).one()
+            assert grant.purpose == "directory-expansion" and grant.aliases == ["documents"]
     finally:
         app.dependency_overrides.clear()
 

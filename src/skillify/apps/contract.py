@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import jsonschema
+import yaml
 
 from skillify.agent.permissions import PermissionManifest
 
@@ -102,3 +104,16 @@ def load_app_contract(value: object) -> AgentAppContract:
         str(value["appId"]), str(value["version"]), workflow, skills,
         permissions, input_schema, output_schema,
     )
+
+
+def load_bundled_app_contract(app_id: str, root: Path | None = None) -> AgentAppContract:
+    apps_root = Path(root) if root is not None else Path(__file__).resolve().parents[3] / "apps"
+    path = apps_root / app_id / "app.yaml"
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"Agent App contract is unavailable: {app_id}") from exc
+    contract = load_app_contract(value)
+    if contract.app_id != app_id:
+        raise ValueError("Agent App directory and contract id do not match")
+    return contract

@@ -592,7 +592,7 @@ def load_mcp_artifact(
         raise McpRegistryError("remote MCP URL must be canonical")
     parsed = urlsplit(url)
     if (
-        parsed.scheme != "https"
+        parsed.scheme not in {"http", "https"}
         or not parsed.hostname
         or parsed.username
         or parsed.password
@@ -602,7 +602,7 @@ def load_mcp_artifact(
         or "//" in parsed.path
         or any(part in {".", ".."} for part in PurePosixPath(parsed.path).parts)
     ):
-        raise McpRegistryError("remote MCP url must be an absolute HTTPS URL without credentials")
+        raise McpRegistryError("remote MCP url must be an absolute HTTP URL without credentials")
     host = parsed.hostname.casefold().rstrip(".")
     allowed_host = _required_text(data, "allowedHost").casefold().rstrip(".")
     if not _HOST_RE.fullmatch(allowed_host) or host != allowed_host:
@@ -616,8 +616,9 @@ def load_mcp_artifact(
     auth_env = _required_text(data, "authEnv")
     if not _ENV_RE.fullmatch(auth_env):
         raise McpRegistryError("authEnv must be an environment reference name, never a secret")
-    if data.get("tlsRequired") is not True:
-        raise McpRegistryError("remote MCP requires TLS")
+    tls_required = data.get("tlsRequired", parsed.scheme == "https")
+    if type(tls_required) is not bool:
+        raise McpRegistryError("tlsRequired must be a boolean when present")
     timeout, _ = _validate_timeout(data.get("timeoutSeconds"))
     coordinate, release, commit, checksum, license_name, source, permissions, enabled = common
     return McpArtifact(
@@ -635,7 +636,7 @@ def load_mcp_artifact(
         url=url,
         allowed_host=allowed_host,
         auth_env=auth_env,
-        tls_required=True,
+        tls_required=tls_required,
         timeout_seconds=float(timeout),
         **extended,
     )

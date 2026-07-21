@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Protocol
 
+from skillify.agent.permissions import MergedPermissions
+
 from skillify.agent.events import EventType, TaskEvent, TaskState
 from skillify.agent.provider import AgentProvider, ProviderRecovery, ProviderStartSpec, TaskSpec
 from skillify.tasks.protocol import TaskEnvelope
@@ -52,6 +54,7 @@ class TaskRunner:
         mcp_catalog: Mapping[str, McpPackageConfig] | None = None,
         per_task_mcp: Mapping[str, bool] | None = None,
         log: Callable[[str], None] | None = None,
+        permission_resolver: Callable[[TaskEnvelope], MergedPermissions] | None = None,
     ) -> None:
         self.providers = dict(providers)
         self.start_spec = start_spec
@@ -59,6 +62,7 @@ class TaskRunner:
         self.mcp_catalog = dict(mcp_catalog or {})
         self.per_task_mcp = dict(per_task_mcp or {})
         self.log = log or (lambda message: None)
+        self.permission_resolver = permission_resolver
 
     def run(self, envelope: TaskEnvelope, *, state_version: int) -> int:
         provider = self.providers.get(envelope.runtime)
@@ -95,6 +99,10 @@ class TaskRunner:
             handle, session = recovery.handle, recovery.session
         else:
             start_spec = self.start_spec(envelope)
+            if self.permission_resolver is not None:
+                start_spec = replace(
+                    start_spec, permissions=self.permission_resolver(envelope),
+                )
             injection_runtime = envelope.preferred_cli if envelope.runtime == "shogun" else envelope.runtime
             plan = select_task_mcp(
                 envelope.mcp_packages, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,

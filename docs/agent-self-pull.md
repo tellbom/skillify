@@ -70,3 +70,9 @@ auth). As implemented:
   agent actually depends on this channel).
 - No MCP server implementation — PLAN.md §2 lists "文档化拉取端点 / MCP（预留）" as
   alternatives; this pass implements the documented-endpoint half only.
+
+For the current follow-up release this remains an intentional compatibility fallback: it
+does **not** create a separate agent-token trust boundary. A successful self-pull has the
+same effective visibility boundary as the existing Keycloak-authenticated detail endpoint
+and Forgejo release asset. Operators must not describe this fallback as an independently
+scoped machine credential.

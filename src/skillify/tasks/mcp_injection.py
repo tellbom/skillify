@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from skillify.agent.permissions import PermissionManifest
+
 
 @dataclass(frozen=True)
 class McpPackageConfig:
@@ -15,6 +17,7 @@ class McpPackageConfig:
     environment: Mapping[str, str]
     tools: tuple[str, ...]
     context_budget: int
+    permissions: PermissionManifest | None = None
 
 
 @dataclass(frozen=True)

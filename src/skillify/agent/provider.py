@@ -8,6 +8,7 @@ from typing import Iterator, Protocol
 from urllib.parse import urlsplit
 
 from skillify.agent.events import PROVIDER_CONTRACT_VERSION, TASK_PROTOCOL_VERSION, TaskEvent, TaskState
+from skillify.agent.permissions import MergedPermissions, merge_permissions
 
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -80,6 +81,7 @@ class ProviderStartSpec:
     mcp_network_allowlist: dict[str, tuple[str, ...]] = field(default_factory=dict)
     base_commit: str = ""
     repository_root: Path | None = None
+    permissions: MergedPermissions = field(default_factory=lambda: merge_permissions(()))
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:
@@ -101,6 +103,8 @@ class ProviderStartSpec:
             r"[0-9a-f]{40}", self.base_commit
         ):
             raise ValueError("base_commit must be a 40-character hex commit SHA")
+        if not isinstance(self.permissions, MergedPermissions):
+            raise ValueError("task permissions must be a merged permission boundary")
 
 
 @dataclass(frozen=True)

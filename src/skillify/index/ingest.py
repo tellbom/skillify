@@ -24,6 +24,7 @@ class ReleaseEvent:
     release_url: str
     published_at: datetime
     orchestration: dict = field(default_factory=dict)
+    governance: dict = field(default_factory=dict)
 
 
 def upsert_release(session: Session, event: ReleaseEvent) -> SkillIndexEntry:
@@ -49,6 +50,7 @@ def upsert_release(session: Session, event: ReleaseEvent) -> SkillIndexEntry:
         release_url=event.release_url,
         published_at=event.published_at,
         orchestration=event.orchestration,
+        governance=event.governance,
     )
     try:
         with session.begin_nested():
@@ -72,4 +74,5 @@ def upsert_release(session: Session, event: ReleaseEvent) -> SkillIndexEntry:
     existing.release_url = event.release_url
     existing.published_at = event.published_at
     existing.orchestration = event.orchestration
+    existing.governance = event.governance
     return existing

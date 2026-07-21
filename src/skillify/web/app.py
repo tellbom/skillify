@@ -932,6 +932,7 @@ def _endpoint_task_out(session: Session, task) -> EndpointTaskOut:
         endpointId=task.endpoint_id,
         workflowId=task.workflow_id,
         workflowVersion=task.workflow_version,
+        delegationMode=task.delegation_mode,
         workspaceAlias=task.workspace_alias,
         runtime=task.runtime,
         executionMode=task.execution_mode,

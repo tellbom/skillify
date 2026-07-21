@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -28,6 +29,8 @@ EVENT_TYPES = frozenset({
     "codemap.visualization.ready", "codemap.visualization.opened",
     "codemap.visualization.status", "codemap.visualization.browser_blocked",
     "codemap.visualization.failed", "codemap.visualization.stopped",
+    "mcp.adapter.cancelled", "mcp.adapter.timeout", "mcp.adapter.permission_denied",
+    "mcp.adapter.unreachable", "mcp.adapter.crashed",
 })
 
 
@@ -194,3 +197,31 @@ class TaskEventReporter:
             if self.outbox.acknowledge(record["eventId"]):
                 delivered += 1
         return delivered
+
+
+class McpTaskEventAudit:
+    """Bridge MCP outcomes into the normal idempotent task-event outbox."""
+    def __init__(
+        self, reporter: TaskEventReporter, *, task_id: str, workflow_id: str,
+        workflow_version: str, provider: str, provider_version: str,
+        nonce: str, state_version: int,
+    ) -> None:
+        self.reporter = reporter
+        self.task_id = task_id
+        self.workflow_id = workflow_id
+        self.workflow_version = workflow_version
+        self.provider = provider
+        self.provider_version = provider_version
+        self.nonce = nonce
+        self.state_version = state_version
+
+    def record(self, event_type: str, reason_code: str) -> None:
+        payload = build_task_event(
+            event_id=f"mcp-{uuid.uuid4().hex}", task_id=self.task_id,
+            event_type=event_type, occurred_at=datetime.now(timezone.utc),
+            workflow_id=self.workflow_id, workflow_version=self.workflow_version,
+            provider=self.provider, provider_version=self.provider_version,
+            reason_code=reason_code, nonce=self.nonce, state_version=self.state_version,
+        )
+        self.reporter.enqueue(payload)
+        self.state_version += 1

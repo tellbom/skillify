@@ -4,5 +4,10 @@ runtime: [opencode, claude-code]
 entryAgent: plan
 mode: read-only
 skills: [codegraph-exploration, project-onboarding, evidence-reporting]
+delegation:
+  mode: adaptive
+  user_approval: required
+  executor_managed: true
 artifacts:
   - project-brief.md
+replayCases: [repository-summary, commands-validation]

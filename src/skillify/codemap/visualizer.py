@@ -8,7 +8,9 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -134,12 +136,57 @@ class GitNexusVisualizer:
         state_root: Path,
         run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+        connect: Callable[[tuple[str, int], float], Any] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        readiness_timeout: float = 30.0,
+        readiness_interval: float = 0.2,
     ) -> None:
         self.manifest = manifest
         self.runtime_root = Path(runtime_root)
         self.state_root = Path(state_root)
         self._run = run
         self._popen = popen
+        self._connect = connect or self._connect_tcp
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self.readiness_timeout = readiness_timeout
+        self.readiness_interval = readiness_interval
+
+    @staticmethod
+    def _connect_tcp(address: tuple[str, int], timeout: float) -> Any:
+        return socket.create_connection(address, timeout=timeout)
+
+    def _port_ready(self, port: int) -> bool:
+        try:
+            connection = self._connect((self.manifest.bind_host, port), 0.5)
+        except OSError:
+            return False
+        close = getattr(connection, "close", None)
+        if close is not None:
+            close()
+        return True
+
+    @staticmethod
+    def _log_failure_detail(log_path: Path, fallback: str) -> str:
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return fallback
+        last_line = next((line.strip() for line in reversed(lines) if line.strip()), "")
+        return f"{fallback}: {last_line[:300]}" if last_line else fallback
+
+    @staticmethod
+    def _process_exited(process: subprocess.Popen) -> bool:
+        poll = getattr(process, "poll", None)
+        return poll is not None and poll() is not None
+
+    @staticmethod
+    def _terminate_process(pid: int) -> None:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
 
     def _root(self, alias: str) -> Path:
         if not _ALIAS.fullmatch(alias):
@@ -201,7 +248,19 @@ class GitNexusVisualizer:
                 capture_output=True, text=True, timeout=900,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise CodemapError("GitNexus workspace scan failed") from exc
+            stderr = getattr(exc, "stderr", None)
+            last_line = ""
+            if isinstance(stderr, str):
+                lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+                last_line = next((
+                    line
+                    for marker in (
+                        "cannot open shared object", "failed to load", "not found", "error:",
+                    )
+                    for line in lines if marker in line.casefold()
+                ), lines[-1] if lines else "")
+            detail = f": {last_line[:300]}" if last_line else ""
+            raise CodemapError(f"GitNexus workspace scan failed{detail}") from exc
         if not (snapshot / ".gitnexus").is_dir():
             raise CodemapError("GitNexus did not create an index")
         return snapshot
@@ -213,7 +272,12 @@ class GitNexusVisualizer:
         if not 1024 <= port <= 65535:
             raise CodemapError("visualizer port must be between 1024 and 65535")
         root = self._root(alias)
-        snapshot = self.analyze(alias, workspace)
+        try:
+            snapshot = self.analyze(alias, workspace)
+        except CodemapError as exc:
+            failed = CodemapStatus(alias, "failed", port=port, detail=str(exc))
+            self._write_state(failed)
+            return failed
         log_path = root / "gitnexus.log"
         log = log_path.open("ab")
         try:
@@ -224,9 +288,38 @@ class GitNexusVisualizer:
             )
         finally:
             log.close()
-        state = CodemapStatus(alias, "ready", pid=process.pid, port=port, detail="GitNexus is ready")
+        state = CodemapStatus(
+            alias, "starting", pid=process.pid, port=port,
+            detail="Waiting for GitNexus to bind its local port",
+        )
         self._write_state(state)
-        return state
+        deadline = self._monotonic() + self.readiness_timeout
+        while self._monotonic() < deadline:
+            if self._process_exited(process):
+                failed = CodemapStatus(
+                    alias, "failed", port=port,
+                    detail=self._log_failure_detail(
+                        log_path, "GitNexus exited before binding its local port",
+                    ),
+                )
+                self._write_state(failed)
+                return failed
+            if self._port_ready(port):
+                ready = CodemapStatus(
+                    alias, "ready", pid=process.pid, port=port, detail="GitNexus is ready",
+                )
+                self._write_state(ready)
+                return ready
+            self._sleep(self.readiness_interval)
+        self._terminate_process(process.pid)
+        failed = CodemapStatus(
+            alias, "failed", port=port,
+            detail=self._log_failure_detail(
+                log_path, "GitNexus readiness timed out before binding its local port",
+            ),
+        )
+        self._write_state(failed)
+        return failed
 
     def status(self, alias: str) -> CodemapStatus:
         try:
@@ -234,6 +327,8 @@ class GitNexusVisualizer:
             status = CodemapStatus(**value)
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             return CodemapStatus(alias, "stopped", detail="GitNexus is stopped")
+        if status.state == "failed":
+            return status
         if status.pid is None:
             return CodemapStatus(alias, "stopped", detail="GitNexus is stopped")
         try:
@@ -241,15 +336,19 @@ class GitNexusVisualizer:
         except OSError:
             self._state_path(alias).unlink(missing_ok=True)
             return CodemapStatus(alias, "stopped", detail="GitNexus process is not running")
+        if status.port is None or not self._port_ready(status.port):
+            starting = CodemapStatus(
+                alias, "starting", pid=status.pid, port=status.port,
+                detail="GitNexus process is running but its local port is not ready",
+            )
+            self._write_state(starting)
+            return starting
         return status
 
     def stop(self, alias: str) -> CodemapStatus:
         current = self.status(alias)
-        if current.pid is not None and current.state == "ready":
-            try:
-                os.kill(current.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+        if current.pid is not None:
+            self._terminate_process(current.pid)
         self._state_path(alias).unlink(missing_ok=True)
         return CodemapStatus(alias, "stopped", detail="GitNexus is stopped")
 

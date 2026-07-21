@@ -52,7 +52,11 @@ def test_provider_scans_the_written_queue_dir(tmp_path: Path, monkeypatch) -> No
         shogun_module, "check_host_dependencies",
         lambda _: SimpleNamespace(available=True, detail="ready"),
     )
-    runtime = FakeRuntime()
+    runtime = FakeRuntime(({
+        "tasks/ashigaru1.yaml": {"id": "wp-1", "status": "done"},
+        "tasks/ashigaru2.yaml": {"id": "wp-2", "status": "done"},
+        "reports/gunshi_report.yaml": {"id": "review-1", "status": "done"},
+    },))
     provider = ShogunProvider(
         manifest_path=manifest, artifact_path=artifact, install_root=install,
         cache_root=tmp_path / "cache", runtime=runtime, credential_broker=Broker(),
@@ -67,11 +71,17 @@ def test_provider_scans_the_written_queue_dir(tmp_path: Path, monkeypatch) -> No
         ),
         execution_mode="team", preferred_cli="opencode",
         credential_refs={"MODEL_TOKEN": "local://model"},
+        work_packages=(
+            {"packageId": "wp-1", "allowedPaths": ["src/**"]},
+            {"packageId": "wp-2", "allowedPaths": ["tests/**"]},
+        ),
     )
 
     handle = provider.start(spec)
     provider.create_session(handle, TaskSpec("task-1", "test the team"))
-    list(provider.stream_events(handle, provider._sessions[next(iter(provider._sessions))]))
+    events = list(provider.stream_events(handle, provider._sessions[next(iter(provider._sessions))]))
+    assert events[-1].type.value == "team.completed"
+    assert events[-1].details["stage"] == "skillify-derived-terminal"
 
     command_path = run_dir / "queue" / "inbox" / "shogun.yaml"
     assert command_path.exists()

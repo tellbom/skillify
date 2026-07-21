@@ -156,9 +156,36 @@ def get_skill_detail(
         else False
     )
 
-    governance = latest.orchestration.get("governance", {}) if isinstance(latest.orchestration, dict) else {}
+    governance = dict(latest.governance or {})
     if not isinstance(governance, dict):
         governance = {}
+    workflow_id = governance.pop("workflowId", None)
+    if isinstance(workflow_id, str):
+        from sqlalchemy import select
+        from skillify.evals import aggregate_task_metrics
+        from skillify.index.models import EndpointTaskEventRecord, EndpointTaskRecord
+
+        rows = session.execute(
+            select(EndpointTaskEventRecord, EndpointTaskRecord.task_id)
+            .join(EndpointTaskRecord, EndpointTaskRecord.task_id == EndpointTaskEventRecord.task_id)
+            .where(
+                EndpointTaskRecord.workflow_id == workflow_id,
+                EndpointTaskRecord.workflow_version == latest.version,
+            )
+        ).all()
+        metrics = aggregate_task_metrics({
+            "eventId": event.event_id,
+            "eventType": event.event_type,
+            "taskId": task_id,
+            "testSummary": event.test_summary,
+            "reasonCode": event.failure_reason,
+        } for event, task_id in rows)
+        governance.update({
+            "successRate": metrics["successRate"],
+            "testPassRate": metrics["testPassRate"],
+            "sampleSize": metrics["completedTasks"],
+            "failureReasons": metrics["blockedReasons"],
+        })
     return SkillDetail(
         namespace=latest.namespace,
         name=latest.name,

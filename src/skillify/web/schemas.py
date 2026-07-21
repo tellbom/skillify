@@ -306,6 +306,7 @@ class EndpointTaskOut(BaseModel):
     endpointId: str
     workflowId: str
     workflowVersion: str
+    delegationMode: str
     workspaceAlias: str
     runtime: str
     executionMode: str = "single"
@@ -323,6 +324,11 @@ class EndpointTaskOut(BaseModel):
 class EndpointTaskLifecycleIn(BaseModel):
     nonce: str
     stateVersion: int
+
+
+class EndpointTaskScopeConfirmationIn(EndpointTaskLifecycleIn):
+    purpose: str
+    aliases: list[str]
 
 
 class EndpointEventIn(EndpointTaskLifecycleIn):

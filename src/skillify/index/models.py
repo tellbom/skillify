@@ -57,6 +57,7 @@ class SkillIndexEntry(Base):
     # interpreted/validated beyond "must be a JSON object" (already enforced at manifest
     # validation time, T0.2) — no orchestration engine is implemented here.
     orchestration: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    governance: Mapped[dict] = mapped_column(JSONText(), default=dict)
     # C-1 (version center): a yanked version stays installable if explicitly requested
     # (by tag/version) but drops out of "latest" resolution (list_latest/search/leaderboard)
     # — crates.io-style semantics. Unlike SkillEvent.success this is NOT nullable/tri-state:
@@ -244,6 +245,7 @@ class EndpointTaskRecord(Base):
     owner_username: Mapped[str] = mapped_column(String(255), index=True)
     workflow_id: Mapped[str] = mapped_column(String(128))
     workflow_version: Mapped[str] = mapped_column(String(64))
+    delegation_mode: Mapped[str] = mapped_column(String(16), default="suggested", nullable=False)
     workspace_alias: Mapped[str] = mapped_column(String(64))
     inputs: Mapped[dict] = mapped_column(JSONText(), default=dict)
     runtime: Mapped[str] = mapped_column(String(32), default="opencode", nullable=False)
@@ -290,6 +292,22 @@ class EndpointTaskNonce(Base):
     nonce: Mapped[str] = mapped_column(String(128), primary_key=True)
     task_id: Mapped[str] = mapped_column(String(128), index=True)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EndpointTaskScopeGrant(Base):
+    """Endpoint-confirmed App access beyond the task's primary workspace alias."""
+
+    __tablename__ = "endpoint_task_scope_grants"
+    __table_args__ = (
+        UniqueConstraint("task_id", "purpose", name="uq_endpoint_task_scope_grant"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    endpoint_id: Mapped[str] = mapped_column(String(128), index=True)
+    purpose: Mapped[str] = mapped_column(String(32))
+    aliases: Mapped[list] = mapped_column(JSONText(), default=list)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class WorkPackageRecord(Base):

@@ -661,3 +661,8 @@ npm run build
 - [发布恢复](docs/operations-release-recovery.md)
 - [内网试用清单](docs/internal-pilot-checklist.md)
 - [Skill manifest v1](spec/skill-manifest-v1.md)
+## 构件检查边界
+
+正式构件必须使用固定语义版本、可追溯的内网来源与 SHA256。发布同时生成自研
+CycloneDX 1.5 SBOM，并执行内建 block/warn 规则。该检查不包含完整 CVE 漏洞库，
+不代表企业级供应链安全认证；当前也不接入 Syft、Grype 或 Cosign。

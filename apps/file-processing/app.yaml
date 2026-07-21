@@ -28,6 +28,14 @@ inputSchema:
   properties:
     inputAlias: {type: string, minLength: 1}
     processor: {enum: [word-frequency, csv-summary]}
+    groupBy: {type: string, minLength: 1, maxLength: 128}
+    valueColumn: {type: string, minLength: 1, maxLength: 128}
+    operation: {enum: [sum, count, average]}
+  allOf:
+    - if:
+        properties: {processor: {const: csv-summary}}
+      then:
+        required: [groupBy, valueColumn, operation]
 outputSchema:
   type: object
   additionalProperties: false
