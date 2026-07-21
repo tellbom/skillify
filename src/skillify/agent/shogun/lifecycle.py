@@ -14,10 +14,54 @@ from pathlib import Path
 from typing import Protocol
 
 from skillify.agent.shogun.config_gen import GeneratedShogunConfig
+from skillify.agent.shogun.registry import RegistryError, WorktreeRegistry
+from skillify.agent.shogun.worktree import WorktreeManager, WorktreeManagerError
 
 
 class ShogunLifecycleError(RuntimeError):
     pass
+
+
+def _derive_state_root(registry: WorktreeRegistry) -> Path:
+    """Reconstruct state_root from the fixed <state_root>/teams/<team_id>/worktrees/<name>
+    convention WorktreeManager.create() establishes. Raises ValueError if the
+    integration_worktree path doesn't match that shape (defensive -- treat as
+    a reason to skip/fail cleanup rather than guess, never delete based on a
+    guessed path)."""
+    parts = registry.integration_worktree.parts
+    if len(parts) < 4 or parts[-2] != "worktrees" or parts[-4] != "teams":
+        raise ValueError(
+            f"integration_worktree {registry.integration_worktree} does not match the "
+            "<state_root>/teams/<team_id>/worktrees/<name> convention"
+        )
+    if parts[-3] != registry.team_id:
+        raise ValueError(
+            f"integration_worktree {registry.integration_worktree} team segment does not "
+            f"match registry.team_id {registry.team_id!r}"
+        )
+    return Path(*parts[:-4])
+
+
+def _cleanup_worktrees_if_present(run_dir: Path) -> bool:
+    """Clean up worktrees/branches for a team using the git-worktree feature.
+
+    Looks for ``run_dir / "worktree-registry.json"`` -- the same convention
+    S8's recovery diagnosis uses. Returns ``True`` if cleanup succeeded or
+    there was no registry to act on (nothing to do), ``False`` if cleanup
+    failed (registry unreadable, state_root could not be derived, or
+    ``WorktreeManager.cleanup()`` refused/failed). Never raises: callers use
+    the return value to decide whether ``run_dir`` is safe to remove.
+    """
+    registry_path = run_dir / "worktree-registry.json"
+    if not registry_path.exists():
+        return True
+    try:
+        registry = WorktreeRegistry.read(registry_path)
+        state_root = _derive_state_root(registry)
+        WorktreeManager().cleanup(registry, state_root=state_root)
+    except (OSError, ValueError, RegistryError, WorktreeManagerError):
+        return False
+    return True
 
 
 class RuntimeControl(Protocol):
@@ -256,8 +300,9 @@ class ShogunLifecycle:
         self._release(team)
 
     def _release(self, team: ActiveTeam) -> None:
+        worktrees_ok = _cleanup_worktrees_if_present(team.run_dir)
         team.guard_path.unlink(missing_ok=True)
-        if team.run_dir.is_dir():
+        if worktrees_ok and team.run_dir.is_dir():
             shutil.rmtree(team.run_dir)
         if self.active == team:
             self.active = None
