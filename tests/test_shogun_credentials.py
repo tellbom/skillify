@@ -127,7 +127,7 @@ def test_launcher_falls_back_to_tmux_agent_id_when_env_worktree_absent(
     @agent_id option and the worktree-registry.json this run_dir carries."""
     monkeypatch.chdir(tmp_path)
     broker = Broker()
-    injector = PaneCredentialInjector(executables={"claude": "/usr/bin/claude"})
+    injector = PaneCredentialInjector(executables={"claude-code": "/usr/bin/claude"})
     channel = injector.prepare(
         {"ANTHROPIC_API_KEY": "vault://model/current"}, broker=broker, run_dir=tmp_path,
     )
