@@ -180,6 +180,7 @@ Merge 状态（`merge-plan.json`）：`pending → in_progress(worker=X) → (me
 | worktree 元数据残留 | `git worktree prune` + registry 校验 + owner marker | 人工 `git worktree repair` |
 | 语义冲突漏检 | 强制全量测试/类型/build + Reviewer | Team 标 failed，不标成功 |
 | 部署主机残留 `setup_cron.sh --install` 定时任务，`auto_merge_short_lived.sh` 每 6 小时对共享工作树自动合并，与 Integration 唯一合并假设冲突（S0 实测发现，`crontab -l` 本轮为空但机制客观存在） | S2/S11 doctor 增 `crontab -l` 探测 `auto_merge_short_lived` 关键字，命中即告警 | 人工 `crontab -e` 移除该行 |
+| `.skillify-bin/git` wrapper（S4，§9 强制手段）是 PATH 前置的 shell 脚本，对"防止 Worker 意外/被提示词注入误触发 push、越权改远程/凭据配置"有效（已挡 push/`remote add`/`set-url`/`config credential.*`/`config remote.*`/`config url.*.insteadOf`/`send-pack`/`http-push`/`-c`+`-C`等全局选项前置/`alias.*`定义与调用/`GIT_CONFIG_COUNT`环境变量注入，四轮对抗式复核+真实 Linux `/bin/sh` 验证），但**结构性无法防御**：①直接编辑 `.git/config`/`~/.gitconfig` 或用非 git 工具写入 `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` 指向的文件；②在 wrapper 生效前修改 `PATH`/替换 `.skillify-bin/git` 本身/直接调用真实 git 的绝对路径。这是 PATH 前置型 wrapper 的固有边界，非本任务实现缺陷；与 plan §16"不追求对恶意本地 shell 的强安全沙箱"一致 | 不在 wrapper 层继续加码；如需更强边界需改变机制（如容器/OS 级只读挂载 `.git` 目录），超出本方案范围，明确记为已知残余风险 | 无需回滚，按 §16 既定边界接受 |
 
 回滚总原则：任一门禁未过→`single/delegated` 继续可用，`team` 不可用，两开关关闭，`installable=false`。
 
