@@ -149,7 +149,9 @@ class IntegrationEngine:
         head_result = _run_git(["rev-parse", "HEAD"], cwd=repository_root)
         integration_head = head_result.stdout.strip()
 
-        new_merged = list(merge_plan.merged) + [worker_id]
+        new_merged = list(merge_plan.merged)
+        if success:
+            new_merged.append(worker_id)
         updated_plan = MergePlan(
             order=merge_plan.order,
             current=worker_id,

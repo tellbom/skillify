@@ -149,7 +149,8 @@ class TestMergeWorker:
         assert result_b.conflict_details is not None
         assert "Conflict" in result_b.conflict_details
         assert result_b.merge_plan_updated.current == "worker-b"
-        assert result_b.merge_plan_updated.merged == ("worker-a", "worker-b")
+        # worker-b's merge conflicted -- it is not "merged" yet.
+        assert result_b.merge_plan_updated.merged == ("worker-a",)
         assert result_b.merge_plan_updated.conflict is True
         assert result_b.merge_plan_updated.integration_head is not None
 
@@ -288,7 +289,10 @@ class TestMergeWorker:
         reloaded = MergePlan.read(merge_plan_path)
         assert reloaded.conflict is True
         assert reloaded.current == "worker-b"
-        assert "worker-b" in reloaded.merged
+        # A worker with an unresolved conflict is not "merged" -- only
+        # successfully-merged workers belong in `merged`.
+        assert "worker-b" not in reloaded.merged
+        assert reloaded.merged == ("worker-a",)
 
 
 class TestStructuralGuarantees:

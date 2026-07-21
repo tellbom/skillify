@@ -89,19 +89,13 @@ class ReviewGate:
         failures: list[str] = []
 
         # --- Hard-reject checks (rework=False) ------------------------------------
-        if not report.integration_complete:
-            failures.append(
-                "integration_complete: integration commit does not include "
-                "all approved changes",
-            )
-        if not report.no_remote_credentials:
-            failures.append(
-                "no_remote_credentials: remote credentials leaked in the diff",
-            )
         if not report.worker_ids_reviewed:
             failures.append(
                 "worker_ids_reviewed: no workers were reviewed (empty list)",
             )
+        for field_name, msg in _REJECT_FIELDS:
+            if not getattr(report, field_name):
+                failures.append(f"{field_name}: {msg}")
 
         # --- Rework checks (rework=True) ------------------------------------------
         rework_failures: list[str] = []
