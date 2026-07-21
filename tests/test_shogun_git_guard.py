@@ -266,6 +266,56 @@ def test_wrapper_rejects_combined_credential_and_push_bypass_attempt(tmp_path: P
     assert check.stdout.strip() == ""
 
 
+def test_wrapper_rejects_remote_add_with_leading_v_option(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper, ["remote", "-v", "add", "evil", "http://evil.invalid"], cwd=repo,
+    )
+
+    assert result.returncode != 0
+    remotes = _git(["remote"], cwd=repo).stdout
+    assert "evil" not in remotes
+
+
+def test_wrapper_rejects_remote_set_url_with_leading_verbose_option(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", "https://example.invalid/original.git"], cwd=repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["remote", "--verbose", "set-url", "origin", "http://hijack.invalid"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    url = _git(["remote", "get-url", "origin"], cwd=repo).stdout.strip()
+    assert url == "https://example.invalid/original.git"
+
+
+def test_wrapper_allows_remote_dash_v_listing(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", "https://example.invalid/original.git"], cwd=repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(wrapper, ["remote", "-v"], cwd=repo)
+
+    assert result.returncode == 0
+    assert "origin" in result.stdout
+    assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
+
+
 def test_wrapper_allows_legitimate_global_option_on_safe_command(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_commit = _init_repo(repo)
