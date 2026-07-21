@@ -185,3 +185,100 @@ def test_wrapper_rejection_survives_missing_audit_log_directory(tmp_path: Path) 
 
     assert result.returncode != 0
     assert not audit_log.parent.exists()
+
+
+def test_wrapper_rejects_push_with_leading_c_global_option(tmp_path: Path) -> None:
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    r = subprocess.run(
+        ["git", "init", "--bare", str(origin)], capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", str(origin)], cwd=repo)
+
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["-c", "protocol.version=2", "push", "origin", "HEAD:refs/heads/bypass-test"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    branches = subprocess.run(
+        ["git", "branch", "-r"], cwd=str(origin), capture_output=True, text=True,
+    ).stdout
+    assert "bypass-test" not in branches
+
+
+def test_wrapper_rejects_remote_add_with_leading_capital_c_option(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper, ["-C", ".", "remote", "add", "evil", "http://evil.invalid"], cwd=repo,
+    )
+
+    assert result.returncode != 0
+    remotes = _git(["remote"], cwd=repo).stdout
+    assert "evil" not in remotes
+
+
+def test_wrapper_rejects_combined_credential_and_push_bypass_attempt(tmp_path: Path) -> None:
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    r = subprocess.run(
+        ["git", "init", "--bare", str(origin)], capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", str(origin)], cwd=repo)
+
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        [
+            "-c", "credential.helper=!echo exfiltrated-token",
+            "push", "origin", "HEAD:refs/heads/combined-attack",
+        ],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    branches = subprocess.run(
+        ["git", "branch", "-r"], cwd=str(origin), capture_output=True, text=True,
+    ).stdout
+    assert "combined-attack" not in branches
+    check = _git(["config", "--local", "--get", "credential.helper"], cwd=repo)
+    assert check.stdout.strip() == ""
+
+
+def test_wrapper_allows_legitimate_global_option_on_safe_command(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_commit = _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    status = _run_wrapper(wrapper, ["-c", "user.name=Someone Else", "status", "--porcelain"], cwd=repo)
+    assert status.returncode == 0
+    assert status.stdout == ""
+
+    log = _run_wrapper(wrapper, ["-C", str(repo), "log", "--oneline"], cwd=tmp_path)
+    assert log.returncode == 0
+    assert base_commit[:7] in log.stdout or "initial" in log.stdout
+
+    assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
