@@ -78,6 +78,8 @@ class ProviderStartSpec:
     network_environment: dict[str, str] = field(default_factory=dict)
     network_allowlist: tuple[str, ...] = ()
     mcp_network_allowlist: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    base_commit: str = ""
+    repository_root: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.workspace.is_absolute() or self.workspace not in self.allowed_paths:
@@ -95,6 +97,10 @@ class ProviderStartSpec:
             raise ValueError("execution mode is unsupported")
         if self.execution_mode == "team" and self.preferred_cli not in {"opencode", "claude-code"}:
             raise ValueError("team execution requires an approved preferred CLI")
+        if self.execution_mode == "team" and self.base_commit and not re.fullmatch(
+            r"[0-9a-f]{40}", self.base_commit
+        ):
+            raise ValueError("base_commit must be a 40-character hex commit SHA")
 
 
 @dataclass(frozen=True)

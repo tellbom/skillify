@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -273,6 +274,27 @@ def _build_runner(outbox: LocalOutbox):
             raise ValueError("workspace alias is not configured on this endpoint")
         workspace = Path(raw).resolve(strict=True)
         endpoint_name = "ANTHROPIC_BASE_URL" if envelope.preferred_cli == "claude-code" else "OPENCODE_BASE_URL"
+        base_commit = ""
+        repository_root = None
+        if envelope.runtime == "shogun" and envelope.execution_mode == "team":
+            status = subprocess.run(
+                ["git", "-C", str(workspace), "status", "--porcelain"],
+                capture_output=True, text=True, check=False,
+            )
+            if status.returncode != 0:
+                raise ValueError(f"failed to inspect workspace git status: {status.stderr.strip()}")
+            if status.stdout.strip():
+                raise ValueError(
+                    "workspace has uncommitted changes; team execution requires a clean workspace"
+                )
+            head = subprocess.run(
+                ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=False,
+            )
+            if head.returncode != 0:
+                raise ValueError(f"failed to resolve workspace HEAD commit: {head.stderr.strip()}")
+            base_commit = head.stdout.strip()
+            repository_root = workspace
         return ProviderStartSpec(
             workspace, (workspace,), paths.cache_dir / envelope.runtime / envelope.task_id, runtime,
             execution_mode=envelope.execution_mode,
@@ -281,6 +303,8 @@ def _build_runner(outbox: LocalOutbox):
             work_packages=tuple(dict(item) for item in envelope.work_packages),
             network_environment={endpoint_name: runtime.endpoint} if envelope.runtime == "shogun" else {},
             network_allowlist=runtime.allowed_endpoint_hosts,
+            base_commit=base_commit,
+            repository_root=repository_root,
         )
 
     providers = {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()}

@@ -35,7 +35,7 @@ from skillify.agent.shogun.lifecycle import (
 )
 from skillify.agent.shogun.registry import RegistryError, WorktreeRegistry
 from skillify.agent.shogun.team_recovery import RecoveryDiagnosis, diagnose
-from skillify.agent.shogun.worktree import WorktreeManager
+from skillify.agent.shogun.worktree import WorktreeManager, WorkerSpec
 
 
 @dataclass
@@ -111,11 +111,13 @@ class ShogunProvider(AgentProvider):
         runtime: RuntimeControl | None = None,
         credential_broker: CredentialBrokerLike | None = None,
         credential_injector: PaneCredentialInjector | None = None,
+        state_root: Path | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.artifact_path = Path(artifact_path)
         self.install_root = Path(install_root)
         self.cache_root = Path(cache_root)
+        self.state_root = Path(state_root) if state_root is not None else self.cache_root / "teams"
         self.runtime = runtime or ProcessRuntime()
         self.credential_broker = credential_broker
         self.credential_injector = credential_injector or PaneCredentialInjector()
@@ -159,6 +161,29 @@ class ShogunProvider(AgentProvider):
                 channel = self.credential_injector.prepare(
                     spec.credential_refs, broker=self.credential_broker, run_dir=spec.config_dir,
                 )
+            worker_worktrees: dict[str, Path] = {}
+            if spec.execution_mode == "team" and spec.base_commit:
+                repository_root = spec.repository_root or spec.workspace
+                workers_spec = [
+                    WorkerSpec(
+                        worker_id=f"ashigaru{index}",
+                        work_package_id=str(package.get("id", f"wp-{index}")),
+                        allowed_paths=tuple(package.get("allowedPaths", [])),
+                    )
+                    for index, package in enumerate(spec.work_packages, start=1)
+                ]
+                if workers_spec:
+                    worktree_registry = WorktreeManager().create(
+                        repository_root=repository_root,
+                        base_commit=spec.base_commit,
+                        team_id=spec.config_dir.name,
+                        workers=workers_spec,
+                        state_root=self.state_root,
+                    )
+                    worktree_registry.write(spec.config_dir / "worktree-registry.json")
+                    worker_worktrees = {
+                        worker.worker_id: worker.worktree for worker in worktree_registry.workers
+                    }
             generated = generate_config(
                 install_root=self.install_root,
                 run_dir=spec.config_dir,
@@ -171,6 +196,7 @@ class ShogunProvider(AgentProvider):
                 mcp_servers=spec.mcp_servers,
                 network_allowlist=spec.network_allowlist,
                 mcp_network_allowlist=spec.mcp_network_allowlist,
+                worker_worktrees=worker_worktrees,
             )
             if channel is not None:
                 environment = dict(generated.environment)
