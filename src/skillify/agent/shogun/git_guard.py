@@ -2,9 +2,13 @@
 
 This is the enforced (non-prompt-based) half of the push-denial requirement:
 a real executable named ``git`` placed ahead of the system git on ``PATH``.
-Workers invoking ``git push``, ``git remote add``, ``git remote set-url``, or
-``git config credential.*`` get a non-zero exit and no effect on the real
-repository — regardless of what any agent has been told to do or not do.
+Workers invoking ``git push`` (or the plumbing equivalents ``git send-pack``
+/ ``git http-push``), ``git remote add``, ``git remote set-url``, or
+``git config credential.*``/``alias.*``/``remote.*``/``url.*`` get a
+non-zero exit and no effect on the real repository — regardless of what any
+agent has been told to do or not do. ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_n``
+/``GIT_CONFIG_VALUE_n`` (git's env-var config-injection mechanism) are
+rejected outright, before any argv scanning, since they cannot be scanned.
 Every other git subcommand (``status``, ``commit``, ``diff``, ``log``, etc.)
 is passed straight through to the real ``git`` executable, untouched.
 
@@ -48,6 +52,23 @@ def write_git_guard(bin_dir: Path, audit_log: Path) -> Path:
         "#!/bin/sh\n"
         f"REAL_GIT={quoted_git}\n"
         f"AUDIT_LOG={quoted_log}\n"
+        "\n"
+        "# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n are git's own\n"
+        "# env-var mechanism (documented since git 2.31) for injecting config\n"
+        "# equivalent to `-c key=value`, but the key/value never appear in argv,\n"
+        "# so no argv-scan can catch them. Reject outright, before any argv\n"
+        "# scanning, whenever this mechanism is in use at all — a Worker has no\n"
+        "# legitimate need for it.\n"
+        "if [ -n \"$GIT_CONFIG_COUNT\" ]; then\n"
+        "  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\n"
+        "  argv_json=$(printf '%s' \"$*\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')\n"
+        "  cwd_json=$(pwd | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')\n"
+        "  record=\"{\\\"timestamp\\\": \\\"$ts\\\", \\\"rejected_subcommand\\\": \\\"env-config\\\", \"\n"
+        "  record=\"$record\\\"argv\\\": \\\"$argv_json\\\", \\\"cwd\\\": \\\"$cwd_json\\\"}\"\n"
+        "  { printf '%s\\n' \"$record\" >> \"$AUDIT_LOG\"; } 2>/dev/null || true\n"
+        "  echo \"skillify git-guard: rejected 'env-config' (GIT_CONFIG_COUNT/KEY/VALUE env-based config injection is disabled for Workers)\" >&2\n"
+        "  exit 1\n"
+        "fi\n"
         "\n"
         "sub=\"\"\n"
         "subarg=\"\"\n"
@@ -123,19 +144,28 @@ def write_git_guard(bin_dir: Path, audit_log: Path) -> Path:
         "}\n"
         "scan_subcommand \"$@\"\n"
         "\n"
+        "# NOTE: GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n (git's own\n"
+        "# env-var config-injection mechanism, documented since git 2.31) are now\n"
+        "# actively rejected above, before any argv scanning — they used to be a\n"
+        "# residual limitation (couldn't be argv-scanned since the key/value never\n"
+        "# appear in argv) but are now structurally blocked outright.\n"
+        "#\n"
         "# NOTE (residual limitation): this wrapper can only see arguments passed\n"
         "# to invocations of the `git` executable it shadows on PATH. A Worker\n"
         "# that edits .git/config or ~/.gitconfig directly (text editor, sed,\n"
         "# echo >>), or that sets GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM to point at\n"
-        "# a pre-seeded file, can still define an [alias] section without ever\n"
-        "# calling git — that is structurally outside what a PATH-shadowing\n"
-        "# wrapper can intercept and is an accepted limitation, not a bug here.\n"
+        "# a pre-seeded file, can still define an [alias] section (or a remote,\n"
+        "# or anything else) without ever calling git — and replacing/shadowing\n"
+        "# the `git` binary itself before this wrapper is ever reached on PATH is\n"
+        "# equally outside its reach. Both are structurally outside what any\n"
+        "# PATH-shadowing wrapper can intercept and are accepted limitations, not\n"
+        "# bugs here.\n"
         "reject=0\n"
         "if [ \"$alias_bypass\" -eq 1 ]; then\n"
         "  reject=1\n"
         "fi\n"
         "case \"$sub\" in\n"
-        "  push)\n"
+        "  push|send-pack|http-push)\n"
         "    reject=1\n"
         "    ;;\n"
         "  remote)\n"
@@ -146,7 +176,7 @@ def write_git_guard(bin_dir: Path, audit_log: Path) -> Path:
         "  config)\n"
         "    for arg in \"$@\"; do\n"
         "      case \"$arg\" in\n"
-        "        credential.*|alias.*) reject=1 ;;\n"
+        "        credential.*|alias.*|remote.*|url.*) reject=1 ;;\n"
         "      esac\n"
         "    done\n"
         "    ;;\n"

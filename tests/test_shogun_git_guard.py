@@ -479,3 +479,168 @@ def test_wrapper_allows_non_alias_non_credential_config_write(tmp_path: Path) ->
     email = _git(["config", "--get", "user.email"], cwd=repo).stdout.strip()
     assert email == "someone@example.com"
     assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
+
+
+def test_wrapper_rejects_config_remote_url_rewrite(tmp_path: Path) -> None:
+    """git config remote.origin.url <new> must not rewrite the origin URL."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", "https://example.invalid/original.git"], cwd=repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper, ["config", "remote.origin.url", "https://example.invalid/hijacked.git"], cwd=repo,
+    )
+
+    assert result.returncode != 0
+    url = _git(["remote", "get-url", "origin"], cwd=repo).stdout.strip()
+    assert url == "https://example.invalid/original.git"
+    config_text = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "hijacked" not in config_text
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["rejected_subcommand"] == "config"
+
+
+def test_wrapper_rejects_config_remote_pushurl(tmp_path: Path) -> None:
+    """git config remote.origin.pushurl <url> must not set a pushurl."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", "https://example.invalid/original.git"], cwd=repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper, ["config", "remote.origin.pushurl", "https://evil.invalid/pwned.git"], cwd=repo,
+    )
+
+    assert result.returncode != 0
+    check = subprocess.run(
+        ["git", "config", "--local", "--get", "remote.origin.pushurl"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    assert check.stdout.strip() == ""
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["rejected_subcommand"] == "config"
+
+
+def test_wrapper_rejects_config_url_insteadof(tmp_path: Path) -> None:
+    """git config "url.<base>.insteadOf" <real> must not write a [url ...] section."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["config", "url.http://evil.invalid/.insteadOf", "https://example.invalid/original.git"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    config_text = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "[url" not in config_text
+    assert "insteadof" not in config_text.lower() or "insteadOf" not in config_text
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["rejected_subcommand"] == "config"
+
+
+def test_wrapper_rejects_send_pack_with_audit_entry(tmp_path: Path) -> None:
+    """git send-pack <repo> <refspec> must be rejected AND produce an audit entry.
+
+    Previously this plumbing command fell through to the real git entirely
+    unlogged: `sub` became "send-pack", matched no case arm, so exec ran and
+    the reject/audit-log branch was never entered.
+    """
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    r = subprocess.run(
+        ["git", "init", "--bare", str(origin)], capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper, ["send-pack", str(origin), "HEAD:refs/heads/send-pack-bypass"], cwd=repo,
+    )
+
+    assert result.returncode != 0
+    branches = subprocess.run(
+        ["git", "branch"], cwd=str(origin), capture_output=True, text=True,
+    ).stdout
+    assert "send-pack-bypass" not in branches
+
+    assert audit_log.exists()
+    lines = audit_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["rejected_subcommand"] == "send-pack"
+    assert "send-pack" in record["argv"]
+
+
+def test_wrapper_rejects_git_config_count_env_bypass(tmp_path: Path) -> None:
+    """GIT_CONFIG_COUNT/KEY/VALUE alias-injection must be rejected outright.
+
+    This is the env-var equivalent of `-c alias.p=push`: git itself reads
+    these vars to build config, so the key/value never appear in argv and no
+    argv-scan can catch them. Must be blocked before any argv scanning.
+    """
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    r = subprocess.run(
+        ["git", "init", "--bare", str(origin)], capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", str(origin)], cwd=repo)
+
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    import os
+    env = dict(os.environ)
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "alias.p"
+    env["GIT_CONFIG_VALUE_0"] = "push"
+
+    result = subprocess.run(
+        ["sh", str(wrapper), "p", "origin", "HEAD:refs/heads/env-bypass"],
+        cwd=str(repo), capture_output=True, text=True, check=False, env=env,
+    )
+
+    assert result.returncode != 0
+    branches = subprocess.run(
+        ["git", "branch"], cwd=str(origin), capture_output=True, text=True,
+    ).stdout
+    assert "env-bypass" not in branches
+
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["rejected_subcommand"] == "env-config"
+
+
+def test_wrapper_allows_config_when_no_git_config_count_env(tmp_path: Path) -> None:
+    """Regression: git config user.name still works with no GIT_CONFIG_COUNT set."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(wrapper, ["config", "user.name", "Someone"], cwd=repo)
+
+    assert result.returncode == 0
+    name = _git(["config", "--get", "user.name"], cwd=repo).stdout.strip()
+    assert name == "Someone"
+    assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
