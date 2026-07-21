@@ -33,6 +33,9 @@ from skillify.agent.shogun.credentials import (
 from skillify.agent.shogun.lifecycle import (
     ActiveTeam, ProcessRuntime, RuntimeControl, ShogunLifecycle, TeamHandle,
 )
+from skillify.agent.shogun.registry import RegistryError, WorktreeRegistry
+from skillify.agent.shogun.team_recovery import RecoveryDiagnosis, diagnose
+from skillify.agent.shogun.worktree import WorktreeManager
 
 
 @dataclass
@@ -48,6 +51,51 @@ def _atomic_yaml(path: Path, value: object) -> None:
     temporary.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
     temporary.chmod(0o600)
     os.replace(temporary, path)
+
+
+def _write_recovery_state(run_dir: Path, diagnosis: RecoveryDiagnosis) -> None:
+    payload = {
+        "status": diagnosis.status,
+        "detail": diagnosis.detail,
+        "interrupted_worktrees": list(diagnosis.interrupted_worktrees),
+    }
+    path = run_dir / "recovery-state.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def _diagnose_worktree_state(run_dir: Path) -> RecoveryDiagnosis | None:
+    """Reconcile git-worktree/merge state for teams using the git-worktree
+    feature, and record the result to ``recovery-state.json``.
+
+    Returns ``None`` (and writes nothing) if ``run_dir`` has no
+    ``worktree-registry.json`` -- i.e. this team does not use the
+    git-worktree feature -- so callers that don't use it are completely
+    unaffected. See ``team_recovery.diagnose`` for the reconciliation logic
+    itself; this function only locates the registry, invokes it, and
+    persists the result.
+    """
+    registry_path = run_dir / "worktree-registry.json"
+    if not registry_path.exists():
+        return None
+    merge_plan_path = run_dir / "merge-plan.json"
+    try:
+        repository_root = WorktreeRegistry.read(registry_path).repository_root
+    except (OSError, ValueError, RegistryError, json.JSONDecodeError):
+        # The registry itself is unreadable/invalid; diagnose() will detect
+        # and report this as "corrupt" on its own re-read. repository_root
+        # is irrelevant in that case (no live git state will be inspected).
+        repository_root = run_dir
+    diagnosis = diagnose(
+        repository_root=repository_root,
+        registry_path=registry_path,
+        merge_plan_path=merge_plan_path if merge_plan_path.exists() else None,
+        worktree_manager=WorktreeManager(),
+    )
+    _write_recovery_state(run_dir, diagnosis)
+    return diagnosis
 
 
 class ShogunProvider(AgentProvider):
@@ -214,6 +262,25 @@ class ShogunProvider(AgentProvider):
         team = ActiveTeam(
             task_id, team_handle, run_dir, run_dir / "queue", self.lifecycle.guard_path,
         )
+        # Reconcile git-worktree/merge state (only present for teams using the
+        # git-worktree feature; a no-op for everyone else). A "corrupt"
+        # diagnosis is the one case that overrides the tmux-liveness-based
+        # status decision below -- it always forces "dead", the safest of the
+        # three existing statuses, regardless of whether tmux is still alive.
+        worktree_diagnosis = _diagnose_worktree_state(run_dir)
+        if worktree_diagnosis is not None and worktree_diagnosis.status == "corrupt":
+            self.runtime.terminate(team_handle)
+            self.runtime.cleanup_processes(team_handle)
+            # Deliberately not self.lifecycle._release(team): that helper
+            # rmtree's run_dir, which would destroy the very
+            # recovery-state.json (and the registry/worktrees it describes)
+            # this diagnosis exists to preserve for forensics. Release only
+            # the active-team guard so the endpoint isn't stuck thinking a
+            # team is still active; leave run_dir on disk for inspection.
+            team.guard_path.unlink(missing_ok=True)
+            if self.lifecycle.active == team:
+                self.lifecycle.active = None
+            return ProviderRecovery("dead")
         if not self.runtime.is_alive(team_handle):
             self.runtime.terminate(team_handle)
             self.runtime.cleanup_processes(team_handle)
