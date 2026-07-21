@@ -218,6 +218,32 @@ def test_start_worktree_create_failure_leaves_no_credential_channel(
     assert not any(action[0] == "start" for action in runtime.actions)
 
 
+def test_lifecycle_start_failure_removes_created_worktrees(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _stub_distribution(monkeypatch)
+    repo = tmp_path / "repo"
+    base_commit = _init_repo(repo)
+    runtime = FakeRuntime()
+    provider = _provider(tmp_path, runtime, credential_broker=Broker())
+    run_dir = (provider.cache_root / "task-1").resolve()
+    spec = _spec(
+        workspace=repo, run_dir=run_dir, base_commit=base_commit,
+        work_packages=({"id": "wp-1", "allowedPaths": ["src/a.py"]},),
+    )
+    monkeypatch.setattr(
+        provider.lifecycle, "start",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("starter failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="starter failed"):
+        provider.start(spec)
+
+    live = _git(["worktree", "list", "--porcelain"], cwd=repo).stdout
+    assert live.count("worktree ") == 1
+    assert not provider._handles
+
+
 def test_start_end_to_end_worker_commit_then_diagnose(tmp_path: Path, monkeypatch) -> None:
     """The key end-to-end check: start() creates real worktrees, a worker
     commits real work in its worktree, and team_recovery.diagnose() -- S8's

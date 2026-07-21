@@ -65,9 +65,14 @@ def read_queue_file(path: Path) -> tuple[QueueItem, ...]:
     source = Path(path)
     data = _load(source)
     if source.name == COMMAND_FILE:
-        if not isinstance(data, dict):
-            raise ShogunContractError("Shogun command queue must be an object")
-        commands = data.get("commands", data.get("queue", []))
+        # The approved upstream contract writes the active command queue as a
+        # top-level YAML list. Keep reading the older wrapped forms as well so
+        # existing task state remains recoverable across the adapter update.
+        commands = data if isinstance(data, list) else (
+            data.get("commands", data.get("queue", [])) if isinstance(data, dict) else None
+        )
+        if commands is None:
+            raise ShogunContractError("Shogun command queue must be a list or object")
         if not isinstance(commands, list):
             raise ShogunContractError("Shogun command queue entries must be a list")
         return tuple(

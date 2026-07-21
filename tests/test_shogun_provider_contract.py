@@ -53,8 +53,12 @@ def test_provider_scans_the_written_queue_dir(tmp_path: Path, monkeypatch) -> No
         lambda _: SimpleNamespace(available=True, detail="ready"),
     )
     runtime = FakeRuntime(({
-        "tasks/ashigaru1.yaml": {"id": "wp-1", "status": "done"},
-        "tasks/ashigaru2.yaml": {"id": "wp-2", "status": "done"},
+        "tasks/ashigaru1.yaml": {
+            "task": {"task_id": "subtask-1", "parent_cmd": "cmd-1", "status": "done"},
+        },
+        "tasks/ashigaru2.yaml": {
+            "task": {"task_id": "subtask-2", "parent_cmd": "cmd-1", "status": "done"},
+        },
         "reports/gunshi_report.yaml": {"id": "review-1", "status": "done"},
     },))
     provider = ShogunProvider(
@@ -80,6 +84,13 @@ def test_provider_scans_the_written_queue_dir(tmp_path: Path, monkeypatch) -> No
     handle = provider.start(spec)
     provider.create_session(handle, TaskSpec("task-1", "test the team"))
     events = list(provider.stream_events(handle, provider._sessions[next(iter(provider._sessions))]))
+    completed_packages = {
+        event.details.get("work_package_id")
+        for event in events if event.type.value == "work_package.completed"
+    }
+    assert completed_packages == {"wp-1", "wp-2"}
+    review_events = [event for event in events if event.type.value == "review.completed"]
+    assert [event.details.get("worker_id") for event in review_events] == ["gunshi"]
     assert events[-1].type.value == "team.completed"
     assert events[-1].details["stage"] == "skillify-derived-terminal"
 

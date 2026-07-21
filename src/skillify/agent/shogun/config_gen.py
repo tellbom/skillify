@@ -95,6 +95,15 @@ def _write_tmux_compatibility_launcher(launcher_dir: Path) -> None:
         "&& [ \"$3\" = window-size ] && [ \"$4\" = latest ]; then\n"
         f"  exec {quoted} set-option -g window-size largest\n"
         "fi\n"
+        "if [ \"$1\" = new-session ]; then\n"
+        "  shift\n"
+        f"  exec {quoted} new-session -x 240 -y 80 \"$@\"\n"
+        "fi\n"
+        "if [ \"$#\" -eq 4 ] && [ \"$1\" = send-keys ] && [ \"$2\" = -t ] "
+        "&& [ \"$4\" = /new ]; then\n"
+        f"  agent=$({quoted} display-message -t \"$3\" -p '#{{@agent_id}}' 2>/dev/null)\n"
+        "  case \"$agent\" in ashigaru*) exit 0;; esac\n"
+        "fi\n"
         f"exec {quoted} \"$@\"\n",
         encoding="utf-8",
     )
@@ -223,6 +232,16 @@ def generate_config(
 
     home_dir = root / "home"
     home_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    runtime_instructions = root / ".skillify-runtime.md"
+    runtime_instructions.write_text(
+        "# Skillify isolated runtime paths\n\n"
+        f"The authoritative Shogun queue is `{queue_dir.resolve()}`. Whenever role "
+        "instructions mention `queue/...`, use that absolute queue root; the current "
+        "directory may be an isolated worker worktree and intentionally has no queue "
+        "directory. Never inspect or modify another worker's worktree.\n",
+        encoding="utf-8",
+    )
+    runtime_instructions.chmod(0o600)
     if preferred_cli == "claude-code":
         # Each task gets an isolated HOME. Seed only non-secret UI state so the
         # CLI reaches its prompt instead of blocking every pane on first-run

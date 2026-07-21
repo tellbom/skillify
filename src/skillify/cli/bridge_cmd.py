@@ -345,6 +345,9 @@ def _build_runner(outbox: LocalOutbox):
             work_packages=tuple(dict(item) for item in envelope.work_packages),
             network_environment={endpoint_name: runtime.endpoint} if envelope.runtime == "shogun" else {},
             network_allowlist=runtime.allowed_endpoint_hosts,
+            credential_refs={
+                name: f"env://{name}" for name in runtime.credential_env_names
+            } if envelope.runtime == "shogun" else {},
             base_commit=base_commit,
             repository_root=repository_root,
         )
@@ -352,6 +355,7 @@ def _build_runner(outbox: LocalOutbox):
     providers = {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()}
     if config.shogun_team_enabled:
         from skillify.agent.providers.shogun import ShogunProvider
+        from skillify.agent.shogun.credentials import EnvironmentCredentialBroker
         required = (
             config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
         )
@@ -362,6 +366,7 @@ def _build_runner(outbox: LocalOutbox):
             artifact_path=Path(config.shogun_artifact_path or ""),
             install_root=Path(config.shogun_install_root or ""),
             cache_root=paths.cache_dir / "shogun",
+            credential_broker=EnvironmentCredentialBroker(runtime.credential_env_names),
         )
     mcp_catalog = {"codegraph": McpPackageConfig(
         "codegraph", "codegraph", ("serve", "--mcp"),

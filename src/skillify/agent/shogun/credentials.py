@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
 import socket
 import struct
 import threading
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Protocol
 
@@ -26,6 +29,42 @@ class CredentialBrokerLike(Protocol):
     ) -> AccessCredential: ...
 
     def clear(self, reason: str) -> None: ...
+
+
+class EnvironmentCredentialBroker:
+    """Resolve approved endpoint environment names without persisting their values."""
+
+    def __init__(self, allowed_names: tuple[str, ...]) -> None:
+        if not allowed_names or any(not _ENV.fullmatch(name) for name in allowed_names):
+            raise ValueError("environment credential names are invalid")
+        self.allowed_names = frozenset(allowed_names)
+
+    def credential(
+        self, auth_profile: str, credential_ref: str, approved_scopes: frozenset[str],
+    ) -> AccessCredential:
+        if approved_scopes:
+            raise PermissionError("model environment credentials do not accept scopes")
+        prefix = "env://"
+        if not credential_ref.startswith(prefix):
+            raise PermissionError("environment credential reference is invalid")
+        env_name = credential_ref.removeprefix(prefix)
+        if (
+            env_name not in self.allowed_names
+            or auth_profile != env_name.lower().replace("_", "-")
+            or credential_ref != f"env://{env_name}"
+        ):
+            raise PermissionError("environment credential is not approved")
+        value = os.environ.get(env_name)
+        if not value:
+            raise PermissionError("approved environment credential is unavailable")
+        return AccessCredential(
+            value, "model-runtime", frozenset(),
+            datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+    def clear(self, reason: str) -> None:
+        # Values are read on demand and never cached by this broker.
+        return None
 
 
 @dataclass(frozen=True)
@@ -139,6 +178,41 @@ environment = os.environ.copy()
 environment.update(json.loads(data.decode()))
 worktree = os.environ.get("SKILLIFY_WORKTREE")
 worker_id = os.environ.get("SKILLIFY_WORKER_ID")
+tmux_pane = os.environ.get("TMUX_PANE", "")
+candidate_agent_id = ""
+if tmux_pane:
+    result = subprocess.run(
+        ["tmux", "show-options", "-p", "-t", tmux_pane, "-v", "@agent_id"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
+        candidate_agent_id = result.stdout.strip()
+# OpenCode's /new command starts a session with default_agent, not necessarily
+# the --agent used to launch the TUI. The approved watcher uses /new before every
+# worker task, so pin the pane identity as the per-process default as well.
+if Path({executable!r}).name == "opencode" and candidate_agent_id:
+    try:
+        opencode_config = json.loads(environment.get("OPENCODE_CONFIG_CONTENT", "{{}}"))
+    except (TypeError, ValueError):
+        opencode_config = {{}}
+    if not isinstance(opencode_config, dict):
+        opencode_config = {{}}
+    opencode_config["default_agent"] = candidate_agent_id
+    environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(opencode_config, separators=(",", ":"))
+    # Worker launchers chdir into isolated git worktrees before exec. Point
+    # OpenCode back to the projected runtime's generated agent definitions so
+    # the named ashigaru agent remains resolvable from that different cwd.
+    environment["OPENCODE_CONFIG_DIR"] = str(Path(__file__).resolve().parent.parent / ".opencode")
+    if candidate_agent_id.startswith("ashigaru"):
+        run_root = Path(__file__).resolve().parent.parent
+        runtime_instructions = run_root / ".skillify-runtime.md"
+        opencode_config["instructions"] = [str(runtime_instructions)]
+        permission = opencode_config.setdefault("permission", {{}})
+        if isinstance(permission, dict):
+            permission["external_directory"] = {{str(run_root / "queue" / "**"): "allow"}}
+        environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+            opencode_config, separators=(",", ":"),
+        )
 if not worktree:
     # Fallback identity channel: the upstream CLI adapter only renders the
     # per-agent env prefix (SKILLIFY_WORKER_ID/SKILLIFY_WORKTREE) for
@@ -146,15 +220,7 @@ if not worktree:
     # identity via the tmux pane's @agent_id option (set by the upstream
     # entrypoint for every pane regardless of CLI type) and look up that
     # worker's worktree in the registry this run_dir carries.
-    tmux_pane = os.environ.get("TMUX_PANE", "")
-    candidate_worker_id = ""
-    if tmux_pane:
-        result = subprocess.run(
-            ["tmux", "show-options", "-p", "-t", tmux_pane, "-v", "@agent_id"],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0:
-            candidate_worker_id = result.stdout.strip()
+    candidate_worker_id = candidate_agent_id
     if candidate_worker_id:
         registry_path = Path(__file__).resolve().parent.parent / "worktree-registry.json"
         if registry_path.exists():
@@ -201,7 +267,11 @@ os.execve({executable!r}, [{executable!r}, *sys.argv[1:]], environment)
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         launcher_dir = root / ".skillify-bin"
         launcher_dir.mkdir(mode=0o700, exist_ok=True)
-        socket_path = root / ".skillify-credentials.sock"
+        # Linux limits AF_UNIX filesystem addresses to roughly 108 bytes. Derive a
+        # short, task-specific path while keeping launchers and all generated files
+        # inside the governed run directory.
+        socket_id = hashlib.sha256(os.fsencode(root)).hexdigest()[:20]
+        socket_path = Path(tempfile.gettempdir()) / f"skillify-{socket_id}.sock"
         socket_path.unlink(missing_ok=True)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(socket_path))

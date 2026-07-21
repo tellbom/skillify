@@ -57,6 +57,11 @@ def test_tmux_3_0_compatibility_launcher_only_rewrites_window_size(
 
     assert launcher.exists()
     assert "window-size largest" in launcher.read_text(encoding="utf-8")
+    assert "new-session -x 240 -y 80" in launcher.read_text(encoding="utf-8")
+    assert 'case "$agent" in ashigaru*) exit 0' in launcher.read_text(encoding="utf-8")
+    runtime_instructions = tmp_path / "run" / ".skillify-runtime.md"
+    assert runtime_instructions.is_file()
+    assert str(tmp_path / "run" / "queue") in runtime_instructions.read_text()
     assert generated.environment["PATH"].split(os.pathsep)[0] == str(launcher.parent)
 
 

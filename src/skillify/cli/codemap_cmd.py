@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from skillify.codemap.snapshot import SnapshotError, build_snapshot
 from skillify.codemap.visualizer import GitNexusVisualizer, load_manifest, resolve_workspace_alias
 from skillify.common.config import load_agent_local_config, load_agent_paths
 
@@ -71,3 +72,16 @@ def stop(workspace: str = typer.Option(..., "--workspace")) -> None:
 def doctor() -> None:
     """Check the pinned runtime, noncommercial policy, and local Chrome."""
     typer.echo(json.dumps(_visualizer().doctor(), sort_keys=True))
+
+
+@codemap_app.command("snapshot")
+def snapshot(
+    workspace: str = typer.Option(..., "--workspace", help="Configured workspace alias."),
+    output: Path = typer.Option(..., "--output", help="Destination directory for the snapshot tar+SHA256."),
+) -> None:
+    """Package the committed HEAD of a workspace (git-tracked files only) into a reproducible tar+SHA256."""
+    try:
+        result = build_snapshot(_workspace(workspace), output)
+    except SnapshotError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(asdict(result), sort_keys=True, default=str))

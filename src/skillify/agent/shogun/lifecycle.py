@@ -134,6 +134,8 @@ class TeamHandle:
 class ProcessRuntime:
     """Real process boundary. Its behavior is accepted only in the test environment."""
 
+    STARTUP_TIMEOUT_SECONDS = 180
+
     def __init__(self) -> None:
         self.starters: list[subprocess.Popen[bytes]] = []
 
@@ -161,10 +163,10 @@ class ProcessRuntime:
         )
         self.starters.append(process)
         handle = TeamHandle("shogun", Path(cwd).resolve())
-        # The approved upstream entrypoint has its own 30-second CLI readiness
-        # probe before it starts watchers and exits. Leave enough headroom for
-        # that probe plus the remaining setup on slower endpoint VMs.
-        deadline = time.monotonic() + 75
+        # The approved upstream entrypoint creates its per-run Python environment
+        # before its own 30-second CLI probe, watcher setup, and MCP check. On the
+        # endpoint VM that complete, finite startup path can exceed 75 seconds.
+        deadline = time.monotonic() + self.STARTUP_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             exit_code = process.poll()
             if exit_code == 0 and self.is_alive(handle):
@@ -198,7 +200,13 @@ class ProcessRuntime:
         self._run("tmux", "kill-session", "-t", "multiagent")
 
     def _run(self, *command: str) -> None:
-        subprocess.run(command, check=False, capture_output=True, timeout=5)
+        try:
+            subprocess.run(command, check=False, capture_output=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            # Cleanup is best-effort but ordered: one wedged helper must not prevent
+            # the targeted tmux sessions and remaining run-dir processes from being
+            # terminated.
+            pass
 
     def cleanup_processes(self, handle: TeamHandle) -> None:
         self._terminate_run_dir_processes(handle.run_dir)

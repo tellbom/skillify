@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import signal
+import subprocess
 
 from skillify.agent.shogun.config_gen import GeneratedShogunConfig
 from skillify.agent.shogun.fake_runtime import FakeRuntime
@@ -82,3 +83,23 @@ def test_cleanup_terminates_processes_still_rooted_in_run_dir(
     runtime._terminate_run_dir_processes(tmp_path / "run")
 
     assert set(killed) == {(101, signal.SIGTERM), (102, signal.SIGTERM)}
+
+
+def test_terminate_continues_when_one_cleanup_command_times_out(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from skillify.agent.shogun.lifecycle import ProcessRuntime
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(tuple(command))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(command, 5)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    ProcessRuntime().terminate(TeamHandle("shogun", tmp_path / "run"))
+
+    assert ("tmux", "kill-session", "-t", "shogun") in calls
+    assert ("tmux", "kill-session", "-t", "multiagent") in calls

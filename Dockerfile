@@ -9,6 +9,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY src ./src
 COPY spec ./spec
+COPY apps ./apps
+COPY workflows ./workflows
 
 RUN uv sync --frozen --no-dev
 

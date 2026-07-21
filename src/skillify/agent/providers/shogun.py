@@ -157,6 +157,7 @@ class ShogunProvider(AgentProvider):
         policy = spec.team_policy
         workers = int(policy.get("max_active_workers", 2))
         channel = None
+        worktree_registry = None
         try:
             if spec.credential_refs:
                 if self.credential_broker is None:
@@ -212,6 +213,13 @@ class ShogunProvider(AgentProvider):
         except Exception:
             if channel is not None:
                 self.credential_injector.destroy(channel)
+            if worktree_registry is not None:
+                try:
+                    WorktreeManager().cleanup(worktree_registry, state_root=self.state_root)
+                except Exception as cleanup_exc:
+                    raise ShogunDistributionError(
+                        "Shogun startup failed and worktree cleanup was incomplete"
+                    ) from cleanup_exc
             raise
         handle_id = uuid.uuid4().hex
         handle = ProviderHandle(
@@ -372,11 +380,14 @@ class ShogunProvider(AgentProvider):
             EventType.TEAM_PREPARING, TaskState.QUEUED,
             {"sequence": sequence, "stage": "preparing"},
         )
-        expected_packages = {
-            str(package.get("packageId") or package.get("id"))
-            for package in (runtime.spec.work_packages if runtime.spec is not None else ())
+        package_by_worker = {
+            f"ashigaru{index}": str(package.get("packageId") or package.get("id"))
+            for index, package in enumerate(
+                runtime.spec.work_packages if runtime.spec is not None else (), start=1,
+            )
             if package.get("packageId") or package.get("id")
         }
+        expected_packages = set(package_by_worker.values())
         require_review = bool(
             runtime.spec is not None
             and runtime.spec.team_policy.get("require_independent_review", True)
@@ -396,6 +407,12 @@ class ShogunProvider(AgentProvider):
                     item=item, occurred_at=datetime.now(timezone.utc),
                 )
                 for event in events:
+                    worker_id = event.details.get("worker_id")
+                    formal_package_id = package_by_worker.get(str(worker_id))
+                    if formal_package_id and event.details.get("work_package_id") != formal_package_id:
+                        event = replace(event, details={
+                            **event.details, "work_package_id": formal_package_id,
+                        })
                     yield event
                     sequence = max(sequence, int(event.details.get("sequence", 0)))
                     if event.type is EventType.WORK_PACKAGE_COMPLETED:

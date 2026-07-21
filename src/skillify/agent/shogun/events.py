@@ -22,7 +22,6 @@ _STATUS_EVENTS: dict[tuple[str, str], tuple[EventType, TaskState]] = {
     ("task", "blocked"): (EventType.WORK_PACKAGE_BLOCKED, TaskState.BLOCKED),
     ("task", "in_progress"): (EventType.WORK_PACKAGE_STARTED, TaskState.RUNNING),
     ("task", "done"): (EventType.WORK_PACKAGE_COMPLETED, TaskState.RUNNING),
-    ("report", "done"): (EventType.REVIEW_COMPLETED, TaskState.RUNNING),
 }
 
 
@@ -71,15 +70,19 @@ class TeamEventMapper:
         if not item.status or self._seen.get(identity) == item.status:
             return ()
         self._seen[identity] = item.status
-        mapped = _STATUS_EVENTS.get((item.kind, item.status))
+        if item.kind == "report" and item.status == "done":
+            mapped = (
+                (EventType.REVIEW_COMPLETED, TaskState.RUNNING)
+                if item.worker_id == "gunshi" else None
+            )
+        else:
+            mapped = _STATUS_EVENTS.get((item.kind, item.status))
         if mapped is None:
             return ()
         event_type, state = mapped
         if item.worker_id == "gunshi":
             if item.kind == "task" and item.status in {"assigned", "in_progress"}:
                 event_type, state = EventType.REVIEW_STARTED, TaskState.RUNNING
-            elif item.kind == "report" and item.status == "done":
-                event_type, state = EventType.REVIEW_COMPLETED, TaskState.RUNNING
         events = []
         if item.kind == "task" and item.worker_id and item.worker_id not in self._started_workers:
             self._started_workers.add(item.worker_id)
