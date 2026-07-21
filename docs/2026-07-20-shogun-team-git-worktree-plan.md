@@ -209,7 +209,22 @@ Merge 状态（`merge-plan.json`）：`pending → in_progress(worker=X) → (me
 2. **并发 Worker 的 git 身份互相覆盖（Critical，已修复）**：两个 Worker pane 的 launcher 都用 `git config --local user.name/email` 设身份，但 `git config --local` 对同一仓库的所有 worktree 写的是**同一份**共享 `.git/config`（除非仓库启用了 `extensions.worktreeConfig` 扩展并改用 `git config --worktree`）。真机两个并发 pane 启动后，两个 worker 的 worktree 里读到的 `user.name` 都是后写入的那个值。修复：`WorktreeManager.create()`（S2）为仓库启用 `extensions.worktreeConfig=true`；launcher（S3）改用 `git config --worktree`。已用两个真实并发 claude 进程复测，身份正确隔离。
 3. （测试自身的小失误，非产品缺陷）为验证发现 2 新增的单元测试最初用错了 `PaneCredentialInjector(executables={...})` 的 key（应为 `"claude-code"` 而非 `"claude"`），导致 launcher 未生成、测试报 `FileNotFoundError` 而非命中预期断言；在真实 Linux 环境跑测时发现并改正，Windows 本地环境因该 launcher 走 AF_UNIX 门禁被跳过而未能提前发现。
 
-**未覆盖部分（如实记录，不算已验收）：** plan §16 S10 列出的 10 个场景中，本轮只覆盖了"正常创建+身份隔离+push 拒绝+recover+cleanup"这条主干路径；同文件冲突合并、越界拒绝、语义冲突、合并中重启、取消场景等**未通过真实多智能体长时间协作验证**，只在 S1-S9 各自的单元测试（真实临时 Git 仓库，非真实 AI agent）中验证过。真机长时间多 Worker 协作测试需要更长时间与更多真实 API 调用，留待后续按需安排。
+**未覆盖部分（如实记录，不算已验收）：** plan §16 S10 列出的 10 个场景中，本节完成后覆盖了：①不同文件自动合并、②③同区域真实冲突、⑦合并中重启恢复、⑧取消清理、⑨语义冲突、⑩主工作区脏（plan §12 裁决已有单元测试+`bridge_cmd.py` 拒绝逻辑）。**仍未做**：push 拒绝审计事件的端到端事件流验证（已验证 wrapper 本身拒绝生效，未验证事件如何汇总进 DM8/TaskEvent）、真实 Reviewer/Integration pane（由 karo/gunshi 承担）在真机上实际调用 `IntegrationEngine`/`ReviewGate` 的完整闭环（本节用脚本直接调用引擎函数模拟"Worker 交付"，未让真实 AI agent 触发这条调用链）。真机长时间多 Worker 自主协作（无人工介入编排调用）测试留待后续按需安排。
 
-**`installable` 处理：** 全程只在隔离测试副本上临时置 `true`，测试结束后立即改回 `false` 并删除临时凭据/测试仓库/run 目录；`installable=true` 的正式翻转仍按 plan §11/§16 由负责人另行评估决定，本轮验证不构成翻转依据。
+**追加真机场景验证（同日，续）：** 用同样的隔离测试副本（`installable` 再次临时置 `true`，验证后改回 `false`），针对以下 4 个此前未覆盖的场景做了真实 tmux + 真实 claude CLI（DeepSeek-backed）端到端验证：
+
+**A. 两 Worker 修改同一区域产生真实 Git merge conflict**——2 个 work package 均允许改同一文件；真实启动 team 后，直接向两个真实 worker worktree 各提交一次冲突改动（同文件同行），依次跑 `collect_delivery`→`scope_gate.check`→`IntegrationEngine.merge_worker`：worker1 干净合并，worker2 产生真实冲突（`MERGE_HEAD` 存在、冲突标记 `<<<<<<<` 真实出现在文件里），未被 `ours/theirs` 静默处理。**验证中发现并修复 2 个新缺陷**（见下）。
+
+**B. Git 可自动合并但出现语义冲突**——worker1 把 `lib.py` 里 `compute()` 重命名为 `calculate()`，worker2（不知情）仍在 `app.py` 里调用 `compute()`；两者改动不同文件、Git 判定"无冲突"自动合并成功，但 `verification_commands=["python3 app.py"]` 真实执行报 `ImportError: cannot import name 'compute'`。确认 `integration_commit` 依然生成（验收命令失败不阻断集成，只记录结果）——与 plan §11"Git 无冲突 ≠ 集成正确"设计一致，**本场景未发现代码缺陷**。
+
+**C. merge 中途"杀掉"Bridge/Provider 后恢复**——复用场景 A 遗留的冲突状态（`MERGE_HEAD` 悬而未决），驱动脚本进程直接退出模拟 Provider 崩溃；用一个**全新** Python 进程重新构造 `ShogunProvider` 调用 `recover("s10b-conflict")`：`recovery-state.json` 正确写出 `status="merge-interrupted"`，`interrupted_worktrees=["integration"]`；比对 `recover()` 前后 `MERGE_HEAD` 内容与冲突文件内容逐字节相同——确认**未自动 abort、未重复 apply**。`recover()` 返回值仍按 tmux `is_alive` 独立判定为 `"live"`，与 diagnosis 分离，符合 S8 设计。**本场景未发现代码缺陷**（S8 原实现正确）。
+
+**D. Team 运行中取消，检查资源全清理**——真实启动 2-worker team 后立即 `cancel()`（非 `stop()`），取消前记录了凭据 socket 存在性和 26 个真实进程（tmux/bash/claude 及其子进程）的 PID 列表；取消后逐项复核：tmux 会话消失、`git worktree list` 无残留、`run_dir` 整体删除（含凭据 socket 一并消失）、26 个 PID **全部**不再存活。唯一的非阻塞性观察：`<state_root>/teams/<team_id>/` 与其下 `worktrees/` 两级空目录未被删除（git 本身对它们已无记录，`cleanup()` 按 plan 硬约束只能用 `git worktree remove`/`prune`/`branch -D`，不允许用 `rmdir`/`rm -rf` 兜底删除，即使是空目录）——纯粹是无害的空目录遗留，不构成资源泄露或安全问题，未作为缺陷修复。
+
+**场景 A 验证中发现并修复的 2 个新真实缺陷：**
+
+4. **owner marker 使每个 worktree 对 `git status` 天生"不干净"（Critical，已修复）**：`WorktreeManager._write_owner_marker` 把 `.skillify-team-owner` 直接写进 worktree 根目录且未加入任何 ignore 规则，导致该文件在 `git status --porcelain` 里永远是未跟踪文件——`worker_delivery.collect_delivery` 的"worktree 必须干净"门禁因此对**任何**通过 `WorktreeManager.create()` 创建的 worktree 都必然失败，S4 原单元测试因为没有通过 `WorktreeManager.create()` 走完整链路而未触发。真机跑通完整链路（S-WIRE 之后）才第一次实际调用 `collect_delivery` 对着真实 `WorktreeManager` 产物，立即复现。修复：在 `_write_owner_marker` 里把标记文件名写进该 worktree 自己的 `info/exclude`（每个 linked worktree 有独立的一份，用 `git rev-parse --git-path info/exclude` 定位），使其对所有 `git status` 调用（包括真实 Worker agent 自己执行的）都不可见，顺带避免真实 agent 误 `git add .` 把基础设施文件提交进分支历史。
+5. **`IntegrationEngine.merge_worker` 在错误的目录做 merge（Critical，已修复）**：原实现对 `repository_root`（调用方传入的仓库根，语义上是"整个仓库"）执行 `git checkout <integration_branch>`，但真实系统里 integration 分支永远绑定在它自己独立的 worktree 上（S2 的既定设计），checkout 必然因为"该分支已经在另一个 worktree 里检出"而失败——S6 原单元测试直接在单一共享目录里切换分支模拟合并，从未通过独立 integration worktree 验证，因此未触发。真机场景 A 第一次真正传入由 `WorktreeManager.create()` 产生的、物理独立的 integration worktree 时当场复现。修复：签名把 `repository_root` 改名并改语义为 `integration_worktree`（调用方必须直接传入真实 integration worktree 路径），删除多余且错误的 `checkout` 步骤（linked worktree 天然固定在自己的分支上，不需要也不应该 checkout），换成一个"当前分支必须等于 `integration_branch`，否则报错"的安全检查（宁可显式失败也不要在错误分支上默默操作）。重写了 S6 测试文件，改用真实 `git worktree add` 建立独立 integration worktree（而非在共享目录里切分支），场景更贴近真机实际用法。
+
+**`installable` 处理（复核）：** 追加场景验证同样只在隔离测试副本上临时开关，四个场景测试结束后已确认改回 `false` 并清空所有 `s10b-*`/`s10c-*`/`s10d-*` 临时目录与脚本；仓库内原始 plan/manifest 全程未变。
 
