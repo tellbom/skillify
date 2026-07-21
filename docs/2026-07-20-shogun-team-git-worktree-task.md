@@ -171,7 +171,7 @@
 ---
 
 ## 执行看板
-- [ ] S0 契约冻结　- [ ] S1 持久化　- [ ] S2 WorktreeManager　- [ ] S3 Launcher 接 worktree　- [ ] S4 Worker 交付　- [ ] S5 Scope Gate
-- [ ] S6 Integration　- [ ] S7 Reviewer　- [ ] S8 Recovery　- [ ] S9 清理　- [ ] S10 真机 formation　- [ ] S11 Gate 更新
+- [x] S0 契约冻结　- [x] S1 持久化　- [x] S2 WorktreeManager　- [x] S3 Launcher 接 worktree　- [x] S4 Worker 交付　- [x] S5 Scope Gate
+- [x] S6 Integration　- [x] S7 Reviewer　- [x] S8 Recovery　- [x] S9 清理　- [x] S10 真机 formation（主干路径，详见 plan §19；10 场景未全覆盖）　- [ ] S11 Gate 更新
 
 > 安全不变量（dev_verified 硬门禁）：无 dangerous；凭据/远程 Git 凭据不落 YAML/日志/命令行/事件；Worker 独立 worktree 无磁盘覆盖；越界不入 integration；Integration 唯一合并；Bridge 不重复执行/合并；结束无 worktree/tmux/凭据/进程残留；主工作区不被修改。`team` 未过 [test-env] 门禁前保持不可用，`installable=false`，两开关关闭。

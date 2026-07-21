@@ -189,3 +189,27 @@ Merge 状态（`merge-plan.json`）：`pending → in_progress(worker=X) → (me
 **直接复用：** 制品/manifest 校验、queue 契约（`contract.py`）、TeamHandle+is_alive+cleanup（`lifecycle.py`）、凭据 socket 注入信道（`credentials.py` 的 socket/broker 部分）、run_dir 投影+HOME（`config_gen._project_runtime`）、recover 骨架、DM8 team 表、bridge/web team 接线。
 **需修改：** ①`config_gen` 增 per-agent `SKILLIFY_WORKER_ID/WORKTREE` env，`opencode-permissions` 降为辅助；②`credentials._write_launcher` 增 chdir+Git 身份+argv 改写；③`events`/`reporting`/DM8 增事件类型/详情键/列；④`provider.start` 建 worktree、`recover` 重建 worktree/merge 状态、`stream_events`/mapper 产新事件；⑤`ProviderStartSpec`/envelope/`start_spec` 增 `base_commit`/`repository_root`；⑥`distribution` 增 `git` 依赖；⑦bridge 构造 ShogunProvider 补 `credential_broker`。
 **新增：** `WorktreeManager`、git wrapper、`IntegrationEngine`、`ScopeGate`、worktree/merge registries。
+
+## 19. S10 真机 formation 测试记录（2026-07-21）
+
+> 环境：`root@192.168.124.2 -p2223`（目标服务器）/ `fzq@192.168.124.2 -p2222`（客户端电脑），均为专用 VM 测试环境。测试范围：`tp13-approved-20260720` bundle 的一份隔离副本（`/home/fzq/.skillify-test/git-worktree-s1s3-verify`），**仅该副本的 `infra/offline/shogun-manifest.json` 在测试期间临时置 `installable=true`，测完立即改回 `false`**；仓库内原始 plan/manifest 及 `tp13-approved-20260720` 官方批准快照全程未改动。模型侧：DeepSeek `deepseek-v4-flash`（Anthropic 兼容端点 `https://api.deepseek.com/anthropic`），`network_allowlist=("api.deepseek.com",)`，`network_default=deny`（沿用 `config_gen.py` 既有权限模型，未新增机制）。
+
+**先决条件补齐（S-WIRE，非原 S0-S11 编号）：** S1-S9 组件均已就绪且单元测试全绿，但没有一个阶段把 `WorktreeManager.create()` 接入 `ShogunProvider.start()` 的真实调用路径（S8/S9 实现者各自发现并如实记录了这个集成缺口）。追加一个"集成 wiring"任务：`ProviderStartSpec` 新增 `base_commit`/`repository_root`（向后兼容）；`bridge_cmd.py` 的 `start_spec()` 在 shogun+team 模式下冻结 `base_commit`（workspace 脏则拒绝）；`ShogunProvider.start()` 在 team 模式+非空 work_packages 时真正调用 `WorktreeManager.create()`，写 `run_dir/worktree-registry.json`，并把 `worker_worktrees` 传给 `generate_config()`。完成后 recover/cleanup（S8/S9 已实现的"registry 存在则处理"逻辑）自动对真实创建的 worktree 生效。
+
+**真机验证到的内容（真实 tmux + 真实 claude CLI + 真实 DeepSeek 模型，非 FakeRuntime）：**
+1. `ShogunProvider.start()` 真实创建 team：`multiagent`/`shogun` 两个 tmux 会话，`karo`/`ashigaru1`/`ashigaru2`/`gunshi`/`shogun` pane 均带正确 `@agent_id` tmux 选项。
+2. `worktree-registry.json` 真实落盘，内容与 `git worktree list` 一致。
+3. `recover()`（S8）在真实进程重启场景下正确重连："live" 状态判定、`team-handle.json` 重读全部工作正常（用一个新 Python 进程 `recover("s10-task-1")` 重新接管正在运行的 team，成功识别为 `"live"`）。
+4. `cancel`/`stop`（S9）在真实 team 上完整清理：tmux 会话消失、`git worktree list` 无残留、`run_dir` 被删除——验证两轮（含真实进程重启后经 `recover()` 接管再 `stop()`）。
+5. `.skillify-bin` 的 git wrapper（S4）在真实 pane 环境变量 `PATH` 中确实排在系统 git 之前；真实执行 `git push` 被正确拒绝，退出码非零。
+
+**真机测试发现并修复的 3 个真实缺陷（单元测试未能覆盖，仅真机并发环境暴露）：**
+
+1. **`claude` CLI 收不到 per-agent env（Critical，已修复）**：S0 当时的结论"`cli_adapter.sh` 把 per-agent env 渲染进 pane 命令"只对 `opencode` 成立——`claude)` 分支从未调用 `_cli_adapter_get_agent_env_prefix`。真机验证：`SKILLIFY_WORKER_ID`/`SKILLIFY_WORKTREE` 完全没有出现在真实 `claude` 进程的 `/proc/<pid>/environ` 里，pane 停留在 `run_dir` 而非 worker worktree。因为不能改上游 `cli_adapter.sh`，修复落在 launcher 侧：`credentials.py` 的 `_write_launcher` 增加兜底——当环境变量缺失时，读 `TMUX_PANE`→`tmux show-options -p @agent_id` 拿到 worker_id，再查 `run_dir/worktree-registry.json` 找到对应 worktree。已用真实 `claude` 进程复测确认 cwd 正确落在对应 worktree。
+2. **并发 Worker 的 git 身份互相覆盖（Critical，已修复）**：两个 Worker pane 的 launcher 都用 `git config --local user.name/email` 设身份，但 `git config --local` 对同一仓库的所有 worktree 写的是**同一份**共享 `.git/config`（除非仓库启用了 `extensions.worktreeConfig` 扩展并改用 `git config --worktree`）。真机两个并发 pane 启动后，两个 worker 的 worktree 里读到的 `user.name` 都是后写入的那个值。修复：`WorktreeManager.create()`（S2）为仓库启用 `extensions.worktreeConfig=true`；launcher（S3）改用 `git config --worktree`。已用两个真实并发 claude 进程复测，身份正确隔离。
+3. （测试自身的小失误，非产品缺陷）为验证发现 2 新增的单元测试最初用错了 `PaneCredentialInjector(executables={...})` 的 key（应为 `"claude-code"` 而非 `"claude"`），导致 launcher 未生成、测试报 `FileNotFoundError` 而非命中预期断言；在真实 Linux 环境跑测时发现并改正，Windows 本地环境因该 launcher 走 AF_UNIX 门禁被跳过而未能提前发现。
+
+**未覆盖部分（如实记录，不算已验收）：** plan §16 S10 列出的 10 个场景中，本轮只覆盖了"正常创建+身份隔离+push 拒绝+recover+cleanup"这条主干路径；同文件冲突合并、越界拒绝、语义冲突、合并中重启、取消场景等**未通过真实多智能体长时间协作验证**，只在 S1-S9 各自的单元测试（真实临时 Git 仓库，非真实 AI agent）中验证过。真机长时间多 Worker 协作测试需要更长时间与更多真实 API 调用，留待后续按需安排。
+
+**`installable` 处理：** 全程只在隔离测试副本上临时置 `true`，测试结束后立即改回 `false` 并删除临时凭据/测试仓库/run 目录；`installable=true` 的正式翻转仍按 plan §11/§16 由负责人另行评估决定，本轮验证不构成翻转依据。
+
