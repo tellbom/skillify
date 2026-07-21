@@ -332,3 +332,150 @@ def test_wrapper_allows_legitimate_global_option_on_safe_command(tmp_path: Path)
     assert base_commit[:7] in log.stdout or "initial" in log.stdout
 
     assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
+
+
+def test_wrapper_rejects_alias_push_bypass(tmp_path: Path) -> None:
+    """git -c alias.p=push p origin HEAD:... must not reach the real remote."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    r = subprocess.run(
+        ["git", "init", "--bare", str(origin)], capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git(["remote", "add", "origin", str(origin)], cwd=repo)
+
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["-c", "alias.p=push", "p", "origin", "HEAD:refs/heads/alias-bypass"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    branches = subprocess.run(
+        ["git", "branch", "-r"], cwd=str(origin), capture_output=True, text=True,
+    ).stdout
+    assert "alias-bypass" not in branches
+    lines = audit_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert "alias.p=push" in record["argv"]
+
+
+def test_wrapper_rejects_alias_remote_add_bypass(tmp_path: Path) -> None:
+    """git -c alias.radd='remote add' radd evilalias ... must not add a remote."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["-c", "alias.radd=remote add", "radd", "evilalias", "http://evil.invalid"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+    remotes = _git(["remote"], cwd=repo).stdout
+    assert "evilalias" not in remotes
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert "alias.radd=remote add" in record["argv"]
+
+
+def test_wrapper_rejects_alias_config_credential_bypass(tmp_path: Path) -> None:
+    """git -c alias.zz=config zz credential.helper ... must write nothing."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(
+        wrapper,
+        ["-c", "alias.zz=config", "zz", "credential.helper", "!echo pwned"],
+        cwd=repo,
+    )
+
+    assert result.returncode != 0
+
+    # Verify with the real git binary directly (not just the wrapper) that
+    # nothing was written to .git/config.
+    check = subprocess.run(
+        ["git", "config", "--local", "--get", "credential.helper"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    assert check.stdout.strip() == ""
+    config_text = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "credential" not in config_text
+    assert "pwned" not in config_text
+
+    lines = audit_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["rejected_subcommand"] != ""
+
+
+def test_wrapper_rejects_plain_config_alias_definition(tmp_path: Path) -> None:
+    """git config alias.foo push (no -c) must not persist an [alias] section.
+
+    This closes the sibling vector where a Worker legitimately calls plain
+    `git config` to define an alias now, then invokes it in a later, separate
+    (innocuous-looking) command.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(wrapper, ["config", "alias.foo", "push"], cwd=repo)
+
+    assert result.returncode != 0
+    check = subprocess.run(
+        ["git", "config", "--local", "--get", "alias.foo"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    assert check.stdout.strip() == ""
+    config_text = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "[alias]" not in config_text
+    assert "foo" not in config_text
+
+    record = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["rejected_subcommand"] == "config"
+
+
+def test_wrapper_allows_non_alias_c_override_on_safe_command(tmp_path: Path) -> None:
+    """Regression: git -c user.name=someone status still passes through."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(wrapper, ["-c", "user.name=someone", "status"], cwd=repo)
+
+    assert result.returncode == 0
+    assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
+
+
+def test_wrapper_allows_non_alias_non_credential_config_write(tmp_path: Path) -> None:
+    """Regression: git config user.email ... still passes through and persists."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bin_dir = tmp_path / "bin"
+    audit_log = tmp_path / "audit.jsonl"
+    wrapper = write_git_guard(bin_dir, audit_log)
+
+    result = _run_wrapper(wrapper, ["config", "user.email", "someone@example.com"], cwd=repo)
+
+    assert result.returncode == 0
+    email = _git(["config", "--get", "user.email"], cwd=repo).stdout.strip()
+    assert email == "someone@example.com"
+    assert not audit_log.exists() or audit_log.read_text(encoding="utf-8") == ""
