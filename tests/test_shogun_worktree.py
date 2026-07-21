@@ -78,6 +78,53 @@ def test_create_makes_independent_worktrees_and_branches_off_same_base(tmp_path:
         assert (worktree / ".skillify-team-owner").is_file()
 
 
+def test_create_enables_per_worktree_config_isolation(tmp_path: Path) -> None:
+    """extensions.worktreeConfig must be enabled so `git config --worktree`
+    (used by the pane launcher to set per-worker identity) is genuinely
+    isolated instead of silently sharing the single config file every
+    worktree of a repo shares by default (confirmed as a real bug via
+    concurrent Worker panes in S10 real-machine testing: both workers ended
+    up with the same, last-writer-wins user.name under `--local`)."""
+    repo = tmp_path / "repo"
+    base_commit = _init_repo(repo)
+    state_root = tmp_path / "state"
+    manager = WorktreeManager()
+
+    registry = manager.create(
+        repository_root=repo,
+        base_commit=base_commit,
+        team_id="team-1",
+        workers=[WorkerSpec("worker-1", "wp-1", ("src/a.py",))],
+        state_root=state_root,
+    )
+
+    result = subprocess.run(
+        ["git", "config", "--get", "extensions.worktreeConfig"],
+        cwd=str(repo), capture_output=True, text=True, check=False,
+    )
+    assert result.stdout.strip() == "true"
+
+    # Per-worktree config must actually be independent between two worktrees.
+    subprocess.run(
+        ["git", "config", "--worktree", "user.name", "worker-1-identity"],
+        cwd=str(registry.workers[0].worktree), check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--worktree", "user.name", "integration-identity"],
+        cwd=str(registry.integration_worktree), check=True,
+    )
+    worker_name = subprocess.run(
+        ["git", "config", "--worktree", "--get", "user.name"],
+        cwd=str(registry.workers[0].worktree), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    integration_name = subprocess.run(
+        ["git", "config", "--worktree", "--get", "user.name"],
+        cwd=str(registry.integration_worktree), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert worker_name == "worker-1-identity"
+    assert integration_name == "integration-identity"
+
+
 def test_create_writes_owner_marker_with_team_id_and_repo_identity(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_commit = _init_repo(repo)

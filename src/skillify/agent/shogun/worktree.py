@@ -146,6 +146,16 @@ class WorktreeManager:
         state_root = state_root.resolve()
         repository_identity = _repository_identity(repository_root)
 
+        # Enable per-worktree local config (extensions.worktreeConfig) so each
+        # worker's `git config --worktree user.name/email` (set by the pane
+        # launcher) is genuinely isolated. Without this, `git config --local`
+        # writes to the single config file shared by the main repo and every
+        # worktree, so worker identities silently collide under concurrent
+        # pane launches (confirmed via real concurrent Worker panes in S10
+        # real-machine testing: both workers ended up with the same,
+        # last-writer-wins user.name). Idempotent -- safe to set every call.
+        _run_git(["config", "extensions.worktreeConfig", "true"], cwd=repository_root)
+
         worker_ids = [worker.worker_id for worker in workers]
         if len(worker_ids) != len(set(worker_ids)):
             raise WorktreeManagerError("duplicate worker_id in workers")

@@ -108,8 +108,8 @@ def test_launcher_chdirs_into_worktree_and_sets_local_git_identity_only_when_pre
         execve_index = source.index("os.execve(")
         assert worktree_index < chdir_index < git_name_index < execve_index
         assert "if worktree:" in source
-        assert '["git", "config", "--local", "user.name", worker_id]' in source
-        assert '["git", "config", "--local", "user.email"' in source
+        assert '["git", "config", "--worktree", "user.name", worker_id]' in source
+        assert '["git", "config", "--worktree", "user.email"' in source
         assert "@skillify.local.invalid" in source
         # argv passthrough must remain untouched by this change.
         assert "sys.argv[1:]" in source

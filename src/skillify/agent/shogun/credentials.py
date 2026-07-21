@@ -170,9 +170,13 @@ if not worktree:
 if worktree:
     os.chdir(worktree)
     worker_id = worker_id or ""
-    subprocess.run(["git", "config", "--local", "user.name", worker_id], check=True)
+    # --worktree (not --local): with extensions.worktreeConfig enabled by
+    # WorktreeManager.create(), this isolates identity per worktree. --local
+    # would write to the single config file every worktree of this repo
+    # shares, causing worker identities to collide under concurrent panes.
+    subprocess.run(["git", "config", "--worktree", "user.name", worker_id], check=True)
     subprocess.run(
-        ["git", "config", "--local", "user.email", f"{{worker_id}}@skillify.local.invalid"],
+        ["git", "config", "--worktree", "user.email", f"{{worker_id}}@skillify.local.invalid"],
         check=True,
     )
 os.execve({executable!r}, [{executable!r}, *sys.argv[1:]], environment)
