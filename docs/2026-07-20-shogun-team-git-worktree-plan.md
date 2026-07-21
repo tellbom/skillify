@@ -179,6 +179,7 @@ Merge 状态（`merge-plan.json`）：`pending → in_progress(worker=X) → (me
 | 上游 auto_merge 被触发 | S0 确认主入口/队列不触发；工作包不下发合并指令 | 禁用相关队列消息 |
 | worktree 元数据残留 | `git worktree prune` + registry 校验 + owner marker | 人工 `git worktree repair` |
 | 语义冲突漏检 | 强制全量测试/类型/build + Reviewer | Team 标 failed，不标成功 |
+| 部署主机残留 `setup_cron.sh --install` 定时任务，`auto_merge_short_lived.sh` 每 6 小时对共享工作树自动合并，与 Integration 唯一合并假设冲突（S0 实测发现，`crontab -l` 本轮为空但机制客观存在） | S2/S11 doctor 增 `crontab -l` 探测 `auto_merge_short_lived` 关键字，命中即告警 | 人工 `crontab -e` 移除该行 |
 
 回滚总原则：任一门禁未过→`single/delegated` 继续可用，`team` 不可用，两开关关闭，`installable=false`。
 
