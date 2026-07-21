@@ -104,6 +104,25 @@ def _write_owner_marker(worktree: Path, *, team_id: str, repository_identity: st
     (worktree / _OWNER_MARKER_NAME).write_text(
         json.dumps(marker, sort_keys=True), encoding="utf-8",
     )
+    # Exclude the marker from `git status` in *this* worktree specifically
+    # (each linked worktree has its own info/exclude) so it never shows up as
+    # an untracked file -- confirmed as a real problem in S10 real-machine
+    # testing: an untracked owner marker made every worktree look "dirty" to
+    # worker_delivery.collect_delivery's clean-worktree gate, and would risk
+    # a real agent accidentally `git add`-ing our infrastructure file.
+    exclude_path_result = subprocess.run(
+        ["git", "rev-parse", "--git-path", "info/exclude"],
+        cwd=str(worktree), capture_output=True, text=True, check=False,
+    )
+    if exclude_path_result.returncode == 0:
+        exclude_path = worktree / exclude_path_result.stdout.strip()
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+        if _OWNER_MARKER_NAME not in existing.splitlines():
+            with exclude_path.open("a", encoding="utf-8") as handle:
+                if existing and not existing.endswith("\n"):
+                    handle.write("\n")
+                handle.write(f"{_OWNER_MARKER_NAME}\n")
 
 
 def _read_owner_marker(worktree: Path) -> dict[str, object] | None:

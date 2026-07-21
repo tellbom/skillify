@@ -141,6 +141,30 @@ def test_create_writes_owner_marker_with_team_id_and_repo_identity(tmp_path: Pat
     assert '"team_id": "team-1"' in content
 
 
+def test_owner_marker_is_excluded_from_git_status(tmp_path: Path) -> None:
+    """The owner marker file must not appear as untracked in `git status` --
+    confirmed as a real bug in S10 real-machine testing: an untracked marker
+    made every worktree look "dirty" to worker_delivery.collect_delivery's
+    clean-worktree gate, and risked a real agent accidentally committing our
+    infrastructure file via `git add .`."""
+    repo = tmp_path / "repo"
+    base_commit = _init_repo(repo)
+    state_root = tmp_path / "state"
+    manager = WorktreeManager()
+
+    registry = manager.create(
+        repository_root=repo, base_commit=base_commit, team_id="team-1",
+        workers=[WorkerSpec("worker-1", "wp-1", ("src/a.py",))], state_root=state_root,
+    )
+
+    for worktree in (registry.integration_worktree, registry.workers[0].worktree):
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(worktree),
+            capture_output=True, text=True, check=True,
+        )
+        assert status.stdout == ""
+
+
 def test_create_rejects_duplicate_worker_id(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_commit = _init_repo(repo)
