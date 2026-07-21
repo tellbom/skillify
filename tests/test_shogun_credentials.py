@@ -89,3 +89,51 @@ def test_destroy_is_idempotent_and_clears_broker(tmp_path: Path) -> None:
 
     assert not channel.socket_path.exists()
     assert broker.clears == ["team-stopped"]
+
+
+def test_launcher_chdirs_into_worktree_and_sets_local_git_identity_only_when_present(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    broker = Broker()
+    injector = PaneCredentialInjector(executables={"opencode": "/usr/bin/opencode"})
+    channel = injector.prepare(
+        {"ANTHROPIC_API_KEY": "vault://model/current"}, broker=broker, run_dir=tmp_path,
+    )
+    try:
+        source = (channel.launcher_dir / "opencode").read_text(encoding="utf-8")
+        worktree_index = source.index("SKILLIFY_WORKTREE")
+        chdir_index = source.index("os.chdir(worktree)")
+        git_name_index = source.index('"user.name"')
+        execve_index = source.index("os.execve(")
+        assert worktree_index < chdir_index < git_name_index < execve_index
+        assert "if worktree:" in source
+        assert '["git", "config", "--local", "user.name", worker_id]' in source
+        assert '["git", "config", "--local", "user.email"' in source
+        assert "@skillify.local.invalid" in source
+        # argv passthrough must remain untouched by this change.
+        assert "sys.argv[1:]" in source
+    finally:
+        injector.destroy(channel)
+
+
+def test_launcher_source_and_channel_never_contain_the_secret_value(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    broker = Broker()
+    injector = PaneCredentialInjector(executables={"opencode": "/usr/bin/opencode"})
+    channel = injector.prepare(
+        {"ANTHROPIC_API_KEY": "vault://model/current"}, broker=broker, run_dir=tmp_path,
+    )
+    try:
+        source = (channel.launcher_dir / "opencode").read_text(encoding="utf-8")
+        assert "unit-test-secret-value" not in source
+        assert "SSH_AUTH_SOCK" not in source
+        assert "GIT_ASKPASS" not in source
+        assert "credential.helper" not in source
+        for artifact in tmp_path.rglob("*"):
+            if artifact.is_file():
+                assert "unit-test-secret-value" not in artifact.read_text(encoding="utf-8")
+    finally:
+        injector.destroy(channel)

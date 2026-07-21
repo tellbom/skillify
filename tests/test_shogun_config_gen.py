@@ -103,3 +103,47 @@ def test_claude_home_seeds_only_non_secret_first_run_state(tmp_path: Path) -> No
     }
     assert generated.environment["HOME"] == str(tmp_path / "run" / "home")
     assert generated.environment["DISABLE_AUTOUPDATER"] == "1"
+
+
+def test_worker_worktrees_add_env_only_to_matching_ashigaru_agents(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    worktree1 = tmp_path / "wt1"
+    generated = generate_config(
+        install_root=bundle,
+        run_dir=tmp_path / "run",
+        preferred_cli="opencode",
+        worker_count=2,
+        model="test-model",
+        worker_worktrees={"ashigaru1": worktree1},
+    )
+
+    settings = yaml.safe_load(generated.settings_path.read_text(encoding="utf-8"))
+    agents = settings["cli"]["agents"]
+    assert agents["ashigaru1"]["env"] == {
+        "SKILLIFY_WORKER_ID": "ashigaru1",
+        "SKILLIFY_WORKTREE": str(worktree1),
+    }
+    assert "env" not in agents["ashigaru2"]
+    assert "env" not in agents["shogun"]
+    assert "env" not in agents["karo"]
+    assert "env" not in agents["gunshi"]
+
+
+def test_worker_worktrees_omitted_is_byte_identical_to_before(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    without_param = _generate(bundle, tmp_path / "run-without")
+    with_none = generate_config(
+        install_root=bundle,
+        run_dir=tmp_path / "run-with-none",
+        preferred_cli="opencode",
+        worker_count=2,
+        model="test-model",
+        worker_worktrees=None,
+    )
+
+    text_without = without_param.settings_path.read_text(encoding="utf-8")
+    text_with_none = with_none.settings_path.read_text(encoding="utf-8")
+    assert text_without == text_with_none
+    settings = yaml.safe_load(text_without)
+    for agent in settings["cli"]["agents"].values():
+        assert "env" not in agent

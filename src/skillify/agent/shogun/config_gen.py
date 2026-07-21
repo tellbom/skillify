@@ -101,6 +101,7 @@ def generate_config(
     mcp_servers: Mapping[str, dict[str, object]] | None = None,
     network_allowlist: tuple[str, ...] = (),
     mcp_network_allowlist: Mapping[str, tuple[str, ...]] | None = None,
+    worker_worktrees: Mapping[str, Path] | None = None,
 ) -> GeneratedShogunConfig:
     if preferred_cli not in {"opencode", "claude-code"}:
         raise ValueError("Shogun supports only OpenCode or Claude Code")
@@ -124,11 +125,23 @@ def generate_config(
     for child in (queue_dir, queue_dir / "tasks", queue_dir / "reports", queue_dir / "inbox"):
         child.mkdir(parents=True, exist_ok=True, mode=0o700)
     cli_type = "opencode" if preferred_cli == "opencode" else "claude"
+    worktrees = dict(worker_worktrees or {})
+
+    def _worker_agent(worker_id: str) -> dict[str, object]:
+        agent: dict[str, object] = {"type": cli_type, "model": model}
+        worktree = worktrees.get(worker_id)
+        if worktree is not None:
+            agent["env"] = {
+                "SKILLIFY_WORKER_ID": worker_id,
+                "SKILLIFY_WORKTREE": str(worktree),
+            }
+        return agent
+
     agents = {
         "shogun": {"type": cli_type, "model": model},
         "karo": {"type": cli_type, "model": model},
         **{
-            f"ashigaru{index}": {"type": cli_type, "model": model}
+            f"ashigaru{index}": _worker_agent(f"ashigaru{index}")
             for index in range(1, worker_count + 1)
         },
         "gunshi": {"type": cli_type, "model": model},

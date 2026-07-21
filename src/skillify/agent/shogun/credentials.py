@@ -119,6 +119,7 @@ class PaneCredentialInjector:
 import json
 import os
 import socket
+import subprocess
 import sys
 
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -135,6 +136,15 @@ if not data:
     raise SystemExit("credential broker did not provide a credential")
 environment = os.environ.copy()
 environment.update(json.loads(data.decode()))
+worktree = os.environ.get("SKILLIFY_WORKTREE")
+if worktree:
+    os.chdir(worktree)
+    worker_id = os.environ.get("SKILLIFY_WORKER_ID", "")
+    subprocess.run(["git", "config", "--local", "user.name", worker_id], check=True)
+    subprocess.run(
+        ["git", "config", "--local", "user.email", f"{{worker_id}}@skillify.local.invalid"],
+        check=True,
+    )
 os.execve({executable!r}, [{executable!r}, *sys.argv[1:]], environment)
 '''
         path.write_text(source, encoding="utf-8")
