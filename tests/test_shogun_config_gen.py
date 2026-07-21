@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import yaml
@@ -57,6 +58,24 @@ def test_tmux_3_0_compatibility_launcher_only_rewrites_window_size(
     assert launcher.exists()
     assert "window-size largest" in launcher.read_text(encoding="utf-8")
     assert generated.environment["PATH"].split(os.pathsep)[0] == str(launcher.parent)
+
+
+def test_skillify_bin_and_path_prepend_happen_even_without_tmux(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "skillify.agent.shogun.config_gen.shutil.which",
+        lambda name: None if name == "tmux" else real_which(name),
+    )
+    generated = _generate(bundle, tmp_path / "run")
+    bin_dir = tmp_path / "run" / ".skillify-bin"
+
+    assert bin_dir.is_dir()
+    assert not (bin_dir / "tmux").exists()
+    assert "PATH" in generated.environment
+    assert generated.environment["PATH"].split(os.pathsep)[0] == str(bin_dir)
 
 
 def test_two_teams_get_disjoint_queue_dirs(tmp_path: Path) -> None:

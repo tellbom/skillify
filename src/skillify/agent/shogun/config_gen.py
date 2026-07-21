@@ -13,6 +13,8 @@ from typing import Mapping
 
 import yaml
 
+from skillify.agent.shogun.git_guard import write_git_guard
+
 
 _REF = re.compile(r"^[a-z][a-z0-9+.-]*://[^\s]+$")
 _ENV = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -66,13 +68,25 @@ def _project_runtime(install_root: Path, run_dir: Path) -> None:
             ) from exc
 
 
-def _write_tmux_compatibility_launcher(root: Path) -> Path | None:
+def _skillify_bin_dir(root: Path) -> Path:
+    """The directory prepended to PATH for Worker panes.
+
+    Always created (and always prepended to PATH by the caller), independent
+    of whether any individual launcher below (e.g. the tmux compatibility
+    shim) is applicable — otherwise tools relying on this directory, such as
+    the git push-denial wrapper, would silently stop taking effect whenever
+    an optional launcher is absent.
+    """
+    launcher_dir = root / ".skillify-bin"
+    launcher_dir.mkdir(mode=0o700, exist_ok=True)
+    return launcher_dir
+
+
+def _write_tmux_compatibility_launcher(launcher_dir: Path) -> None:
     """Bridge the one cosmetic tmux option missing from the approved 3.0a host."""
     executable = shutil.which("tmux")
     if executable is None:
-        return None
-    launcher_dir = root / ".skillify-bin"
-    launcher_dir.mkdir(mode=0o700, exist_ok=True)
+        return
     launcher = launcher_dir / "tmux"
     quoted = shlex.quote(executable)
     launcher.write_text(
@@ -85,7 +99,6 @@ def _write_tmux_compatibility_launcher(root: Path) -> Path | None:
         encoding="utf-8",
     )
     launcher.chmod(0o700)
-    return launcher_dir
 
 
 def generate_config(
@@ -223,7 +236,9 @@ def generate_config(
             },
         }), encoding="utf-8")
         claude_state.chmod(0o600)
-    launcher_dir = _write_tmux_compatibility_launcher(root)
+    bin_dir = _skillify_bin_dir(root)
+    _write_tmux_compatibility_launcher(bin_dir)
+    write_git_guard(bin_dir, root / "logs" / "git-guard.jsonl")
     entrypoint = root / "shutsujin_departure.sh"
     environment = {
         "SHOGUN_QUEUE_DIR": str(queue_dir),
@@ -236,10 +251,9 @@ def generate_config(
         ),
         **public_env,
     }
-    if launcher_dir is not None:
-        environment["PATH"] = os.pathsep.join((
-            str(launcher_dir), os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        ))
+    environment["PATH"] = os.pathsep.join((
+        str(bin_dir), os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    ))
     return GeneratedShogunConfig(
         settings_path, permissions_path, queue_dir,
         (str(entrypoint), "-c", "--permission-mode", "default"), environment,
