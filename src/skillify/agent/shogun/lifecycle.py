@@ -32,17 +32,31 @@ class RuntimeControl(Protocol):
     ) -> Iterator[dict[str, object]]: ...
 
 
+_TEAM_HANDLE_REQUIRED_KEYS = {"session", "run_dir"}
+_TEAM_HANDLE_OPTIONAL_KEYS = {"team_id", "base_commit"}
+
+
 @dataclass(frozen=True)
 class TeamHandle:
     session: str
     run_dir: Path
+    team_id: str | None = None
+    base_commit: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {"session": self.session, "run_dir": str(self.run_dir)}
+        value = {"session": self.session, "run_dir": str(self.run_dir)}
+        if self.team_id is not None:
+            value["team_id"] = self.team_id
+        if self.base_commit is not None:
+            value["base_commit"] = self.base_commit
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "TeamHandle":
-        if set(value) != {"session", "run_dir"}:
+        keys = set(value)
+        if not _TEAM_HANDLE_REQUIRED_KEYS <= keys <= (
+            _TEAM_HANDLE_REQUIRED_KEYS | _TEAM_HANDLE_OPTIONAL_KEYS
+        ):
             raise ValueError("Shogun team handle has unexpected fields")
         session, run_dir = value["session"], value["run_dir"]
         if not isinstance(session, str) or not session or not isinstance(run_dir, str):
@@ -50,7 +64,13 @@ class TeamHandle:
         path = Path(run_dir)
         if not path.is_absolute():
             raise ValueError("Shogun team run directory must be absolute")
-        return cls(session, path)
+        team_id = value.get("team_id")
+        if team_id is not None and not isinstance(team_id, str):
+            raise ValueError("Shogun team handle is invalid")
+        base_commit = value.get("base_commit")
+        if base_commit is not None and not isinstance(base_commit, str):
+            raise ValueError("Shogun team handle is invalid")
+        return cls(session, path, team_id, base_commit)
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
