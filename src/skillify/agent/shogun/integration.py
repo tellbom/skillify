@@ -13,8 +13,9 @@ responsible for resolving conflicts and re-invoking with the resolved state.
 this engine never passes them to ``git merge``.
 
 Verification commands: after a successful merge, each command in
-``verification_commands`` is executed in sequence in the repository root.
-Command failure is recorded but does not block integration commit generation.
+``verification_commands`` is executed in sequence in the integration
+worktree. Command failure is recorded but does not block integration
+commit generation.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ class IntegrationEngine:
 
     @staticmethod
     def merge_worker(
-        repository_root: Path,
+        integration_worktree: Path,
         integration_branch: str,
         worker_branch: str,
         worker_id: str,
@@ -70,8 +71,11 @@ class IntegrationEngine:
 
         Parameters
         ----------
-        repository_root:
-            Path to the git repository root.
+        integration_worktree:
+            Path to the **integration worktree** -- a linked git worktree
+            permanently checked out on ``integration_branch`` (created by
+            ``WorktreeManager.create()``), never the user's main repository
+            checkout. All git operations run here.
         integration_branch:
             The integration branch to merge into (e.g. ``integration`` or
             ``skillify/team/t1/integration``).
@@ -95,8 +99,22 @@ class IntegrationEngine:
         -------
         ``IntegrationResult`` with the full merge outcome.
         """
-        # 1. Ensure on integration branch
-        _run_git(["checkout", integration_branch], cwd=repository_root)
+        # 1. Sanity check: a linked worktree is permanently bound to its
+        # branch, so there is no "checkout" step here -- attempting
+        # `git checkout <branch>` in a worktree already on that branch fails
+        # with "already used by worktree" once the branch is checked out
+        # anywhere else (e.g. the caller's own working copy), and there is
+        # never a legitimate reason to switch branches inside the integration
+        # worktree. Fail loudly instead of silently operating on the wrong
+        # branch.
+        current_branch = _run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=integration_worktree,
+        ).stdout.strip()
+        if current_branch != integration_branch:
+            raise RuntimeError(
+                f"integration worktree {integration_worktree} is on branch "
+                f"'{current_branch}', expected '{integration_branch}'"
+            )
 
         # 2. Attempt merge
         merge_result = subprocess.run(
@@ -104,7 +122,7 @@ class IntegrationEngine:
                 "git", "merge", "--no-ff", worker_branch,
                 "-m", f"Merge worker {worker_id} into integration",
             ],
-            cwd=str(repository_root),
+            cwd=str(integration_worktree),
             capture_output=True, text=True, check=False,
         )
 
@@ -119,7 +137,7 @@ class IntegrationEngine:
             #    intact for manual resolution by the integration pane).
             diff_result = subprocess.run(
                 ["git", "diff", "--name-only", "--diff-filter=U"],
-                cwd=str(repository_root),
+                cwd=str(integration_worktree),
                 capture_output=True, text=True, check=False,
             )
             files = [f for f in diff_result.stdout.splitlines() if f.strip()]
@@ -131,13 +149,13 @@ class IntegrationEngine:
             )
         else:
             # 4. Merge succeeded -- run verification commands
-            head_result = _run_git(["rev-parse", "HEAD"], cwd=repository_root)
+            head_result = _run_git(["rev-parse", "HEAD"], cwd=integration_worktree)
             integration_commit = head_result.stdout.strip()
 
             verif_results: list[tuple[str, int, str, str]] = []
             for cmd in verification_commands:
                 result = subprocess.run(
-                    cmd, shell=True, cwd=str(repository_root),
+                    cmd, shell=True, cwd=str(integration_worktree),
                     capture_output=True, text=True, check=False,
                 )
                 verif_results.append(
@@ -146,7 +164,7 @@ class IntegrationEngine:
             verification_results = tuple(verif_results)
 
         # 5. Build updated merge-plan (record current HEAD even on conflict)
-        head_result = _run_git(["rev-parse", "HEAD"], cwd=repository_root)
+        head_result = _run_git(["rev-parse", "HEAD"], cwd=integration_worktree)
         integration_head = head_result.stdout.strip()
 
         new_merged = list(merge_plan.merged)

@@ -47,6 +47,16 @@ def _init_repo(repo: Path) -> str:
     return result.stdout.strip()
 
 
+def _add_integration_worktree(repo: Path) -> Path:
+    """Create a real, separate linked worktree checked out on "integration" --
+    matching the actual system design (IntegrationEngine operates on a
+    dedicated integration worktree, never the caller's own repo checkout).
+    """
+    worktree = repo.parent / "integration-worktree"
+    _git(["worktree", "add", str(worktree), "integration"], cwd=repo)
+    return worktree
+
+
 # ---------------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------------
@@ -72,13 +82,18 @@ class TestMergeWorker:
         _git(["add", "file_b.py"], cwd=repo)
         _git(["commit", "-m", "worker b adds file_b"], cwd=repo)
 
+        # "integration" is currently free (repo is checked out on worker-b) --
+        # create the real, separate integration worktree IntegrationEngine
+        # actually operates on.
+        integration_worktree = _add_integration_worktree(repo)
+
         merge_plan = MergePlan(
             order=("worker-a", "worker-b"),
             current=None, merged=(), conflict=False, integration_head=None,
         )
 
         result = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-a",
             worker_id="worker-a",
@@ -94,9 +109,8 @@ class TestMergeWorker:
         assert result.merge_plan_updated.conflict is False
         assert result.merge_plan_updated.integration_head is not None
 
-        # Verify the integration branch actually has the merged file
-        _git(["checkout", "integration"], cwd=repo)
-        assert (repo / "file_a.py").read_text(encoding="utf-8") == "a_content\n"
+        # Verify the integration worktree actually has the merged file.
+        assert (integration_worktree / "file_a.py").read_text(encoding="utf-8") == "a_content\n"
 
     def test_same_line_conflict_detected(self, tmp_path: Path) -> None:
         """Same file, same line changed on both branches -> conflict recorded, not silently resolved."""
@@ -122,6 +136,9 @@ class TestMergeWorker:
         _git(["add", "shared.py"], cwd=repo)
         _git(["commit", "-m", "worker b changes shared"], cwd=repo)
 
+        # "integration" is currently free (repo is checked out on worker-b).
+        integration_worktree = _add_integration_worktree(repo)
+
         merge_plan = MergePlan(
             order=("worker-a", "worker-b"),
             current=None, merged=(), conflict=False, integration_head=None,
@@ -129,7 +146,7 @@ class TestMergeWorker:
 
         # Merge worker-a (should succeed)
         result_a = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-a",
             worker_id="worker-a",
@@ -139,7 +156,7 @@ class TestMergeWorker:
 
         # Merge worker-b (should conflict -- same file same line)
         result_b = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-b",
             worker_id="worker-b",
@@ -158,7 +175,7 @@ class TestMergeWorker:
         assert result_b.merge_plan_updated.integration_head is not None
 
         # Verifying the tree still contains conflict markers (not aborted)
-        shared_text = (repo / "shared.py").read_text(encoding="utf-8")
+        shared_text = (integration_worktree / "shared.py").read_text(encoding="utf-8")
         assert "<<<<<<<" in shared_text, (
             "merge --abort was called (tree should be left intact for manual resolution)"
         )
@@ -173,6 +190,8 @@ class TestMergeWorker:
         _git(["add", "feature.py"], cwd=repo)
         _git(["commit", "-m", "add feature"], cwd=repo)
 
+        integration_worktree = _add_integration_worktree(repo)
+
         merge_plan = MergePlan(
             order=("worker-verify",),
             current=None, merged=(), conflict=False, integration_head=None,
@@ -181,7 +200,7 @@ class TestMergeWorker:
         marker = tmp_path / "verification_marker.txt"
 
         result = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-verify",
             worker_id="worker-verify",
@@ -215,6 +234,7 @@ class TestMergeWorker:
         _git(["add", "data.py"], cwd=repo)
         _git(["commit", "-m", "add data"], cwd=repo)
 
+        integration_worktree = _add_integration_worktree(repo)
         merge_plan_path = tmp_path / "plans" / "merge-plan.json"
 
         merge_plan = MergePlan(
@@ -223,7 +243,7 @@ class TestMergeWorker:
         )
 
         IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-persist",
             worker_id="worker-persist",
@@ -262,6 +282,8 @@ class TestMergeWorker:
         _git(["add", "shared.py"], cwd=repo)
         _git(["commit", "-m", "worker b"], cwd=repo)
 
+        integration_worktree = _add_integration_worktree(repo)
+
         merge_plan = MergePlan(
             order=("worker-a", "worker-b"),
             current=None, merged=(), conflict=False, integration_head=None,
@@ -269,7 +291,7 @@ class TestMergeWorker:
         merge_plan_path = tmp_path / "plans" / "merge-plan.json"
 
         result_a = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-a",
             worker_id="worker-a",
@@ -278,7 +300,7 @@ class TestMergeWorker:
         assert result_a.success is True
 
         result_b = IntegrationEngine.merge_worker(
-            repository_root=repo,
+            integration_worktree=integration_worktree,
             integration_branch="integration",
             worker_branch="worker-b",
             worker_id="worker-b",
@@ -296,6 +318,40 @@ class TestMergeWorker:
         # successfully-merged workers belong in `merged`.
         assert "worker-b" not in reloaded.merged
         assert reloaded.merged == ("worker-a",)
+
+    def test_raises_when_integration_worktree_on_wrong_branch(self, tmp_path: Path) -> None:
+        """merge_worker must fail loudly (not silently checkout/operate on the
+        wrong branch) if the given integration_worktree isn't actually on
+        integration_branch -- there is no legitimate reason to switch
+        branches inside a linked worktree, unlike the old (incorrect)
+        `git checkout` step this replaced."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _git(["checkout", "-b", "worker-a"], cwd=repo)
+        (repo / "file_a.py").write_text("a\n", encoding="utf-8")
+        _git(["add", "file_a.py"], cwd=repo)
+        _git(["commit", "-m", "worker a"], cwd=repo)
+        _git(["checkout", "main"], cwd=repo)
+        # A worktree deliberately checked out on the wrong branch. Use a
+        # dedicated branch (not "main", which is already checked out in
+        # `repo` itself) so `git worktree add` doesn't fail for the unrelated
+        # reason of double-checkout.
+        _git(["branch", "wrong-branch"], cwd=repo)
+        wrong_worktree = repo.parent / "wrong-worktree"
+        _git(["worktree", "add", str(wrong_worktree), "wrong-branch"], cwd=repo)
+
+        merge_plan = MergePlan(
+            order=("worker-a",), current=None, merged=(), conflict=False, integration_head=None,
+        )
+
+        with pytest.raises(RuntimeError, match="expected 'integration'"):
+            IntegrationEngine.merge_worker(
+                integration_worktree=wrong_worktree,
+                integration_branch="integration",
+                worker_branch="worker-a",
+                worker_id="worker-a",
+                merge_plan=merge_plan,
+            )
 
 
 class TestStructuralGuarantees:
