@@ -35,10 +35,13 @@ def _init_repo(repo: Path) -> str:
     _git(["init"], cwd=repo)
     _git(["config", "user.email", "test@example.com"], cwd=repo)
     _git(["config", "user.name", "Test"], cwd=repo)
-    _git(["branch", "-m", "main"], cwd=repo)
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     _git(["add", "README.md"], cwd=repo)
     _git(["commit", "-m", "initial"], cwd=repo)
+    # Rename to "main" only after the first commit -- renaming an unborn
+    # branch fails on hosts whose git init.defaultBranch differs from what
+    # this repo's HEAD symbolically points to before any commit exists.
+    _git(["branch", "-M", "main"], cwd=repo)
     _git(["branch", "integration"], cwd=repo)
     result = _git(["rev-parse", "HEAD"], cwd=repo)
     return result.stdout.strip()
