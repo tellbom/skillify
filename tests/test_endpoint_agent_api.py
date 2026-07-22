@@ -86,6 +86,12 @@ def test_pull_confirm_event_and_duplicate_event(monkeypatch, tmp_path: Path) -> 
         )
         assert confirmed.status_code == 200 and confirmed.json()["state"] == "running"
         version = confirmed.json()["stateVersion"]
+        repeated = client.post(
+            f"/api/endpoint/tasks/{task_id}/confirm",
+            json={"nonce": envelope.nonce, "stateVersion": version},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["stateVersion"] == version
         event = {
             "eventId": "event-1", "taskId": task_id, "nonce": envelope.nonce,
             "stateVersion": version, "eventType": "test.completed",

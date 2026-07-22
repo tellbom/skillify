@@ -47,11 +47,16 @@ def claim_next_task(
     ).order_by(EndpointTaskRecord.created_at))
     if active is not None:
         return active
+    reclaimable_state = EndpointTaskRecord.state.in_(("awaiting_confirmation", "running"))
+    package_ready = or_(
+        EndpointTaskRecord.state == "running",
+        ~has_unconfirmed_package,
+    )
     candidate = session.scalar(select(EndpointTaskRecord).where(
         EndpointTaskRecord.endpoint_id == endpoint_id,
-        EndpointTaskRecord.state == "awaiting_confirmation",
+        reclaimable_state,
         _is_false(EndpointTaskRecord.revoked),
-        ~has_unconfirmed_package,
+        package_ready,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).order_by(EndpointTaskRecord.created_at))
     if candidate is None:
@@ -60,8 +65,9 @@ def claim_next_task(
     changed = session.execute(update(EndpointTaskRecord).where(
         EndpointTaskRecord.task_id == candidate.task_id,
         EndpointTaskRecord.state_version == candidate.state_version,
+        reclaimable_state,
         _is_false(EndpointTaskRecord.revoked),
-        ~has_unconfirmed_package,
+        package_ready,
         or_(EndpointTaskRecord.lease_owner.is_(None), EndpointTaskRecord.lease_expires_at <= now),
     ).values(
         lease_owner=lease_owner,

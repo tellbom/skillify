@@ -61,6 +61,24 @@ def test_expired_lease_can_be_reclaimed_and_heartbeat_renews() -> None:
     assert renewed.state_version == 3
 
 
+def test_expired_running_task_is_reclaimed_after_bridge_restart() -> None:
+    session = _session(); session.add(_task()); session.commit()
+    claimed = claim_next_task(
+        session, endpoint_id="endpoint-1", lease_owner="endpoint-1",
+        now=NOW, lease_seconds=10,
+    )
+    claimed.state = "running"; session.commit()
+
+    reclaimed = claim_next_task(
+        session, endpoint_id="endpoint-1", lease_owner="endpoint-1",
+        now=NOW + timedelta(seconds=11),
+    )
+
+    assert reclaimed is not None
+    assert reclaimed.task_id == "task-1" and reclaimed.state == "running"
+    assert reclaimed.state_version == 2
+
+
 def test_heartbeat_rejects_wrong_endpoint_or_owner() -> None:
     session = _session(); session.add(_task()); session.commit()
     claim_next_task(session, endpoint_id="endpoint-1", lease_owner="bridge-1", now=NOW)

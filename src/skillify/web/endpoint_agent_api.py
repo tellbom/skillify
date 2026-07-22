@@ -183,6 +183,8 @@ def _transition(
             session, task_id=task_id, endpoint_id=endpoint_id,
             nonce=payload.nonce, state_version=payload.stateVersion,
         )
+        if target == "running" and task.state == "running":
+            return {"taskId": task.task_id, "state": task.state, "stateVersion": task.state_version}
         if target == "running" and task.state != "awaiting_confirmation":
             raise TaskConflictError("task is not awaiting confirmation")
         if target == "cancelled" and task.state in {"succeeded", "failed", "cancelled", "rejected"}:
