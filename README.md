@@ -548,6 +548,7 @@ skillctl agent init \
   "control_plane_url": "http://skillify-web:8089",
   "endpoint_token_file": "/home/user/.skillctl/credentials/endpoint-token",
   "forgejo_mcp_credentials_file": "/home/user/.skillctl/credentials/forgejo-mcp.env",
+  "opencode_executable": "/opt/skillify/opencode/1.15.11/opencode",
   "model_endpoint": null,
   "model_provider": null,
   "model_name": null,

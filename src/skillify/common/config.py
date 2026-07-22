@@ -56,6 +56,7 @@ class AgentLocalConfig:
     control_plane_url: str | None = None
     endpoint_token_file: str | None = None
     forgejo_mcp_credentials_file: str | None = None
+    opencode_executable: str | None = None
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
     opencode_user_config_path: str | None = None
@@ -114,6 +115,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
         "SKILLIFY_OPENCODE_USER_CONFIG_PATH": "opencode_user_config_path",
         "SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE": "forgejo_mcp_credentials_file",
+        "SKILLIFY_OPENCODE_EXECUTABLE": "opencode_executable",
         "SKILLIFY_SHOGUN_MANIFEST_PATH": "shogun_manifest_path",
         "SKILLIFY_SHOGUN_ARTIFACT_PATH": "shogun_artifact_path",
         "SKILLIFY_SHOGUN_INSTALL_ROOT": "shogun_install_root",
@@ -143,6 +145,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         control_plane_url=data.get("control_plane_url"),
         endpoint_token_file=data.get("endpoint_token_file"),
         forgejo_mcp_credentials_file=data.get("forgejo_mcp_credentials_file"),
+        opencode_executable=data.get("opencode_executable"),
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
         opencode_user_config_path=data.get("opencode_user_config_path"),
@@ -169,6 +172,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     if (config.endpoint_token_file is not None and
             not Path(config.endpoint_token_file).is_absolute()):
         raise ValueError("endpoint token file path must be absolute")
+    if (config.opencode_executable is not None and
+            not Path(config.opencode_executable).is_absolute()):
+        raise ValueError("OpenCode executable path must be absolute")
     shogun_paths = (
         config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
     )

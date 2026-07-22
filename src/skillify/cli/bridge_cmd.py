@@ -373,7 +373,10 @@ def _build_runner(outbox: LocalOutbox):
             repository_root=repository_root,
         )
 
-    providers = {"opencode": OpenCodeProvider(), "claude-code": ClaudeCodeProvider()}
+    providers = {
+        "opencode": OpenCodeProvider(executable=config.opencode_executable or "opencode"),
+        "claude-code": ClaudeCodeProvider(),
+    }
     if config.shogun_team_enabled:
         from skillify.agent.providers.shogun import ShogunProvider
         from skillify.agent.shogun.credentials import EnvironmentCredentialBroker

@@ -511,7 +511,7 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
             raise AgentCommandFailure(
                 AgentErrorCode.CONFIG_INVALID, "OpenCode distribution config is invalid",
             ) from exc
-        executable = shutil.which("opencode")
+        executable = shutil.which(config.opencode_executable or "opencode")
         checks: list[dict[str, object]] = []
         try:
             os_name, arch, libc, cpu = detect_opencode_platform()
