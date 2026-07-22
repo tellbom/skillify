@@ -131,9 +131,8 @@ def test_start_rejects_mismatched_health_version_and_disables_remote_fetch(tmp_p
     assert process.poll() is not None
     assert captured["argv"][0] == "/opt/skillify/opencode"
     assert captured["kwargs"]["env"]["OPENCODE_DISABLE_MODELS_FETCH"] == "true"
-    assert captured["kwargs"]["env"]["HOME"] == str(tmp_path / "generated/home")
-    assert (tmp_path / "generated/home").stat().st_mode & 0o777 == 0o700
-    assert "/private/controller-home" not in json.dumps(captured["kwargs"]["env"])
+    assert captured["kwargs"]["env"]["HOME"] == "/private/controller-home"
+    assert (tmp_path / "generated").stat().st_mode & 0o777 == 0o700
 
 
 def _env(tmp_path: Path) -> dict[str, str]:

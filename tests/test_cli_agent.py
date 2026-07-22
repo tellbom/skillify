@@ -64,7 +64,7 @@ def test_agent_help_exact_snapshot() -> None:
     assert result.stdout == EXPECTED_HELP
 
 
-def test_agent_paths_use_separate_xdg_roots(tmp_path: Path) -> None:
+def test_agent_paths_use_skillctl_settings_and_separate_runtime_roots(tmp_path: Path) -> None:
     paths = load_agent_paths(
         {
             "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
@@ -73,7 +73,8 @@ def test_agent_paths_use_separate_xdg_roots(tmp_path: Path) -> None:
         },
         home=tmp_path / "home",
     )
-    assert paths.config_dir == tmp_path / "xdg-config/skillify/agent"
+    assert paths.config_dir == tmp_path / "home/.skillctl"
+    assert paths.config_path == tmp_path / "home/.skillctl/settings.json"
     assert paths.state_dir == tmp_path / "xdg-state/skillify/agent"
     assert paths.cache_dir == tmp_path / "xdg-cache/skillify/agent"
     assert paths.log_dir == tmp_path / "xdg-state/skillify/agent/log"
@@ -90,8 +91,8 @@ def test_agent_init_records_only_resolved_workspace(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
     assert _json(result)["code"] == "OK"
-    text = (tmp_path / "config/config.yaml").read_text(encoding="utf-8")
-    config = yaml.safe_load(text)
+    text = (tmp_path / "config/settings.json").read_text(encoding="utf-8")
+    config = json.loads(text)
     assert config["allowed_workspaces"] == [str(workspace.resolve())]
     assert str(tmp_path.parent) not in config["allowed_workspaces"]
 
@@ -111,8 +112,65 @@ def test_agent_init_registers_workspace_alias(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert _json(result)["data"]["alias"] == "acceptance"
-    config = yaml.safe_load((tmp_path / "config/config.yaml").read_text(encoding="utf-8"))
+    config = json.loads((tmp_path / "config/settings.json").read_text(encoding="utf-8"))
     assert config["workspace_aliases"] == {"acceptance": str(workspace.resolve())}
+
+
+def test_agent_init_migrates_legacy_yaml_to_settings_json(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    current = tmp_path / "current"
+    previous.mkdir(); current.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        yaml.safe_dump({
+            "allowed_workspaces": [str(previous.resolve())],
+            "workspace_aliases": {"previous": str(previous.resolve())},
+        }),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        agent_app,
+        ["init", "--workspace", str(current), "--alias", "acceptance", "--format", "json"],
+        env=_env(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert settings["workspace_aliases"] == {
+        "acceptance": str(current.resolve()),
+        "previous": str(previous.resolve()),
+    }
+
+
+def test_agent_init_records_connection_files_without_model_configuration(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    token = tmp_path / "endpoint-token"
+    forgejo = tmp_path / "forgejo.env"
+    token.write_text("endpoint-token", encoding="utf-8")
+    forgejo.write_text("SKILLIFY_MCP_FORGEJO_TOKEN=forgejo-token", encoding="utf-8")
+
+    result = runner.invoke(
+        agent_app,
+        [
+            "init", "--workspace", str(workspace), "--alias", "acceptance",
+            "--server", "http://skillify.internal:8089",
+            "--endpoint-token-file", str(token),
+            "--forgejo-credentials-file", str(forgejo),
+            "--format", "json",
+        ],
+        env=_env(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    settings = json.loads((tmp_path / "config/settings.json").read_text(encoding="utf-8"))
+    assert settings["control_plane_url"] == "http://skillify.internal:8089"
+    assert settings["endpoint_token_file"] == str(token.resolve())
+    assert settings["forgejo_mcp_credentials_file"] == str(forgejo.resolve())
+    assert settings["model_endpoint"] is None
+    assert settings["credential_env_names"] == []
 
 
 def test_agent_init_rejects_invalid_workspace_alias(tmp_path: Path) -> None:
@@ -201,9 +259,9 @@ def test_agent_init_maps_config_save_oserror_to_config_invalid(tmp_path: Path) -
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 
-def test_status_rejects_config_yaml_directory(tmp_path: Path) -> None:
+def test_status_rejects_settings_json_directory(tmp_path: Path) -> None:
     env = _env(tmp_path)
-    (tmp_path / "config/config.yaml").mkdir(parents=True)
+    (tmp_path / "config/settings.json").mkdir(parents=True)
 
     result = runner.invoke(agent_app, ["status", "--format", "json"], env=env)
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
@@ -244,8 +302,8 @@ def _configured_distribution_env(tmp_path: Path, *, corrupt: bool = False) -> di
     workspace = tmp_path / "repo"; workspace.mkdir()
     (tmp_path / "cache").mkdir()
     config_dir = tmp_path / "config"; config_dir.mkdir()
-    (config_dir / "config.yaml").write_text(
-        yaml.safe_dump({
+    (config_dir / "settings.json").write_text(
+        json.dumps({
             "opencode_manifest_path": str(manifest),
             "opencode_artifact_root": str(artifacts),
             "allowed_workspaces": [str(workspace)],
@@ -333,7 +391,7 @@ def test_error_codes_10_through_14_have_stable_json_envelopes(
     workspace.mkdir()
     if case == "config":
         (tmp_path / "config").mkdir()
-        (tmp_path / "config/config.yaml").write_text("[invalid", encoding="utf-8")
+        (tmp_path / "config/settings.json").write_text("[invalid", encoding="utf-8")
         args = ["status", "--format", "json"]
     elif case == "workspace":
         args = ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"]

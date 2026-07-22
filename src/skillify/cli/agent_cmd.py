@@ -351,8 +351,13 @@ def _build_provider() -> OpenCodeProvider:
 
 
 def _runtime_config(config: AgentLocalConfig) -> ModelRuntimeConfig:
-    if not all((config.model_endpoint, config.model_provider, config.model_name,
-                config.allowed_model_hosts, config.credential_env_names)):
+    runtime_fields = (
+        config.model_endpoint, config.model_provider, config.model_name,
+        config.allowed_model_hosts, config.credential_env_names,
+    )
+    if not any(runtime_fields):
+        return ModelRuntimeConfig()
+    if not all(runtime_fields):
         raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is incomplete")
     try:
         return ModelRuntimeConfig(
@@ -382,6 +387,10 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     cleanup_handed_off = False
     try:
         runtime = _runtime_config(config)
+        if runtime.is_provider_managed and not provider.probe().available:
+            raise AgentCommandFailure(
+                AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed",
+            )
     except AgentCommandFailure:
         runtime_fields = (
             config.model_endpoint, config.model_provider, config.model_name,
@@ -530,13 +539,16 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
         checks.append({"name": "git", "ok": git_path is not None,
                        "detail": git_path or "not installed", "classification": "required"})
         try:
-            _runtime_config(config)
+            runtime = _runtime_config(config)
         except AgentCommandFailure:
             model_ok = False
-            model_detail = "not configured or invalid"
+            model_detail = "managed override is invalid"
         else:
             model_ok = True
-            model_detail = "configured; reachability requires test-env"
+            model_detail = (
+                "managed override configured; reachability requires test-env"
+                if not runtime.is_provider_managed else "owned by the selected provider CLI"
+            )
         checks.append({"name": "model-endpoint", "ok": model_ok, "detail": model_detail,
                        "classification": "required"})
         cache_ok = paths.cache_dir.is_dir() and os.access(paths.cache_dir, os.R_OK | os.W_OK)
@@ -595,6 +607,9 @@ def init(
     model_name: str | None = typer.Option(None, "--model"),
     allowed_model_host: list[str] = typer.Option([], "--allowed-model-host"),
     credential_env: list[str] = typer.Option([], "--credential-env"),
+    server: str | None = typer.Option(None, "--server"),
+    endpoint_token_file: Path | None = typer.Option(None, "--endpoint-token-file"),
+    forgejo_credentials_file: Path | None = typer.Option(None, "--forgejo-credentials-file"),
     output: str = typer.Option("text", "--format"),
 ) -> None:
     """Register an explicit workspace."""
@@ -615,6 +630,17 @@ def init(
                 AgentErrorCode.CONFIG_INVALID,
                 "workspace alias must use lowercase letters, digits, dot, underscore, or hyphen",
             )
+        try:
+            token_path = endpoint_token_file.resolve(strict=True) if endpoint_token_file else None
+            forgejo_path = forgejo_credentials_file.resolve(strict=True) if forgejo_credentials_file else None
+        except OSError as exc:
+            raise AgentCommandFailure(
+                AgentErrorCode.CONFIG_INVALID, "credential file is unavailable",
+            ) from exc
+        if token_path is not None and not token_path.is_file():
+            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "endpoint token path must be a file")
+        if forgejo_path is not None and not forgejo_path.is_file():
+            raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "Forgejo credentials path must be a file")
         paths, config = _config()
         allowed = tuple(sorted(set(config.allowed_workspaces) | {str(resolved)}))
         aliases = dict(config.workspace_aliases)
@@ -630,6 +656,11 @@ def init(
             model_name=model_name or config.model_name,
             allowed_model_hosts=tuple(allowed_model_host) or config.allowed_model_hosts,
             credential_env_names=tuple(credential_env) or config.credential_env_names,
+            control_plane_url=server or config.control_plane_url,
+            endpoint_token_file=(str(token_path) if token_path else config.endpoint_token_file),
+            forgejo_mcp_credentials_file=(
+                str(forgejo_path) if forgejo_path else config.forgejo_mcp_credentials_file
+            ),
         )
         try:
             save_agent_local_config(paths, updated)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -257,8 +258,24 @@ def _read_state(path: Path) -> BridgeRuntimeState | None:
 
 
 def _resolve_connection(server: str | None, token_env: str) -> tuple[str, str]:
-    server_url = server or load_config().web_base_url
+    paths = load_agent_paths()
+    config = load_agent_local_config(paths)
+    server_url = server or config.control_plane_url or load_config().web_base_url
     token = os.environ.get(token_env)
+    if not token and config.endpoint_token_file:
+        candidate = Path(config.endpoint_token_file).resolve(strict=True)
+        info = candidate.stat()
+        if not candidate.is_file():
+            raise typer.BadParameter("endpoint token path must be a file")
+        if os.name == "posix" and (
+            stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid()
+        ):
+            raise typer.BadParameter(
+                "endpoint token file must be owned by the current user with mode 0600"
+            )
+        value = candidate.read_text(encoding="utf-8").strip()
+        prefix = f"{token_env}="
+        token = value[len(prefix):].strip() if value.startswith(prefix) else value
     if not server_url or not token:
         raise typer.BadParameter("server URL and endpoint bearer token are required")
     return server_url, token
@@ -306,16 +323,19 @@ def _build_runner(outbox: LocalOutbox):
     aliases = dict(config.workspace_aliases)
     for raw in config.allowed_workspaces:
         aliases.setdefault(Path(raw).name, raw)
-    runtime = ModelRuntimeConfig(
-        config.model_provider or "", config.model_endpoint or "", config.model_name or "",
+    managed_values = (config.model_provider, config.model_endpoint, config.model_name)
+    managed_runtime = ModelRuntimeConfig(
+        config.model_provider, config.model_endpoint, config.model_name,
         config.allowed_model_hosts, config.credential_env_names,
-    )
+    ) if any(managed_values) else ModelRuntimeConfig()
+    provider_runtime = ModelRuntimeConfig()
 
     def start_spec(envelope: TaskEnvelope) -> ProviderStartSpec:
         raw = aliases.get(envelope.workspace_alias)
         if raw is None:
             raise ValueError("workspace alias is not configured on this endpoint")
         workspace = Path(raw).resolve(strict=True)
+        runtime = managed_runtime if envelope.runtime == "shogun" else provider_runtime
         endpoint_name = "ANTHROPIC_BASE_URL" if envelope.preferred_cli == "claude-code" else "OPENCODE_BASE_URL"
         base_commit = ""
         repository_root = None
@@ -362,12 +382,14 @@ def _build_runner(outbox: LocalOutbox):
         )
         if not all(required):
             raise ValueError("enabled Shogun team runtime requires manifest, artifact, and install root")
+        if managed_runtime.is_provider_managed:
+            raise ValueError("enabled Shogun team runtime requires an explicit managed model runtime")
         providers["shogun"] = ShogunProvider(
             manifest_path=Path(config.shogun_manifest_path or ""),
             artifact_path=Path(config.shogun_artifact_path or ""),
             install_root=Path(config.shogun_install_root or ""),
             cache_root=paths.cache_dir / "shogun",
-            credential_broker=EnvironmentCredentialBroker(runtime.credential_env_names),
+            credential_broker=EnvironmentCredentialBroker(managed_runtime.credential_env_names),
         )
     mcp_catalog = {"codegraph": McpPackageConfig(
         "codegraph", "codegraph", ("serve", "--mcp"),

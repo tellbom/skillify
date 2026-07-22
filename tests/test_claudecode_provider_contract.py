@@ -68,6 +68,26 @@ def test_normal_stream_json_maps_to_contract_without_persisting_secret(tmp_path,
     provider.stop(handle)
 
 
+def test_provider_owned_runtime_uses_claude_settings_without_model_override(tmp_path, monkeypatch) -> None:
+    user_home = tmp_path / "home"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
+    workspace = (tmp_path / "owned-repo").resolve()
+    workspace.mkdir()
+    spec = ProviderStartSpec(workspace, (workspace,), tmp_path / "config", ModelRuntimeConfig())
+    process = Process([json.dumps({"type": "result", "is_error": False}) + "\n"])
+    provider, captured, _ = _provider(monkeypatch, process)
+
+    handle = provider.start(spec)
+    provider.create_session(handle, TaskSpec("task-owned", "work"))
+
+    assert "--model" not in captured["argv"]
+    assert captured["kwargs"]["env"]["HOME"] == str(user_home)
+    assert "ANTHROPIC_BASE_URL" not in captured["kwargs"]["env"]
+    assert "ANTHROPIC_MODEL" not in captured["kwargs"]["env"]
+    assert "CLAUDE_TOKEN" not in captured["kwargs"]["env"]
+
+
 def test_cancel_terminates_process_group(tmp_path, monkeypatch) -> None:
     process = Process([], returncode=None)
     provider, _, killed = _provider(monkeypatch, process)

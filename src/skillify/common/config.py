@@ -1,7 +1,8 @@
-"""~/.skillify layout + config.yaml loading (shared by CLI, installer, publisher, doctor)."""
+"""Skillify configuration loading shared by the CLI and endpoint runtime."""
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -23,10 +24,15 @@ class AgentPaths:
     state_dir: Path
     cache_dir: Path
     log_dir: Path
+    legacy_config_file: Path | None = None
 
     @property
     def config_path(self) -> Path:
-        return self.config_dir / "config.yaml"
+        return self.config_dir / "settings.json"
+
+    @property
+    def legacy_config_path(self) -> Path:
+        return self.legacy_config_file or self.config_dir / "config.yaml"
 
     @property
     def runtime_path(self) -> Path:
@@ -47,6 +53,8 @@ class AgentLocalConfig:
     model_name: str | None = None
     allowed_model_hosts: tuple[str, ...] = ()
     credential_env_names: tuple[str, ...] = ()
+    control_plane_url: str | None = None
+    endpoint_token_file: str | None = None
     forgejo_mcp_credentials_file: str | None = None
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
@@ -63,26 +71,40 @@ def load_agent_paths(
 ) -> AgentPaths:
     env = os.environ if environ is None else environ
     user_home = Path.home() if home is None else home
-    config_home = Path(env.get("XDG_CONFIG_HOME", user_home / ".config"))
+    config_override = env.get("SKILLIFY_AGENT_CONFIG_DIR")
+    config_dir = Path(config_override) if config_override else user_home / ".skillctl"
+    legacy_config_file = (
+        config_dir / "config.yaml"
+        if config_override else
+        Path(env.get("XDG_CONFIG_HOME", user_home / ".config")) / "skillify" / "agent" / "config.yaml"
+    )
     state_home = Path(env.get("XDG_STATE_HOME", user_home / ".local" / "state"))
     cache_home = Path(env.get("XDG_CACHE_HOME", user_home / ".cache"))
     return AgentPaths(
-        config_dir=Path(env.get("SKILLIFY_AGENT_CONFIG_DIR", config_home / "skillify" / "agent")),
+        config_dir=config_dir,
         state_dir=Path(env.get("SKILLIFY_AGENT_STATE_DIR", state_home / "skillify" / "agent")),
         cache_dir=Path(env.get("SKILLIFY_AGENT_CACHE_DIR", cache_home / "skillify" / "agent")),
         log_dir=Path(env.get("SKILLIFY_AGENT_LOG_DIR", state_home / "skillify" / "agent" / "log")),
+        legacy_config_file=legacy_config_file,
     )
 
 
 def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     data: dict[str, Any] = {}
     try:
-        loaded = yaml.safe_load(paths.config_path.read_text(encoding="utf-8"))
+        loaded = json.loads(paths.config_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        pass
-    else:
+        try:
+            loaded = yaml.safe_load(paths.legacy_config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            loaded = None
+        except yaml.YAMLError as exc:
+            raise ValueError("legacy agent config must be valid YAML") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("agent settings must be valid JSON") from exc
+    if loaded is not None:
         if not isinstance(loaded, dict):
-            raise ValueError("agent config must be a mapping")
+            raise ValueError("agent settings must be an object")
         data = dict(loaded)
     scalar_overrides = {
         "SKILLIFY_AGENT_MODEL_ENDPOINT": "model_endpoint",
@@ -118,6 +140,8 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         model_name=data.get("model_name"),
         allowed_model_hosts=tuple(data.get("allowed_model_hosts", ())),
         credential_env_names=tuple(data.get("credential_env_names", ())),
+        control_plane_url=data.get("control_plane_url"),
+        endpoint_token_file=data.get("endpoint_token_file"),
         forgejo_mcp_credentials_file=data.get("forgejo_mcp_credentials_file"),
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
@@ -142,6 +166,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     if (config.forgejo_mcp_credentials_file is not None and
             not Path(config.forgejo_mcp_credentials_file).is_absolute()):
         raise ValueError("Forgejo MCP credentials file path must be absolute")
+    if (config.endpoint_token_file is not None and
+            not Path(config.endpoint_token_file).is_absolute()):
+        raise ValueError("endpoint token file path must be absolute")
     shogun_paths = (
         config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
     )
@@ -155,8 +182,11 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
 
 def save_agent_local_config(paths: AgentPaths, config: AgentLocalConfig) -> None:
     paths.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = paths.config_path.with_suffix(".yaml.tmp")
-    temporary.write_text(yaml.safe_dump(asdict(config), sort_keys=False), encoding="utf-8")
+    temporary = paths.config_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(asdict(config), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     temporary.chmod(0o600)
     temporary.replace(paths.config_path)
 

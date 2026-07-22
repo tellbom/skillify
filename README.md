@@ -520,19 +520,48 @@ Content-Type: application/json
 
 ## Endpoint Forgejo Issue 任务
 
-Endpoint 的代码目录必须先显式注册。`--alias` 应与 Web 端点下拉框中的工作区别名一致：
+`skillctl` 的用户配置默认位于 `~/.skillctl/settings.json`。旧版
+`config.yaml` 仍可读取，并会在下一次 `agent init` 时迁移为 JSON。模型、模型端点和模型
+凭据由 OpenCode（`~/.config/opencode`、`~/.local/share/opencode`）或 Claude Code 自身管理；
+Skillify 只保存工作区别名、控制面连接和任务 MCP 配置，不复制模型 Key。
+
+Endpoint 的代码目录只需注册一次。`--alias` 应与 Web 端点下拉框中的工作区别名一致：
 
 ```bash
 skillctl agent init \
   --workspace /absolute/path/to/private-repository \
   --alias acceptance \
-  --provider opencode
+  --provider opencode \
+  --server http://skillify-web:8089 \
+  --endpoint-token-file "$HOME/.skillctl/credentials/endpoint-token" \
+  --forgejo-credentials-file "$HOME/.skillctl/credentials/forgejo-mcp.env"
 ```
 
-端侧 Forgejo MCP 使用独立的 `0600` 凭据文件，不把 Token 写入仓库或任务参数：
+生成的配置类似：
+
+```json
+{
+  "allowed_workspaces": ["/absolute/path/to/private-repository"],
+  "workspace_aliases": {
+    "acceptance": "/absolute/path/to/private-repository"
+  },
+  "control_plane_url": "http://skillify-web:8089",
+  "endpoint_token_file": "/home/user/.skillctl/credentials/endpoint-token",
+  "forgejo_mcp_credentials_file": "/home/user/.skillctl/credentials/forgejo-mcp.env",
+  "model_endpoint": null,
+  "model_provider": null,
+  "model_name": null,
+  "credential_env_names": []
+}
+```
+
+Endpoint Device Token 和 Forgejo MCP 服务 Token 不属于模型凭据，由安装程序放入独立的
+`0600` 文件。它们不会写入仓库或任务参数：
 
 ```bash
-install -m 600 /dev/null ~/.config/skillify/agent/forgejo-mcp.env
+install -d -m 700 ~/.skillctl/credentials
+install -m 600 /dev/null ~/.skillctl/credentials/endpoint-token
+install -m 600 /dev/null ~/.skillctl/credentials/forgejo-mcp.env
 ```
 
 文件内容：
@@ -544,13 +573,14 @@ SKILLIFY_MCP_FORGEJO_SCOPES=repo:read,issue:write,ci:read
 SKILLIFY_MCP_FORGEJO_WRITE_TOOLS=forgejo.comment_issue
 ```
 
-启动 Bridge 时提供凭据文件位置和 Endpoint Device Token：
+完成一次初始化后，用户启动 Bridge 不再需要设置 PATH、配置目录或模型环境变量：
 
 ```bash
-export SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE="$HOME/.config/skillify/agent/forgejo-mcp.env"
-export SKILLIFY_ENDPOINT_TOKEN='<endpoint-device-token>'
-skillctl agent bridge start --server http://skillify-web:8089
+skillctl agent bridge start
 ```
+
+Git clone、fetch、commit 和 push 继续使用该操作系统用户已有的 Git/Forgejo 凭据；Skillify
+不保存第二套 Git Token，也不改写仓库的 remote 或 credential helper。
 
 Bugfix、Feature 和 Review Workflow 会按任务注入 Forgejo MCP。Bugfix 的
 `issueReference` 应使用 `http://forgejo-host:3000/<owner>/<repo>/issues/<number>`；Agent

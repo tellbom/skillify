@@ -201,6 +201,27 @@ def test_start_is_local_authenticated_isolated_and_pipe_safe(tmp_path, fake_serv
     assert json.loads(config)["provider"]["internal"]["options"]["baseURL"] == "https://model.intranet.example/v1"
 
 
+def test_provider_owned_runtime_preserves_user_home_without_overriding_model(
+    tmp_path, fake_server, monkeypatch,
+):
+    user_home = tmp_path / "home"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
+    workspace = (tmp_path / "owned-repo").resolve()
+    workspace.mkdir()
+    spec = ProviderStartSpec(
+        workspace, (workspace,), tmp_path / "owned-config", ModelRuntimeConfig(), 1.0, 1.0,
+    )
+    provider, captured, _, _ = _provider(fake_server, monkeypatch)
+
+    provider.start(spec)
+
+    config = json.loads((tmp_path / "owned-config/opencode.json").read_text(encoding="utf-8"))
+    assert "model" not in config and "provider" not in config
+    assert captured["kwargs"]["env"]["HOME"] == str(user_home)
+    assert "MODEL_KEY" not in captured["kwargs"]["env"]
+
+
 def test_normal_completion_maps_only_safe_events(tmp_path, fake_server, monkeypatch):
     Handler.events = [
         {"type": "todo.updated", "properties": {"sessionID": "session-1", "todos": [{"id": "1"}]}},

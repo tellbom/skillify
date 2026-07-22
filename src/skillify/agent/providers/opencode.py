@@ -203,11 +203,16 @@ class OpenCodeProvider:
         return path, version, None
 
     def _environment(self, runtime: ModelRuntimeConfig, password: str, config_dir: Path) -> dict[str, str]:
-        env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
-        isolated_home = config_dir / "home"
-        isolated_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        isolated_home.chmod(0o700)
-        env["HOME"] = str(isolated_home)
+        # Keep the user's home/config/data roots so OpenCode can use the model,
+        # endpoint and credentials the user already manages with OpenCode.
+        env = {
+            key: os.environ[key]
+            for key in (
+                "PATH", "LANG", "LC_ALL", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                "USER", "LOGNAME", "SSH_AUTH_SOCK",
+            )
+            if key in os.environ
+        }
         for name in runtime.credential_env_names:
             if name not in os.environ: raise OpenCodeError(f"required credential variable {name} is unset")
             env[name] = os.environ[name]
@@ -249,10 +254,22 @@ class OpenCodeProvider:
             raise OpenCodeError("opencode executable is unavailable or incompatible")
         spec.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         spec.config_dir.chmod(0o700)
-        config = {**self._safe_source_config(spec),
-                  "autoupdate": False, "share": "disabled", "model": f"{spec.runtime.provider}/{spec.runtime.model}",
-                  "provider": {spec.runtime.provider: {"env": list(spec.runtime.credential_env_names),
-                  "options": {"baseURL": spec.runtime.endpoint}}}}
+        config = {
+            **self._safe_source_config(spec),
+            "autoupdate": False,
+            "share": "disabled",
+        }
+        if not spec.runtime.is_provider_managed:
+            assert spec.runtime.provider is not None
+            config.update({
+                "model": f"{spec.runtime.provider}/{spec.runtime.model}",
+                "provider": {
+                    spec.runtime.provider: {
+                        "env": list(spec.runtime.credential_env_names),
+                        "options": {"baseURL": spec.runtime.endpoint},
+                    },
+                },
+            })
         if spec.mcp_servers:
             config["mcp"] = dict(spec.mcp_servers)
         path = spec.config_dir / "opencode.json"

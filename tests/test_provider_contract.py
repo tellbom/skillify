@@ -86,6 +86,12 @@ def test_runtime_config_is_immutable_validated_and_redacted() -> None:
         ModelRuntimeConfig("p", "https://model.intranet.example/v1", "m", ("model.intranet.example",), ("KEY=value",))
 
 
+def test_empty_runtime_delegates_model_and_credentials_to_provider_cli() -> None:
+    config = ModelRuntimeConfig()
+    assert config.is_provider_managed is True
+    assert config.redacted() == {"source": "provider"}
+
+
 @pytest.mark.parametrize("endpoint", [
     "https://model.intranet.example:not-a-port/v1",
     "https://model.intranet.example:99999/v1",

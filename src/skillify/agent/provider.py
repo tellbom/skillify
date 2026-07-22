@@ -15,13 +15,19 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 @dataclass(frozen=True)
 class ModelRuntimeConfig:
-    provider: str
-    endpoint: str
-    model: str
-    allowed_endpoint_hosts: tuple[str, ...]
-    credential_env_names: tuple[str, ...]
+    provider: str | None = None
+    endpoint: str | None = None
+    model: str | None = None
+    allowed_endpoint_hosts: tuple[str, ...] = ()
+    credential_env_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        values = (self.provider, self.endpoint, self.model)
+        if not any(values) and not self.allowed_endpoint_hosts and not self.credential_env_names:
+            return
+        if not all(values):
+            raise ValueError("managed model runtime config is incomplete")
+        assert self.endpoint is not None
         parsed = urlsplit(self.endpoint)
         try:
             parsed.port
@@ -36,7 +42,14 @@ class ModelRuntimeConfig:
         if not self.credential_env_names or any(not _ENV_NAME.fullmatch(name) for name in self.credential_env_names):
             raise ValueError("credential environment-variable names are invalid")
 
+    @property
+    def is_provider_managed(self) -> bool:
+        return self.endpoint is None
+
     def redacted(self) -> dict[str, object]:
+        if self.is_provider_managed:
+            return {"source": "provider"}
+        assert self.endpoint is not None
         return {
             "provider": self.provider,
             "endpoint_host": urlsplit(self.endpoint).hostname,

@@ -87,13 +87,25 @@ class ClaudeCodeProvider:
         return handle
 
     def _environment(self, spec: ProviderStartSpec) -> dict[str, str]:
-        env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
+        # Claude Code owns its login, model and endpoint settings.  Preserve the
+        # normal user configuration roots and only apply an explicit managed
+        # runtime when one was deliberately configured for an isolated runtime.
+        env = {
+            key: os.environ[key]
+            for key in (
+                "PATH", "LANG", "LC_ALL", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                "USER", "LOGNAME", "SSH_AUTH_SOCK",
+            )
+            if key in os.environ
+        }
         for name in spec.runtime.credential_env_names:
             if name not in os.environ:
                 raise ClaudeCodeError(f"required credential variable {name} is unset")
             env[name] = os.environ[name]
-        env["ANTHROPIC_BASE_URL"] = spec.runtime.endpoint
-        env["ANTHROPIC_MODEL"] = spec.runtime.model
+        if not spec.runtime.is_provider_managed:
+            assert spec.runtime.endpoint is not None and spec.runtime.model is not None
+            env["ANTHROPIC_BASE_URL"] = spec.runtime.endpoint
+            env["ANTHROPIC_MODEL"] = spec.runtime.model
         env["DISABLE_TELEMETRY"] = "1"
         return env
 
@@ -104,7 +116,10 @@ class ClaudeCodeProvider:
         path, _ = self._probe()
         assert path is not None
         from skillify.agent.claudecode_config import write_task_mcp_config
-        argv = [path, "-p", "--output-format", "stream-json", "--verbose", "--model", runtime.spec.runtime.model]
+        argv = [path, "-p", "--output-format", "stream-json", "--verbose"]
+        if not runtime.spec.runtime.is_provider_managed:
+            assert runtime.spec.runtime.model is not None
+            argv.extend(["--model", runtime.spec.runtime.model])
         mcp_path = write_task_mcp_config(runtime.spec.config_dir, runtime.spec.mcp_servers)
         if mcp_path is not None:
             argv.extend(["--mcp-config", str(mcp_path)])
