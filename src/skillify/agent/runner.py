@@ -130,7 +130,11 @@ class TaskRunner:
                 self.log(plan.log)
             start_spec = replace(start_spec, mcp_servers=plan.servers)
             handle = provider.start(start_spec)
-            session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
+            try:
+                session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
+            except BaseException:
+                provider.stop(handle)
+                raise
         with self._active_lock:
             self._active[envelope.task_id] = (provider, handle, session)
         version = state_version

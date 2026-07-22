@@ -213,6 +213,13 @@ class OpenCodeProvider:
             )
             if key in os.environ
         }
+        # A fixed endpoint runtime must not open a newer user-managed OpenCode DB.
+        # Keep HOME/XDG_CONFIG_HOME for the user's model configuration, while runtime
+        # sessions and migrations live under this task's isolated data root.
+        data_home = config_dir / "data"
+        data_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        data_home.chmod(0o700)
+        env["XDG_DATA_HOME"] = str(data_home)
         for name in runtime.credential_env_names:
             if name not in os.environ: raise OpenCodeError(f"required credential variable {name} is unset")
             env[name] = os.environ[name]

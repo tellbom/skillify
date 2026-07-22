@@ -1,97 +1,67 @@
-# Skillify local infra (T0.3 + T2.1/T2.2 additions)
+# Skillify server infrastructure
 
-Forgejo + its dedicated PostgreSQL + devpi + Skillify services. Skillify business tables
-live in a separate, externally managed DM8 schema; Skillify never reads or writes Forgejo's
-PostgreSQL database directly.
+Skillify uses Docker CLI lifecycle scripts. Docker Compose is not required or
+invoked by the supported deployment path.
 
-## Start
+Forgejo uses its dedicated PostgreSQL volume. Skillify business tables remain
+in the separately managed DM8 schema; Skillify does not use Forgejo PostgreSQL
+for business data.
+
+## Configure
 
 ```sh
-cd infra
-cp .env.example .env
-# required before startup — see the sections below:
-#   SKILLIFY_INDEX_DB_URL=dm+dmPython://...
-#   SKILLIFY_FORGEJO_TOKEN=<a Forgejo access token>
-#   SKILLIFY_WEBHOOK_SECRET=<any random string; must match the Forgejo webhook config>
-docker compose up -d --build
+cp infra/.env.example infra/.env
 ```
 
-Before starting Skillify, create its dedicated DM8 user/schema and import the five empty
-business tables with DIsql:
+Set the DM8 URL, Forgejo token, webhook secret, Keycloak settings, RBAC URL,
+and endpoint signing secrets in `infra/.env`. Keep real credentials outside
+Git.
 
-```text
-DIsql SKILLIFY_USER/<password>@<dm8-host>:5236 `infra/dm8-init/01-skillify-schema.sql`
+Before first deployment, create the dedicated DM8 schema and apply the required
+files in `infra/dm8-init` with the target installation's DIsql executable.
+
+## Deploy and operate
+
+Run from the repository root on the Linux Docker host:
+
+```sh
+sudo scripts/deployment/skillify-docker.sh deploy
+sudo scripts/deployment/skillify-docker.sh start
+sudo scripts/deployment/skillify-docker.sh restart
+sudo scripts/deployment/skillify-docker.sh stop
+sudo scripts/deployment/skillify-docker.sh status
 ```
 
-Use the DIsql invocation supported by the target DM8 installation. The committed command is
-deliberately a placeholder: credentials and server addresses must stay outside the repository.
-Forgejo's PostgreSQL initialization does not create a `skillify_index` database.
+`deploy` builds the backend, frontend, and devpi images; creates missing Docker
+network, stateful containers, and named volumes; and recreates only the Web,
+webhook, and frontend containers. It never deletes named volumes. Existing
+PostgreSQL, Forgejo, and devpi containers are started as-is, so stateful image
+or data-format changes remain an explicit maintenance operation.
 
-## Verify acceptance criteria (T0.3)
+The legacy test-server entry point delegates to the same Docker CLI script:
 
-1. **Starts with one command**: `docker compose up -d --build` exits 0, `docker compose ps`
-   shows `db`, `forgejo`, `devpi`, `webhook`, `skillify-web`, and `frontend` running. Open
-   `http://localhost:8080` (or `SKILLIFY_HTTP_PORT`) for the complete Skillify UI. The Nginx
-   frontend proxies `/api`, `/docs`, and `/openapi.json` to `skillify-web`.
+```sh
+sudo scripts/deployment/start-test-server-docker.sh
+```
 
-2. **Forgejo can create an org/repo/Release**:
-   - Open `http://localhost:3000`, complete first-run install (DB fields are pre-filled from
-     env, just confirm), create an admin account.
-   - `Site Administration` or the `+` menu → create an organization (e.g. `skillify`).
-   - Inside that org, create a repository (e.g. `excel-pivot-analysis`).
-   - On that repo, create a Release (any tag) and upload a file as a Release asset — this is
-     the exact path `skillctl publish` (T1.3) will drive via the Forgejo API.
-   - Generate a personal access token (`Settings → Applications`) — this becomes
-     `forgejo_token` in `~/.skillify/config.yaml` / `SKILLIFY_FORGEJO_TOKEN`.
-   - The complete Compose stack enables `SKILLIFY_WEB_UPLOAD_GIT_ENABLED`: validated Web
-     uploads create a normal source commit and version tag through Forgejo Git before the
-     Release is finalized. Git objects and metadata remain owned by Forgejo; DM8 stores none
-     of this source data.
+When present, the script also starts the existing Keycloak, Redis, and
+Elasticsearch containers plus `rbac-api.service` and `rbac-worker.service`.
 
-3. **devpi works as a pip index**:
-   ```sh
-   pip install devpi-client
-   devpi use http://localhost:3141
-   devpi user -c skillify password=skillify
-   devpi login skillify --password=skillify
-   devpi index -c dev bases=root/pypi   # inherits from PyPI if the host has internet;
-                                          # on a fully offline intranet host, drop the
-                                          # `bases=` inheritance and pre-load packages
-                                          # via `devpi upload` / mirrored wheels instead.
-   devpi use skillify/dev
-   pip install --index-url http://localhost:3141/skillify/dev/+simple/ requests
-   ```
-   A successful `pip install` against that `--index-url` is the acceptance signal; this is
-   the same `--index-url` shape `skillctl install` (T1.4/T1.5) will pass through to `uv pip
-   install` inside each skill's per-skill venv.
+## Verify
 
-4. **Webhook packaging service (T2.1) receives Forgejo pushes and auto-publishes**:
-   - On the org created in step 2, `Settings → Webhooks → Add Webhook → Forgejo`.
-     - Target URL: `http://webhook:8088/webhook/forgejo` (container-to-container — Forgejo
-       and the webhook service share the `skillify` compose network).
-     - Secret: same value as `SKILLIFY_WEBHOOK_SECRET` in `.env`.
-     - Trigger: "Push events" (the handler itself filters to tag pushes, see
-       `skillify/webhook/handler.py`).
-   - Push a tag matching a skill's `skill.yaml` `version` (e.g. `v0.1.0`) to a repo whose root
-     contains a valid skill (`skillctl init` scaffolds one). Forgejo delivers the webhook →
-     the service fetches that tag's archive, packages it, and publishes the Release — the
-     same outcome as running `skillctl publish` locally, without a human running it.
-   - Check `docker compose logs webhook` and the repo's Releases page to confirm.
+The `deploy`, `start`, and `restart` actions wait for container health and print
+a final status table. Useful follow-up commands are:
 
-5. **DM8 business DB (T2.2) gets populated automatically by a successful publish**:
-   connect to the dedicated Skillify schema with DIsql and run
-   `SELECT namespace, name, version, tags FROM skill_index;`. It should show a row for the
-   release published in step 4. The application never creates or alters DM8 tables at runtime.
+```sh
+curl -f http://127.0.0.1:${SKILLIFY_HTTP_PORT:-8080}/healthz
+docker logs --tail 100 skillify-skillify-web-1
+docker logs --tail 100 skillify-webhook-1
+docker logs --tail 100 skillify-forgejo-1
+```
 
-## Known gaps (flagging per the joint-review ask)
+The frontend proxies `/api`, `/healthz`, `/docs`, and `/openapi.json` to the
+`skillify-web` container and `/rbac-api/` to the host RBAC service.
 
-- **The complete Compose stack** has **not been run end-to-end** in this session — the
-  dev sandbox is Windows without Docker available (`docker: command not found`). The YAML has
-  been syntax/schema-sanity-checked (`tests/test_infra_compose.py`), and the image choices +
-  env wiring follow each project's documented docker configuration, but nobody has actually
-  clicked through steps 2–3 above yet.
-- **The shared Python image and frontend Nginx image** have the same limitation: their
-  Docker builds and container health checks still need a real Linux Docker host.
-- Whoever has a Docker host next should run through this whole README top to bottom and report
-  back — this is exactly the kind of thing that should get exercised before M2's pipeline is
-  pointed at a real intranet Forgejo for real.
+For Forgejo tag-push publishing, configure a Forgejo webhook with target
+`http://webhook:8088/webhook/forgejo` and the same secret as
+`SKILLIFY_WEBHOOK_SECRET`. The `webhook` network alias is created by the script.

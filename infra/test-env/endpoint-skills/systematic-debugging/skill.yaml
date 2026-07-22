@@ -1,0 +1,16 @@
+manifestVersion: 1
+namespace: skillify-acceptance
+name: systematic-debugging
+version: 1.0.0
+permissions:
+  readPaths: ["*"]
+  writePaths: ["*"]
+  commands:
+    "git diff *": allow
+    "grep *": allow
+    "python3 tests/verify.py": allow
+  networkDomains: []
+  mcpServers: []
+  databaseResources: []
+  unattended: false
+  confirm: [write, command]

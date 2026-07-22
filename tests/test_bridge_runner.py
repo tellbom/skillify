@@ -200,3 +200,33 @@ def test_task_runner_cancels_the_active_provider_and_reports_cancelled(tmp_path:
 
     assert not worker.is_alive()
     assert [item["payload"]["eventType"] for item in outbox.pending()] == ["task.cancelled"]
+
+
+def test_task_runner_stops_provider_when_session_creation_fails(tmp_path: Path) -> None:
+    handle = ProviderHandle("handle-1", "opencode", "1.0.0", "http://127.0.0.1", 10)
+
+    class FailingProvider:
+        stopped = False
+
+        def start(self, spec):
+            return handle
+
+        def create_session(self, value, spec):
+            raise RuntimeError("session failed")
+
+        def stop(self, value):
+            self.stopped = True
+            return ProviderResult(TaskState.SUCCEEDED)
+
+    provider = FailingProvider()
+    workspace = tmp_path / "repo"; workspace.mkdir()
+    runner = TaskRunner(
+        {"opencode": provider},
+        lambda _: ProviderStartSpec(workspace, (workspace,), tmp_path / "config", ModelRuntimeConfig()),
+        LocalOutbox(tmp_path / "outbox.jsonl"),
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="session failed"):
+        runner.run(_envelope(), state_version=2)
+    assert provider.stopped is True

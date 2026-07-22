@@ -219,6 +219,7 @@ def test_provider_owned_runtime_preserves_user_home_without_overriding_model(
     config = json.loads((tmp_path / "owned-config/opencode.json").read_text(encoding="utf-8"))
     assert "model" not in config and "provider" not in config
     assert captured["kwargs"]["env"]["HOME"] == str(user_home)
+    assert captured["kwargs"]["env"]["XDG_DATA_HOME"] == str(tmp_path / "owned-config/data")
     assert "MODEL_KEY" not in captured["kwargs"]["env"]
 
 

@@ -184,7 +184,12 @@ def load_workflow_pack(path: Path) -> WorkflowPack:
 
 def load_bundled_workflow_pack(workflow_id: str, root: Path | None = None) -> WorkflowPack:
     """Load one shipped workflow by its declared id, never by a caller-supplied path."""
-    workflows_root = Path(root) if root is not None else Path(__file__).resolve().parents[3] / "workflows"
+    if root is not None:
+        workflows_root = Path(root)
+    else:
+        packaged_root = Path(__file__).resolve().parents[1] / "_bundled_workflows"
+        source_root = Path(__file__).resolve().parents[3] / "workflows"
+        workflows_root = packaged_root if packaged_root.is_dir() else source_root
     matches: list[WorkflowPack] = []
     for candidate in sorted(workflows_root.iterdir() if workflows_root.is_dir() else ()):
         if not candidate.is_dir() or not (candidate / "workflow.yaml").is_file():
