@@ -73,6 +73,9 @@ def claim_next_task(
         lease_owner=lease_owner,
         lease_expires_at=expires,
         heartbeat_at=now,
+        envelope_json=None,
+        issued_at=None,
+        expires_at=None,
         state_version=EndpointTaskRecord.state_version + 1,
         updated_at=now,
     ).execution_options(synchronize_session=False)).rowcount

@@ -67,7 +67,9 @@ def test_expired_running_task_is_reclaimed_after_bridge_restart() -> None:
         session, endpoint_id="endpoint-1", lease_owner="endpoint-1",
         now=NOW, lease_seconds=10,
     )
-    claimed.state = "running"; session.commit()
+    claimed.state = "running"
+    claimed.envelope_json = {"stale": True}
+    session.commit()
 
     reclaimed = claim_next_task(
         session, endpoint_id="endpoint-1", lease_owner="endpoint-1",
@@ -77,6 +79,7 @@ def test_expired_running_task_is_reclaimed_after_bridge_restart() -> None:
     assert reclaimed is not None
     assert reclaimed.task_id == "task-1" and reclaimed.state == "running"
     assert reclaimed.state_version == 2
+    assert reclaimed.envelope_json is None
 
 
 def test_heartbeat_rejects_wrong_endpoint_or_owner() -> None:
