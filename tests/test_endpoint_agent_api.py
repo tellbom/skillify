@@ -77,6 +77,7 @@ def test_pull_confirm_event_and_duplicate_event(monkeypatch, tmp_path: Path) -> 
         envelope = TaskEnvelope.from_dict(pulled.json()["tasks"][0])
         envelope.verify(SECRET.encode(), datetime.now(timezone.utc))
         assert envelope.task_id == task_id and envelope.runtime == "claude-code"
+        assert envelope.mcp_packages == ("codegraph", "forgejo")
         assert client.get("/api/endpoint/tasks/pull").json()["tasks"][0] == envelope.to_dict()
 
         confirmed = client.post(

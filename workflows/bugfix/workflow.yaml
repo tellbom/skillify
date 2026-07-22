@@ -4,6 +4,7 @@ runtime: [opencode, claude-code]
 entryAgent: build
 mode: workspace-write
 skills: [systematic-debugging, test-driven-development, verification-before-completion, requesting-code-review]
+mcp: [codegraph, forgejo]
 gates:
   - id: reproduction-evidence
     requiredByDefault: true

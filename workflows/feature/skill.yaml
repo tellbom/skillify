@@ -18,7 +18,7 @@ permissions:
     "npm test *": allow
     "git diff *": allow
   networkDomains: []
-  mcpServers: []
+  mcpServers: [codegraph, forgejo]
   databaseResources: []
   unattended: false
   confirm: [write, command]

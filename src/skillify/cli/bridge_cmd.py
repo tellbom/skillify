@@ -299,6 +299,7 @@ def _build_runner(outbox: LocalOutbox):
     from skillify.tasks.task_permissions import assemble_task_permissions
     from skillify.tasks.work_package import WorkPackage
     from skillify.workflows import load_bundled_workflow_pack
+    import sys
     import yaml
 
     paths = load_agent_paths(); config = load_agent_local_config(paths)
@@ -377,6 +378,20 @@ def _build_runner(outbox: LocalOutbox):
             "mcpServers": ["codegraph"],
         }),
     )}
+    if config.forgejo_mcp_credentials_file:
+        mcp_catalog["forgejo"] = McpPackageConfig(
+            "forgejo", sys.executable,
+            ("-m", "skillify.cli.main", "mcp", "serve", "forgejo"),
+            {
+                "SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE":
+                    config.forgejo_mcp_credentials_file,
+            },
+            ("forgejo.get_issue", "forgejo.comment_issue", "ci.get_status"), 2400,
+            PermissionManifest.from_value("mcp:forgejo", {
+                "readPaths": ["*"], "writePaths": ["*"],
+                "commands": {"*": "allow"}, "mcpServers": ["forgejo"],
+            }),
+        )
 
     def permission_resolver(envelope: TaskEnvelope):
         workflow = load_bundled_workflow_pack(envelope.workflow_id)

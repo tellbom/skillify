@@ -131,9 +131,8 @@ def dispatch_task(
         raise ValueError("execution mode is unsupported")
     is_codemap = workflow_id in CODEMAP_WORKFLOWS
     is_app = workflow_id in {"local-doc-search", "file-processing"}
-    delegation_mode = "adaptive" if is_codemap or is_app else load_bundled_workflow_pack(
-        workflow_id,
-    ).delegation.mode
+    workflow = None if is_codemap or is_app else load_bundled_workflow_pack(workflow_id)
+    delegation_mode = "adaptive" if workflow is None else workflow.delegation.mode
     if is_codemap:
         if execution_mode != "single" or runtime not in {"codemap", "opencode"}:
             raise ValueError("Code Map actions require the fixed codemap runtime")
@@ -181,7 +180,9 @@ def dispatch_task(
         objective=(f"View Code Map for {workspace_alias}" if is_codemap else f"Complete {workflow_id}: {summary}"),
         allowed_paths=["**/*"], dependencies=[],
         access="read" if is_codemap or workflow_id == "local-doc-search" else "write",
-        recommended_skills=[], recommended_mcp=[] if is_codemap else ["codegraph"],
+        recommended_skills=[], recommended_mcp=(
+            [] if is_codemap or is_app else list(workflow.mcp or ("codegraph",))
+        ),
         acceptance_commands=[], parallelizable=False, confirmed=is_codemap or is_app,
         depends_on=[], read_only=is_codemap or workflow_id == "local-doc-search", verification=[],
     ))

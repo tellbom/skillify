@@ -4,6 +4,7 @@ runtime: [opencode, claude-code]
 entryAgent: build
 mode: workspace-write
 skills: [requirements-clarification, codegraph-exploration, test-driven-development, requesting-code-review]
+mcp: [codegraph, forgejo]
 delegation:
   mode: suggested
   user_approval: required

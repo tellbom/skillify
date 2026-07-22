@@ -57,6 +57,8 @@ from skillify.cli.bridge_cmd import bridge_app, connect
 agent_app.add_typer(bridge_app, name="bridge")
 agent_app.command("connect")(connect)
 
+_WORKSPACE_ALIAS = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
 
 class AgentErrorCode(str, Enum):
     OK = "OK"
@@ -586,6 +588,7 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
 @agent_app.command()
 def init(
     workspace: Path = typer.Option(..., "--workspace"),
+    alias: str | None = typer.Option(None, "--alias"),
     provider: str = typer.Option("opencode", "--provider"),
     model_endpoint: str | None = typer.Option(None, "--model-endpoint"),
     model_provider: str | None = typer.Option(None, "--model-provider"),
@@ -607,12 +610,21 @@ def init(
             ) from exc
         if not resolved.is_dir() or resolved in {Path("/"), Path.home().resolve()}:
             raise AgentCommandFailure(AgentErrorCode.WORKSPACE_UNAUTHORIZED, "workspace is not allowed")
+        if alias is not None and not _WORKSPACE_ALIAS.fullmatch(alias):
+            raise AgentCommandFailure(
+                AgentErrorCode.CONFIG_INVALID,
+                "workspace alias must use lowercase letters, digits, dot, underscore, or hyphen",
+            )
         paths, config = _config()
         allowed = tuple(sorted(set(config.allowed_workspaces) | {str(resolved)}))
+        aliases = dict(config.workspace_aliases)
+        if alias is not None:
+            aliases[alias] = str(resolved)
         updated = replace(
             config,
             provider="opencode",
             allowed_workspaces=allowed,
+            workspace_aliases=aliases,
             model_endpoint=model_endpoint or config.model_endpoint,
             model_provider=model_provider or config.model_provider,
             model_name=model_name or config.model_name,
@@ -627,7 +639,10 @@ def init(
             ok=True,
             code=AgentErrorCode.OK,
             message="workspace registered",
-            data={"workspace": str(resolved)},
+            data={
+                "workspace": str(resolved),
+                **({"alias": alias} if alias is not None else {}),
+            },
             output=output,
         )
     except AgentCommandFailure as exc:

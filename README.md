@@ -518,6 +518,45 @@ Content-Type: application/json
 源码提交、打包、checksum、Forgejo Release、索引和发布任务记录。成功发布的 build 不再
 允许修改或重复确认；发布失败会恢复为可重试状态，前端可使用同一 build/revision 重试。
 
+## Endpoint Forgejo Issue 任务
+
+Endpoint 的代码目录必须先显式注册。`--alias` 应与 Web 端点下拉框中的工作区别名一致：
+
+```bash
+skillctl agent init \
+  --workspace /absolute/path/to/private-repository \
+  --alias acceptance \
+  --provider opencode
+```
+
+端侧 Forgejo MCP 使用独立的 `0600` 凭据文件，不把 Token 写入仓库或任务参数：
+
+```bash
+install -m 600 /dev/null ~/.config/skillify/agent/forgejo-mcp.env
+```
+
+文件内容：
+
+```dotenv
+SKILLIFY_MCP_FORGEJO_URL=http://forgejo-host:3000
+SKILLIFY_MCP_FORGEJO_TOKEN=<approved-service-token>
+SKILLIFY_MCP_FORGEJO_SCOPES=repo:read,issue:write,ci:read
+SKILLIFY_MCP_FORGEJO_WRITE_TOOLS=forgejo.comment_issue
+```
+
+启动 Bridge 时提供凭据文件位置和 Endpoint Device Token：
+
+```bash
+export SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE="$HOME/.config/skillify/agent/forgejo-mcp.env"
+export SKILLIFY_ENDPOINT_TOKEN='<endpoint-device-token>'
+skillctl agent bridge start --server http://skillify-web:8089
+```
+
+Bugfix、Feature 和 Review Workflow 会按任务注入 Forgejo MCP。Bugfix 的
+`issueReference` 应使用 `http://forgejo-host:3000/<owner>/<repo>/issues/<number>`；Agent
+先调用 `forgejo.get_issue`，按本地工作区执行，再调用 `forgejo.comment_issue` 回写结果或
+阻断问题。Agent 不自动关闭 Issue，最终评审与关闭仍由用户在私有 Forgejo 完成。
+
 ## Endpoint Code Map（个人非商业）
 
 人用 Code Map 使用固定的 GitNexus v1.6.9，只在 Endpoint 本机扫描 Skillify 状态目录中的

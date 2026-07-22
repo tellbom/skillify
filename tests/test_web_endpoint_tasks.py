@@ -75,6 +75,7 @@ def test_dispatches_fixed_workflow_to_owned_online_endpoint(monkeypatch, tmp_pat
         assert task["state"] == "awaiting_confirmation"
         assert task["approvalRequired"] is True
         assert task["workflowId"] == "evidence-bugfix"
+        assert task["workPackages"][0]["recommendedMcp"] == ["codegraph", "forgejo"]
         listed = client.get("/api/endpoint-tasks").json()
         assert [item["taskId"] for item in listed] == [task["taskId"]]
     finally:

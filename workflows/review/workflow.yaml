@@ -4,6 +4,7 @@ runtime: [opencode, claude-code]
 entryAgent: plan
 mode: read-only
 skills: [codegraph-exploration, evidence-code-review, evidence-reporting]
+mcp: [codegraph, forgejo]
 delegation:
   mode: required
   user_approval: required

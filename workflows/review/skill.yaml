@@ -16,7 +16,7 @@ permissions:
   commands:
     "git diff *": allow
   networkDomains: []
-  mcpServers: []
+  mcpServers: [codegraph, forgejo]
   databaseResources: []
   unattended: false
   confirm: [command]

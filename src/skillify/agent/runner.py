@@ -16,6 +16,7 @@ from skillify.agent.provider import AgentProvider, ProviderRecovery, ProviderSta
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import build_task_event
 from skillify.tasks.mcp_injection import McpPackageConfig, select_task_mcp
+from skillify.tasks.forgejo_issue import forgejo_issue_instructions
 
 
 class TaskRunnerError(RuntimeError):
@@ -71,6 +72,7 @@ class TaskRunner:
         prompt = (
             f"Execute published workflow {envelope.workflow_id}@{envelope.workflow_version}. "
             f"Fixed inputs: {json.dumps(dict(envelope.parameters), sort_keys=True, ensure_ascii=False)}"
+            f"{forgejo_issue_instructions(envelope.workflow_id, envelope.parameters)}"
         )
         recovery = ProviderRecovery("absent")
         recover = getattr(provider, "recover", None)

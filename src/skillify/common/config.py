@@ -47,6 +47,7 @@ class AgentLocalConfig:
     model_name: str | None = None
     allowed_model_hosts: tuple[str, ...] = ()
     credential_env_names: tuple[str, ...] = ()
+    forgejo_mcp_credentials_file: str | None = None
     opencode_manifest_path: str | None = None
     opencode_artifact_root: str | None = None
     opencode_user_config_path: str | None = None
@@ -90,6 +91,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_OPENCODE_MANIFEST_PATH": "opencode_manifest_path",
         "SKILLIFY_OPENCODE_ARTIFACT_ROOT": "opencode_artifact_root",
         "SKILLIFY_OPENCODE_USER_CONFIG_PATH": "opencode_user_config_path",
+        "SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE": "forgejo_mcp_credentials_file",
         "SKILLIFY_SHOGUN_MANIFEST_PATH": "shogun_manifest_path",
         "SKILLIFY_SHOGUN_ARTIFACT_PATH": "shogun_artifact_path",
         "SKILLIFY_SHOGUN_INSTALL_ROOT": "shogun_install_root",
@@ -116,6 +118,7 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         model_name=data.get("model_name"),
         allowed_model_hosts=tuple(data.get("allowed_model_hosts", ())),
         credential_env_names=tuple(data.get("credential_env_names", ())),
+        forgejo_mcp_credentials_file=data.get("forgejo_mcp_credentials_file"),
         opencode_manifest_path=data.get("opencode_manifest_path"),
         opencode_artifact_root=data.get("opencode_artifact_root"),
         opencode_user_config_path=data.get("opencode_user_config_path"),
@@ -136,6 +139,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     if (config.opencode_user_config_path is not None and
             not Path(config.opencode_user_config_path).is_absolute()):
         raise ValueError("OpenCode user config path must be absolute")
+    if (config.forgejo_mcp_credentials_file is not None and
+            not Path(config.forgejo_mcp_credentials_file).is_absolute()):
+        raise ValueError("Forgejo MCP credentials file path must be absolute")
     shogun_paths = (
         config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
     )

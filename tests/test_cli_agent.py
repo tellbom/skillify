@@ -96,6 +96,38 @@ def test_agent_init_records_only_resolved_workspace(tmp_path: Path) -> None:
     assert str(tmp_path.parent) not in config["allowed_workspaces"]
 
 
+def test_agent_init_registers_workspace_alias(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    result = runner.invoke(
+        agent_app,
+        [
+            "init", "--workspace", str(workspace), "--alias", "acceptance",
+            "--format", "json",
+        ],
+        env=_env(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    assert _json(result)["data"]["alias"] == "acceptance"
+    config = yaml.safe_load((tmp_path / "config/config.yaml").read_text(encoding="utf-8"))
+    assert config["workspace_aliases"] == {"acceptance": str(workspace.resolve())}
+
+
+def test_agent_init_rejects_invalid_workspace_alias(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    result = runner.invoke(
+        agent_app,
+        ["init", "--workspace", str(workspace), "--alias", "Bad Alias", "--format", "json"],
+        env=_env(tmp_path),
+    )
+
+    _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
+
+
 def test_agent_init_rejects_nonexistent_workspace_with_json_envelope(tmp_path: Path) -> None:
     result = runner.invoke(
         agent_app,

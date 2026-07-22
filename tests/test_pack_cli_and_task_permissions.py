@@ -101,6 +101,7 @@ def test_real_task_permission_assembly_keeps_workflow_deny_over_later_task_allow
     allow = PermissionManifest.from_value("skill:allow", {
         "readPaths": ["*"], "writePaths": ["*"],
         "commands": {"pytest *": "allow"},
+        "mcpServers": ["codegraph", "forgejo"],
     })
     package = WorkPackage.from_dict({
         "packageId": "implementation", "taskId": "task-1", "objective": "Implement",
@@ -111,7 +112,7 @@ def test_real_task_permission_assembly_keeps_workflow_deny_over_later_task_allow
     merged = assemble_task_permissions(
         workflow=workflow,
         skill_permissions={name: allow for name in workflow.skills},
-        mcp_permissions={}, packages=(package,),
+        mcp_permissions={name: allow for name in workflow.mcp}, packages=(package,),
     )
 
     decision = merged.decide(OperationRequest(
@@ -119,5 +120,5 @@ def test_real_task_permission_assembly_keeps_workflow_deny_over_later_task_allow
     ))
     assert decision.action is PermissionAction.DENY
     assert [policy.policy_id for policy in merged.policies] == [
-        "task:skills", "workflow:feature-development", "task:work-packages",
+        "task:skills", "workflow:feature-development", "task:mcp", "task:work-packages",
     ]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 import os
+from pathlib import Path
+import stat
 
 import requests
 
@@ -88,11 +90,57 @@ class ForgejoHttpBackend:
         return self._request("POST", f"/api/v1/repos/{owner}/{repository}/actions/runs/{run_id}/rerun")
 
 
+_CREDENTIAL_KEYS = frozenset({
+    "SKILLIFY_MCP_FORGEJO_URL",
+    "SKILLIFY_MCP_FORGEJO_TOKEN",
+    "SKILLIFY_MCP_FORGEJO_SCOPES",
+    "SKILLIFY_MCP_FORGEJO_WRITE_TOOLS",
+})
+
+
+def _load_credentials_file(path: Path) -> dict[str, str]:
+    candidate = Path(path).resolve(strict=True)
+    info = candidate.stat()
+    if not candidate.is_file():
+        raise ValueError("Forgejo MCP credentials path must be a file")
+    if os.name == "posix":
+        if stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid():
+            raise ValueError("Forgejo MCP credentials file must be owned by the current user with mode 0600")
+    values: dict[str, str] = {}
+    for raw in candidate.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError("Forgejo MCP credentials file contains an invalid line")
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if key not in _CREDENTIAL_KEYS or not value or key in values:
+            raise ValueError("Forgejo MCP credentials file contains an unsupported entry")
+        values[key] = value
+    return values
+
+
+def load_forgejo_environment() -> dict[str, str]:
+    values = {key: os.environ[key] for key in _CREDENTIAL_KEYS if os.environ.get(key)}
+    credentials_file = os.environ.get("SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE")
+    if credentials_file:
+        file_values = _load_credentials_file(Path(credentials_file))
+        values = {**file_values, **values}
+    if not values.get("SKILLIFY_MCP_FORGEJO_URL") or not values.get("SKILLIFY_MCP_FORGEJO_TOKEN"):
+        raise ValueError("Forgejo MCP URL and token are required")
+    return values
+
+
 def create_configured_server() -> FastMCP:
-    scopes = frozenset(value for value in os.environ.get("SKILLIFY_MCP_FORGEJO_SCOPES", "repo:read,ci:read").split(",") if value)
-    writes = frozenset(value for value in os.environ.get("SKILLIFY_MCP_FORGEJO_WRITE_TOOLS", "").split(",") if value)
+    environment = load_forgejo_environment()
+    scopes = frozenset(value for value in environment.get("SKILLIFY_MCP_FORGEJO_SCOPES", "repo:read,ci:read").split(",") if value)
+    writes = frozenset(value for value in environment.get("SKILLIFY_MCP_FORGEJO_WRITE_TOOLS", "").split(",") if value)
     connector = ForgejoDevelopmentConnector(
-        ForgejoHttpBackend(os.environ["SKILLIFY_MCP_FORGEJO_URL"], os.environ["SKILLIFY_MCP_FORGEJO_TOKEN"]),
+        ForgejoHttpBackend(
+            environment["SKILLIFY_MCP_FORGEJO_URL"],
+            environment["SKILLIFY_MCP_FORGEJO_TOKEN"],
+        ),
         ConnectorPolicy(scopes, writes),
     )
     return create_mcp_server(connector)
