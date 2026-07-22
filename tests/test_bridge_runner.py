@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
 
 from skillify.agent.fake_provider import FakeProvider
 from skillify.agent.provider import (
@@ -157,3 +158,45 @@ def test_bridge_safe_terminate_when_team_dead(tmp_path: Path) -> None:
 
     assert runner.run(envelope, state_version=2) == 3
     assert outbox.pending()[0]["payload"]["reasonCode"] == "team-recovery-dead"
+
+
+def test_task_runner_cancels_the_active_provider_and_reports_cancelled(tmp_path: Path) -> None:
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    started = threading.Event()
+    released = threading.Event()
+    handle = ProviderHandle("handle-1", "opencode", "1.0.0", "http://127.0.0.1", 10)
+    session = ProviderSession("task-1", "session-1", handle.handle_id)
+
+    class BlockingProvider:
+        def start(self, spec):
+            return handle
+
+        def create_session(self, value, spec):
+            return session
+
+        def stream_events(self, value, active_session):
+            started.set()
+            released.wait(2)
+            return iter(())
+
+        def cancel(self, value, active_session):
+            released.set()
+            return ProviderResult(TaskState.CANCELLED)
+
+        def stop(self, value):
+            return ProviderResult(TaskState.SUCCEEDED)
+
+    workspace = tmp_path / "repo"; workspace.mkdir()
+    runner = TaskRunner(
+        {"opencode": BlockingProvider()},
+        lambda _: ProviderStartSpec(workspace, (workspace,), tmp_path / "config", ModelRuntimeConfig()),
+        outbox,
+    )
+    worker = threading.Thread(target=lambda: runner.run(_envelope(), state_version=2))
+    worker.start()
+    assert started.wait(1)
+    assert runner.cancel("task-1") is True
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert [item["payload"]["eventType"] for item in outbox.pending()] == ["task.cancelled"]

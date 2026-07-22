@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointBinding
+from skillify.index.models import EndpointBinding, EndpointTaskRecord
 from skillify.web.app import app
 from skillify.web.auth import require_keycloak_user
 
@@ -78,6 +78,33 @@ def test_dispatches_fixed_workflow_to_owned_online_endpoint(monkeypatch, tmp_pat
         assert task["workPackages"][0]["recommendedMcp"] == ["codegraph", "forgejo"]
         listed = client.get("/api/endpoint-tasks").json()
         assert [item["taskId"] for item in listed] == [task["taskId"]]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_cancel_is_immediate_before_start_and_requests_endpoint_stop_when_running(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure(monkeypatch, tmp_path)
+    try:
+        queued = client.post("/api/endpoint-tasks", json=_task()).json()
+        stopped = client.post(f"/api/endpoint-tasks/{queued['taskId']}/cancel")
+        assert stopped.status_code == 200
+        assert stopped.json()["state"] == "cancelled"
+
+        running = client.post("/api/endpoint-tasks", json=_task()).json()
+        db_url = __import__("os").environ["SKILLIFY_INDEX_DB_URL"]
+        with Session(make_engine(db_url)) as session:
+            record = session.get(EndpointTaskRecord, running["taskId"])
+            record.state = "running"
+            original_version = record.state_version
+            session.commit()
+        requested = client.post(f"/api/endpoint-tasks/{running['taskId']}/cancel")
+        assert requested.status_code == 200
+        assert requested.json() == {
+            "taskId": running["taskId"], "state": "cancelling",
+            "stateVersion": original_version,
+        }
     finally:
         app.dependency_overrides.clear()
 

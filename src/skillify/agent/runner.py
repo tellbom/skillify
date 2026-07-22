@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from dataclasses import replace
 from collections.abc import Callable, Mapping
@@ -64,6 +65,20 @@ class TaskRunner:
         self.per_task_mcp = dict(per_task_mcp or {})
         self.log = log or (lambda message: None)
         self.permission_resolver = permission_resolver
+        self._active_lock = threading.Lock()
+        self._active: dict[str, tuple[AgentProvider, object, object]] = {}
+        self._cancelled: set[str] = set()
+
+    def cancel(self, task_id: str) -> bool:
+        """Cancel the provider session currently owned by this skillctl process."""
+        with self._active_lock:
+            active = self._active.get(task_id)
+            if active is None:
+                return False
+            self._cancelled.add(task_id)
+        provider, handle, session = active
+        provider.cancel(handle, session)
+        return True
 
     def run(self, envelope: TaskEnvelope, *, state_version: int) -> int:
         provider = self.providers.get(envelope.runtime)
@@ -116,9 +131,15 @@ class TaskRunner:
             start_spec = replace(start_spec, mcp_servers=plan.servers)
             handle = provider.start(start_spec)
             session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
+        with self._active_lock:
+            self._active[envelope.task_id] = (provider, handle, session)
         version = state_version
         try:
             for event in provider.stream_events(handle, session):
+                with self._active_lock:
+                    cancelled = envelope.task_id in self._cancelled
+                if cancelled:
+                    break
                 event_type = _reported_type(event)
                 if event_type is None:
                     continue
@@ -149,5 +170,28 @@ class TaskRunner:
                 self.outbox.enqueue(event_id, payload)
                 version += 1
         finally:
+            with self._active_lock:
+                cancelled = envelope.task_id in self._cancelled
+            if cancelled:
+                event_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"skillify:{envelope.task_id}:{session.session_id}:task.cancelled:external",
+                ).hex
+                self.outbox.enqueue(event_id, build_task_event(
+                    event_id=event_id,
+                    task_id=envelope.task_id,
+                    event_type="task.cancelled",
+                    occurred_at=datetime.now(timezone.utc),
+                    workflow_id=envelope.workflow_id,
+                    workflow_version=envelope.workflow_version,
+                    provider=handle.provider,
+                    provider_version=handle.provider_version,
+                    nonce=envelope.nonce,
+                    state_version=version,
+                ))
+                version += 1
             provider.stop(handle)
+            with self._active_lock:
+                self._active.pop(envelope.task_id, None)
+                self._cancelled.discard(envelope.task_id)
         return version

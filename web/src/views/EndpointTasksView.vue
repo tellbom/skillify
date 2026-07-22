@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
-  confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
+  cancelEndpointTask, confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
   updateTaskWorkPackages,
 } from '../lib/api.js'
 
@@ -20,6 +20,8 @@ const tasks = ref([])
 const loading = ref(true)
 const submitting = ref(false)
 const codemapSubmitting = ref(null)
+const cancellingTask = ref(null)
+let cancellationPollTimer = null
 const error = ref('')
 const TEAM_ENABLED = import.meta.env.VITE_SHOGUN_TEAM_ENABLED === 'true'
 const form = reactive({
@@ -164,7 +166,38 @@ async function confirmPackages(task) {
   }
 }
 
+async function cancelTask(task) {
+  if (cancellingTask.value) return
+  cancellingTask.value = task.taskId
+  error.value = ''
+  try {
+    const result = await cancelEndpointTask(task.taskId)
+    task.state = result.state
+    if (result.state === 'cancelling') scheduleCancellationRefresh(task.taskId)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    cancellingTask.value = null
+  }
+}
+
+function scheduleCancellationRefresh(taskId) {
+  clearTimeout(cancellationPollTimer)
+  cancellationPollTimer = setTimeout(async () => {
+    try {
+      const rows = await getEndpointTasks()
+      const updated = rows.find((item) => item.taskId === taskId)
+      const index = tasks.value.findIndex((item) => item.taskId === taskId)
+      if (updated && index >= 0) tasks.value[index] = editableTask(updated)
+      if (updated?.state === 'cancelling') scheduleCancellationRefresh(taskId)
+    } catch (err) {
+      error.value = err.message
+    }
+  }, 1000)
+}
+
 onMounted(load)
+onBeforeUnmount(() => clearTimeout(cancellationPollTimer))
 </script>
 
 <template>
@@ -257,6 +290,11 @@ onMounted(load)
             <span class="status-dot" :class="task.state" />
             <div><strong>{{ task.workflowId }}</strong><small>{{ task.executionMode || 'single' }} · {{ task.preferredCli || task.runtime }}</small><code>{{ task.taskId }}</code></div>
             <span class="state-pill">{{ task.state }}</span>
+            <button
+              v-if="['queued', 'awaiting_confirmation', 'running'].includes(task.state)"
+              type="button" class="cancel-task" :disabled="cancellingTask === task.taskId"
+              data-testid="cancel-task" @click="cancelTask(task)"
+            >{{ cancellingTask === task.taskId ? '请求中…' : '停止任务' }}</button>
           </div>
           <section v-if="!task.workflowId.startsWith('codemap.') && !['local-doc-search', 'file-processing'].includes(task.workflowId) && task.workPackages?.length" class="work-packages">
             <header><strong>协作工作包</strong><span>确认后由所选执行器管理 Agent</span></header>
@@ -336,6 +374,8 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .status-dot.succeeded { background: #80cbc4; }
 .status-dot.failed, .status-dot.rejected { background: #ef8d8d; }
 .state-pill { padding: 4px 7px; border: 1px solid #333; border-radius: 999px; color: #999; font: 600 9px ui-monospace, monospace; text-transform: uppercase; }
+.cancel-task { padding: 5px 9px; border: 1px solid #593a3a; border-radius: 5px; color: #e2a0a0; background: #261b1b; font-size: 10px; cursor: pointer; }
+.cancel-task:disabled { opacity: .5; cursor: wait; }
 .work-packages { margin: 14px 0 0 17px; padding: 12px; border: 1px solid #2d3d3b; border-radius: 8px; background: #151b1a; }
 .work-packages header { display: flex; justify-content: space-between; margin-bottom: 10px; color: #80cbc4; font-size: 11px; }
 .work-packages header span { color: #777; }

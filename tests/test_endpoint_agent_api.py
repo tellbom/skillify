@@ -122,6 +122,33 @@ def test_codemap_action_is_pullable_without_agent_work_package_confirmation(monk
         app.dependency_overrides.clear()
 
 
+def test_endpoint_observes_web_cancellation_request_and_confirms_cancelled(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure(monkeypatch, tmp_path); task_id = _dispatch(); _as_endpoint()
+    try:
+        envelope = TaskEnvelope.from_dict(client.get("/api/endpoint/tasks/pull").json()["tasks"][0])
+        confirmed = client.post(
+            f"/api/endpoint/tasks/{task_id}/confirm",
+            json={"nonce": envelope.nonce, "stateVersion": envelope.state_version},
+        ).json()
+        requested = client.post(f"/api/endpoint-tasks/{task_id}/cancel")
+        assert requested.status_code == 200 and requested.json()["state"] == "cancelling"
+
+        directive = client.get(
+            f"/api/endpoint/tasks/{task_id}/cancellation", params={"nonce": envelope.nonce},
+        )
+        assert directive.status_code == 200
+        assert directive.json()["cancelRequested"] is True
+        cancelled = client.post(
+            f"/api/endpoint/tasks/{task_id}/cancel",
+            json={"nonce": envelope.nonce, "stateVersion": confirmed["stateVersion"]},
+        )
+        assert cancelled.status_code == 200 and cancelled.json()["state"] == "cancelled"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_agent_app_directory_expansion_requires_separate_alias_bound_confirmation(
     monkeypatch, tmp_path: Path,
 ) -> None:

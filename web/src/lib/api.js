@@ -227,6 +227,10 @@ export function dispatchEndpointTask(payload) {
   return request('/endpoint-tasks', { method: 'POST', json: payload, auth: true })
 }
 
+export function cancelEndpointTask(taskId) {
+  return request(`/endpoint-tasks/${taskId}/cancel`, { method: 'POST', auth: true })
+}
+
 export function updateTaskWorkPackages(taskId, packages) {
   return request(`/endpoint-tasks/${taskId}/work-packages`, {
     method: 'PUT', json: { packages }, auth: true,

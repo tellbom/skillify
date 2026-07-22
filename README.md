@@ -580,6 +580,16 @@ SKILLIFY_MCP_FORGEJO_WRITE_TOOLS=forgejo.comment_issue
 skillctl agent bridge start
 ```
 
+Web 端停止任务只发送 `POST /api/endpoint-tasks/{taskId}/cancel`。运行中的任务先返回：
+
+```json
+{"taskId":"<id>","state":"cancelling","stateVersion":2}
+```
+
+实际中断由对应 Endpoint 上正在运行的 `skillctl agent bridge` 完成：Bridge 轮询停止指令，调用
+OpenCode、Claude Code 或当前执行器的取消能力，并在进程退出后上报 `task.cancelled`。Web 随后刷新为
+`cancelled`；停止操作不自动回滚工作区，也不自动关闭 Forgejo Issue。
+
 Git clone、fetch、commit 和 push 继续使用该操作系统用户已有的 Git/Forgejo 凭据；Skillify
 不保存第二套 Git Token，也不改写仓库的 remote 或 credential helper。
 

@@ -7,6 +7,7 @@ import os
 import signal
 import stat
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -32,10 +33,12 @@ class BridgeTransport(Protocol):
     def confirm_scope(
         self, task_id: str, nonce: str, state_version: int, purpose: str, aliases: list[str],
     ) -> None: ...
+    def cancellation(self, task_id: str, nonce: str) -> bool: ...
 
 
 class BridgeRunner(Protocol):
     def run(self, envelope, *, state_version: int) -> int: ...
+    def cancel(self, task_id: str) -> bool: ...
 
 
 class BridgeReporter(Protocol):
@@ -63,6 +66,10 @@ class RoutedBridgeRunner:
                 raise ValueError("Agent App runner is unavailable")
             return self.app_factory().run(envelope, state_version=state_version)
         return self.agent_runner.run(envelope, state_version=state_version)
+
+    def cancel(self, task_id: str) -> bool:
+        cancel = getattr(self.agent_runner, "cancel", None)
+        return bool(cancel and cancel(task_id))
 
 
 class HttpBridgeTransport:
@@ -119,6 +126,18 @@ class HttpBridgeTransport:
             response.raise_for_status()
         except requests.RequestException as exc:
             raise BridgeTransportError("endpoint App scope confirmation failed") from exc
+
+    def cancellation(self, task_id: str, nonce: str) -> bool:
+        try:
+            response = self.session.get(
+                f"{self.server_url}/api/endpoint/tasks/{task_id}/cancellation",
+                headers={"Authorization": f"Bearer {self.token}"},
+                params={"nonce": nonce}, timeout=10,
+            )
+            response.raise_for_status()
+            return response.json().get("cancelRequested") is True
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            raise BridgeTransportError("endpoint task cancellation check failed") from exc
 
 
 class LocalOutbox:
@@ -218,7 +237,33 @@ class BridgeLoop:
             state_version = self.transport.confirm(
                 envelope.task_id, envelope.nonce, envelope.state_version,
             )
-            self.runner.run(envelope, state_version=state_version)
+            error: list[BaseException] = []
+
+            def execute() -> None:
+                try:
+                    self.runner.run(envelope, state_version=state_version)
+                except BaseException as exc:
+                    error.append(exc)
+
+            worker = threading.Thread(target=execute, name=f"skillify-task-{envelope.task_id}")
+            worker.start()
+            cancel_requested = False
+            cancel_delivered = False
+            while worker.is_alive():
+                worker.join(timeout=0.5)
+                if not worker.is_alive():
+                    continue
+                if not cancel_requested:
+                    try:
+                        cancel_requested = self.transport.cancellation(
+                            envelope.task_id, envelope.nonce,
+                        )
+                    except BridgeTransportError:
+                        continue
+                if cancel_requested and not cancel_delivered:
+                    cancel_delivered = self.runner.cancel(envelope.task_id)
+            if error:
+                raise error[0]
             self._executed.add(envelope.task_id)
             self.reporter.flush()
         return True

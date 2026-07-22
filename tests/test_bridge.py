@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 from skillify.cli.bridge_cmd import (
     BridgeLoop,
@@ -26,10 +27,53 @@ class FakeTransport:
     def confirm(self, task_id: str, nonce: str, state_version: int) -> int:
         return state_version + 1
 
+    def cancellation(self, task_id: str, nonce: str) -> bool:
+        return False
+
 
 class NoopRunner:
     def run(self, envelope, *, state_version: int) -> int:
         return state_version
+
+    def cancel(self, task_id: str) -> bool:
+        return False
+
+
+def test_bridge_delivers_web_cancellation_to_active_runner(tmp_path: Path) -> None:
+    envelope = {
+        "taskProtocolVersion": 1,
+        "taskId": "task-1", "endpointId": "endpoint-1",
+        "workflowId": "evidence-bugfix", "workflowVersion": "1.0.0",
+        "workspaceAlias": "repo", "parameters": {"issueReference": "BUG-42"},
+        "issuedAt": "2026-07-22T00:00:00+00:00", "expiresAt": "2026-07-22T01:00:00+00:00",
+        "nonce": "nonce-1", "runtime": "opencode", "mcpPackages": [], "stateVersion": 1,
+        "signature": "signature",
+    }
+
+    class CancellingTransport(FakeTransport):
+        def cancellation(self, task_id: str, nonce: str) -> bool:
+            return True
+
+    class BlockingRunner:
+        def __init__(self):
+            self.done = threading.Event(); self.cancelled = []
+
+        def run(self, value, *, state_version: int) -> int:
+            assert self.done.wait(2)
+            return state_version + 1
+
+        def cancel(self, task_id: str) -> bool:
+            self.cancelled.append(task_id); self.done.set(); return True
+
+    runner = BlockingRunner()
+    transport = CancellingTransport([([envelope], "cursor-1")])
+    loop = BridgeLoop(
+        transport, LocalOutbox(tmp_path / "outbox.jsonl"), runner, NoopReporter(),
+        sleeper=lambda _: None,
+    )
+
+    assert loop.poll() is True
+    assert runner.cancelled == ["task-1"]
 
 
 class NoopReporter:

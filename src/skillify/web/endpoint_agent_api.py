@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, sessionmaker
 
 from skillify.common.config import load_config
@@ -236,6 +236,60 @@ def confirm_endpoint_task_scope(
         session.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TaskProtocolError as exc:
         session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.post("/api/endpoint-tasks/{task_id}/cancel")
+def request_endpoint_task_cancel(
+    task_id: str, claims: dict = Depends(require_keycloak_user),
+) -> dict:
+    """Record a user request; only skillctl is allowed to stop a running provider."""
+    session = _session()
+    try:
+        task = _owned_task(session, task_id, _web_owner(claims))
+        if task.state in {"cancelled", "cancelling"}:
+            return {"taskId": task.task_id, "state": task.state, "stateVersion": task.state_version}
+        if task.state in {"succeeded", "failed", "rejected", "revoked"}:
+            raise HTTPException(status_code=409, detail="task is already terminal")
+        if task.state in {"queued", "awaiting_confirmation"}:
+            transition_task(
+                session, task=task, expected_state=task.state, target_state="cancelled",
+                now=datetime.now(timezone.utc),
+            )
+        elif task.state == "running":
+            # Keep state_version stable: already-buffered endpoint events retain their order.
+            task.state = "cancelling"
+            task.updated_at = datetime.now(timezone.utc)
+            session.flush()
+        else:
+            raise HTTPException(status_code=409, detail="task cannot be cancelled in its current state")
+        session.commit()
+        return {"taskId": task.task_id, "state": task.state, "stateVersion": task.state_version}
+    finally:
+        session.close()
+
+
+@router.get("/api/endpoint/tasks/{task_id}/cancellation")
+def endpoint_task_cancellation(
+    task_id: str, nonce: str = Query(min_length=1),
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        task = session.get(EndpointTaskRecord, task_id)
+        if task is None or task.endpoint_id != endpoint_id:
+            raise HTTPException(status_code=404, detail="task not found")
+        envelope = task.envelope_json or {}
+        if envelope.get("nonce") != nonce or task.revoked:
+            raise HTTPException(status_code=409, detail="task nonce is invalid or revoked")
+        return {
+            "taskId": task.task_id,
+            "cancelRequested": task.state == "cancelling",
+            "state": task.state,
+            "stateVersion": task.state_version,
+        }
     finally:
         session.close()
 

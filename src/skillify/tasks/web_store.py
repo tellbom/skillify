@@ -370,7 +370,9 @@ def record_task_event(
     }.get(event_type)
     task.state_version += 1
     if terminal is not None:
-        task.state = terminal
+        # A buffered start event must not erase a Web cancellation request.
+        if task.state != "cancelling" or terminal in {"succeeded", "failed", "cancelled"}:
+            task.state = terminal
     task.updated_at = occurred_at
     record = EndpointTaskEventRecord(
         event_id=event_id, task_id=task_id, event_type=event_type,
