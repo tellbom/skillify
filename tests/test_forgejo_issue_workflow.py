@@ -42,6 +42,7 @@ def test_bugfix_prompt_requires_issue_read_comment_and_user_closure() -> None:
 
     assert "forgejo.get_issue" in instructions
     assert "forgejo.comment_issue" in instructions
+    assert "forgejo.ask_question" in instructions
     assert "number=7" in instructions
     assert "Do not close" in instructions
     assert forgejo_issue_instructions("feature-development", {}) == ""

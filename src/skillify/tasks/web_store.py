@@ -354,6 +354,7 @@ def record_task_event(
     terminal = {
         "task.started": "running", "task.succeeded": "succeeded",
         "task.failed": "failed", "task.rejected": "rejected",
+        "task.blocked": "blocked",
         "task.cancelled": "cancelled",
         "team.started": "running", "team.completed": "succeeded",
         "team.failed": "failed", "team.cancelled": "cancelled",

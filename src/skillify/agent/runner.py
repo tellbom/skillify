@@ -43,7 +43,7 @@ def _reported_type(event: TaskEvent) -> str | None:
             TaskState.CANCELLED: "task.cancelled",
         }.get(event.state, "task.failed")
     if event.type is EventType.TASK_BLOCKED:
-        return "task.failed"
+        return "task.blocked"
     return None
 
 
@@ -57,6 +57,7 @@ class TaskRunner:
         per_task_mcp: Mapping[str, bool] | None = None,
         log: Callable[[str], None] | None = None,
         permission_resolver: Callable[[TaskEnvelope], MergedPermissions] | None = None,
+        always_mcp: tuple[str, ...] = (),
     ) -> None:
         self.providers = dict(providers)
         self.start_spec = start_spec
@@ -65,6 +66,7 @@ class TaskRunner:
         self.per_task_mcp = dict(per_task_mcp or {})
         self.log = log or (lambda message: None)
         self.permission_resolver = permission_resolver
+        self.always_mcp = tuple(dict.fromkeys(always_mcp))
         self._active_lock = threading.Lock()
         self._active: dict[str, tuple[AgentProvider, object, object]] = {}
         self._cancelled: set[str] = set()
@@ -89,6 +91,14 @@ class TaskRunner:
             f"Fixed inputs: {json.dumps(dict(envelope.parameters), sort_keys=True, ensure_ascii=False)}"
             f"{forgejo_issue_instructions(envelope.workflow_id, envelope.parameters)}"
         )
+        if "catalog" in self.always_mcp:
+            prompt += (
+                "\nRuntime Skill catalog (required): before implementation, call skills.search "
+                "using the Issue/task intent. If a relevant result exists, call skills.load and "
+                "follow its returned SKILL.md in this run. If the task explicitly names a Skill, "
+                "search and load that Skill. Do not ask the user to choose or install a Skill; "
+                "continue with the best relevant result, or continue without one when search is empty."
+            )
         recovery = ProviderRecovery("absent")
         recover = getattr(provider, "recover", None)
         if envelope.runtime == "shogun" and callable(recover):
@@ -121,8 +131,9 @@ class TaskRunner:
                     start_spec, permissions=self.permission_resolver(envelope),
                 )
             injection_runtime = envelope.preferred_cli if envelope.runtime == "shogun" else envelope.runtime
+            requested_mcp = tuple(dict.fromkeys((*envelope.mcp_packages, *self.always_mcp)))
             plan = select_task_mcp(
-                envelope.mcp_packages, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,
+                requested_mcp, self.mcp_catalog, runtime=injection_runtime or envelope.runtime,
                 workspace=start_spec.workspace,
                 per_task_supported=self.per_task_mcp.get(injection_runtime or envelope.runtime, True),
             )
@@ -144,7 +155,11 @@ class TaskRunner:
                     cancelled = envelope.task_id in self._cancelled
                 if cancelled:
                     break
-                event_type = _reported_type(event)
+                blocking_question = (
+                    event.type is EventType.TOOL_COMPLETED
+                    and str(event.details.get("tool_name", "")).endswith("ask_question")
+                )
+                event_type = "task.blocked" if blocking_question else _reported_type(event)
                 if event_type is None:
                     continue
                 sequence = event.details.get("sequence", 0)
@@ -173,6 +188,8 @@ class TaskRunner:
                 )
                 self.outbox.enqueue(event_id, payload)
                 version += 1
+                if blocking_question:
+                    break
         finally:
             with self._active_lock:
                 cancelled = envelope.task_id in self._cancelled

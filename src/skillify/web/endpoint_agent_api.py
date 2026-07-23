@@ -23,9 +23,53 @@ from skillify.web.endpoint_auth import require_endpoint_machine
 from skillify.web.schemas import (
     EndpointEventIn, EndpointTaskLifecycleIn, EndpointTaskScopeConfirmationIn,
 )
+from skillify.web import service
 
 
 router = APIRouter()
+
+
+@router.get("/api/endpoint/catalog/skills")
+def search_endpoint_catalog(
+    q: str = Query(min_length=1),
+    limit: int = Query(default=5, ge=1, le=20),
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    """Expose the existing community index to an authenticated endpoint runtime."""
+    _, owner = _identity(claims)
+    session = _session()
+    try:
+        items, total = service.list_skills(
+            session, q, sort="updated", page=1, page_size=limit,
+        )
+        return {
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": total,
+        }
+    finally:
+        session.close()
+
+
+@router.get("/api/endpoint/catalog/skills/{namespace}/{name}")
+def load_endpoint_catalog_skill(
+    namespace: str,
+    name: str,
+    version: str | None = Query(default=None),
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    """Return one published Skill, including SKILL.md, for the current Agent context."""
+    _, owner = _identity(claims)
+    cfg = load_config()
+    session = _session()
+    try:
+        detail = service.get_skill_detail(
+            session, cfg, namespace, name, version=version, username=owner,
+        )
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"{namespace}/{name} not found in index")
+        return detail.model_dump(mode="json")
+    finally:
+        session.close()
 
 
 def _web_owner(claims: dict) -> str:
@@ -187,7 +231,9 @@ def _transition(
             return {"taskId": task.task_id, "state": task.state, "stateVersion": task.state_version}
         if target == "running" and task.state != "awaiting_confirmation":
             raise TaskConflictError("task is not awaiting confirmation")
-        if target == "cancelled" and task.state in {"succeeded", "failed", "cancelled", "rejected"}:
+        if target == "cancelled" and task.state in {
+            "succeeded", "failed", "blocked", "cancelled", "rejected",
+        }:
             raise TaskConflictError("task is already terminal")
         task = transition_task(
             session, task=task, expected_state=task.state,
@@ -252,7 +298,7 @@ def request_endpoint_task_cancel(
         task = _owned_task(session, task_id, _web_owner(claims))
         if task.state in {"cancelled", "cancelling"}:
             return {"taskId": task.task_id, "state": task.state, "stateVersion": task.state_version}
-        if task.state in {"succeeded", "failed", "rejected", "revoked"}:
+        if task.state in {"succeeded", "failed", "blocked", "rejected", "revoked"}:
             raise HTTPException(status_code=409, detail="task is already terminal")
         if task.state in {"queued", "awaiting_confirmation"}:
             transition_task(

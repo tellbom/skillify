@@ -5,7 +5,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointBinding, EndpointTaskRecord, EndpointTaskScopeGrant
+from skillify.index.models import (
+    EndpointBinding, EndpointTaskRecord, EndpointTaskScopeGrant, SkillIndexEntry,
+)
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.web.app import app
 from skillify.web.auth import require_keycloak_user
@@ -124,6 +126,29 @@ def test_codemap_action_is_pullable_without_agent_work_package_confirmation(monk
         assert envelope.runtime == "codemap"
         assert envelope.workflow_id == "codemap.visualization.status"
         assert envelope.mcp_packages == ()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_endpoint_machine_can_search_runtime_skill_catalog(monkeypatch, tmp_path: Path) -> None:
+    url = _configure(monkeypatch, tmp_path)
+    engine = make_engine(url)
+    with Session(engine) as session:
+        session.add(SkillIndexEntry(
+            namespace="community", name="systematic-debugging", version="1.0.0",
+            description="Debug methodically", author="tester", tags=["debugging"],
+            checksum="a" * 64, release_url="http://forgejo/release",
+            published_at=NOW, orchestration={}, governance={}, yanked=False,
+        ))
+        session.commit()
+    _as_endpoint()
+    try:
+        response = client.get(
+            "/api/endpoint/catalog/skills",
+            params={"q": "systematic-debugging", "limit": 3},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["items"][0]["name"] == "systematic-debugging"
     finally:
         app.dependency_overrides.clear()
 

@@ -28,6 +28,7 @@ class EndpointTaskState(str, Enum):
     CANCELLING = "cancelling"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     REVOKED = "revoked"
@@ -44,6 +45,7 @@ _TRANSITIONS = {
     }),
     EndpointTaskState.RUNNING: frozenset({
         EndpointTaskState.SUCCEEDED, EndpointTaskState.FAILED,
+        EndpointTaskState.BLOCKED,
         EndpointTaskState.CANCELLING, EndpointTaskState.CANCELLED, EndpointTaskState.REVOKED,
     }),
     EndpointTaskState.CANCELLING: frozenset({

@@ -61,6 +61,7 @@ def forgejo_issue_instructions(workflow_id: str, parameters: Mapping[str, Any]) 
         "3. Execute the published workflow with test-driven development in the assigned local workspace.\n"
         f"4. Before finishing, call forgejo.comment_issue with the same owner/repository/number "
         "and a concise result: status, changed files, tests, commit if available, and report path.\n"
-        "5. If a user decision is required, comment the exact question on the Issue and finish as blocked.\n"
+        "5. If a user decision is required, call forgejo.ask_question with the exact question. "
+        "Skillify will stop this run as blocked; do not continue or guess the answer.\n"
         "Do not close the Issue; final review and closure belong to the user."
     )

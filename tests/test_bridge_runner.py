@@ -7,11 +7,12 @@ from skillify.agent.provider import (
     ModelRuntimeConfig, ProviderHandle, ProviderRecovery, ProviderResult, ProviderSession,
     ProviderStartSpec,
 )
-from skillify.agent.events import TaskState
+from skillify.agent.events import EventType, TaskEvent, TaskState
 from skillify.agent.runner import TaskRunner
 from skillify.cli.bridge_cmd import BridgeLoop, LocalOutbox, RoutedBridgeRunner
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import TaskEventReporter
+from skillify.tasks.mcp_injection import McpPackageConfig
 
 
 NOW = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
@@ -230,3 +231,51 @@ def test_task_runner_stops_provider_when_session_creation_fails(tmp_path: Path) 
     with pytest.raises(RuntimeError, match="session failed"):
         runner.run(_envelope(), state_version=2)
     assert provider.stopped is True
+
+
+def test_runtime_catalog_is_always_injected_and_issue_question_blocks(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"; workspace.mkdir()
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    handle = ProviderHandle("handle-1", "opencode", "1.0.0", "http://127.0.0.1", 10)
+    session = ProviderSession("task-1", "session-1", handle.handle_id)
+
+    class QuestionProvider:
+        start_spec = None
+        prompt = ""
+
+        def start(self, spec):
+            self.start_spec = spec
+            return handle
+
+        def create_session(self, value, spec):
+            self.prompt = spec.prompt
+            return session
+
+        def stream_events(self, value, active_session):
+            yield TaskEvent(
+                "task-1", "session-1", "opencode", "1.0.0", 1, 1, NOW,
+                EventType.TOOL_COMPLETED, TaskState.RUNNING,
+                {"sequence": 1, "tool_name": "forgejo_forgejo_ask_question"},
+            )
+            raise AssertionError("runner must stop after a blocking Issue question")
+
+        def stop(self, value):
+            return ProviderResult(TaskState.SUCCEEDED)
+
+    provider = QuestionProvider()
+    catalog = McpPackageConfig(
+        "catalog", "skillctl", ("mcp", "serve", "catalog"), {},
+        ("skills.search", "skills.load"), 100,
+    )
+    runner = TaskRunner(
+        {"opencode": provider},
+        lambda _: ProviderStartSpec(workspace, (workspace,), tmp_path / "config", ModelRuntimeConfig()),
+        outbox, mcp_catalog={"catalog": catalog}, always_mcp=("catalog",),
+    )
+
+    runner.run(_envelope(), state_version=2)
+
+    assert provider.start_spec is not None
+    assert "catalog" in provider.start_spec.mcp_servers
+    assert "skills.search" in provider.prompt and "Do not ask the user to choose" in provider.prompt
+    assert [item["payload"]["eventType"] for item in outbox.pending()] == ["task.blocked"]

@@ -340,7 +340,7 @@ def connect(
         transport = HttpBridgeTransport(server_url, token)
         outbox = LocalOutbox(outbox_path)
         BridgeLoop(
-            transport, outbox, _build_runner(outbox), _build_reporter(server_url, token, outbox),
+            transport, outbox, _build_runner(outbox, server_url), _build_reporter(server_url, token, outbox),
         ).run(
             max_polls=1 if once else None,
         )
@@ -350,7 +350,7 @@ def connect(
         state_path.unlink(missing_ok=True)
 
 
-def _build_runner(outbox: LocalOutbox):
+def _build_runner(outbox: LocalOutbox, server_url: str | None = None):
     from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
     from skillify.agent.providers.opencode import OpenCodeProvider
     from skillify.agent.providers.claudecode import ClaudeCodeProvider
@@ -456,12 +456,30 @@ def _build_runner(outbox: LocalOutbox):
                 "SKILLIFY_MCP_FORGEJO_CREDENTIALS_FILE":
                     config.forgejo_mcp_credentials_file,
             },
-            ("forgejo.get_issue", "forgejo.comment_issue", "ci.get_status"), 2400,
+            ("forgejo.get_issue", "forgejo.comment_issue", "forgejo.ask_question", "ci.get_status"), 2400,
             PermissionManifest.from_value("mcp:forgejo", {
                 "readPaths": ["*"], "writePaths": ["*"],
                 "commands": {"*": "allow"}, "mcpServers": ["forgejo"],
             }),
         )
+    always_mcp: tuple[str, ...] = ()
+    if config.endpoint_token_file and server_url:
+        target = "claude" if config.provider == "claude-code" else "opencode"
+        mcp_catalog["catalog"] = McpPackageConfig(
+            "catalog", sys.executable,
+            ("-m", "skillify.cli.main", "mcp", "serve", "catalog"),
+            {
+                "SKILLIFY_MCP_CATALOG_URL": server_url,
+                "SKILLIFY_MCP_CATALOG_TOKEN_FILE": config.endpoint_token_file,
+                "SKILLIFY_MCP_CATALOG_TARGET": target,
+            },
+            ("skills.search", "skills.load"), 3200,
+            PermissionManifest.from_value("mcp:catalog", {
+                "readPaths": ["*"], "writePaths": ["*"],
+                "commands": {"*": "allow"}, "mcpServers": ["catalog"],
+            }),
+        )
+        always_mcp = ("catalog",)
 
     def permission_resolver(envelope: TaskEnvelope):
         workflow = load_bundled_workflow_pack(envelope.workflow_id)
@@ -476,7 +494,7 @@ def _build_runner(outbox: LocalOutbox):
                 f"skill:{manifest['namespace']}.{manifest['name']}", manifest.get("permissions") or {},
             )
         packages = tuple(WorkPackage.from_dict(dict(value)) for value in envelope.work_packages)
-        requested_mcp = set(workflow.mcp) | {
+        requested_mcp = set(workflow.mcp) | set(always_mcp) | {
             name for package in packages for name in package.recommended_mcp
         }
         return assemble_task_permissions(
@@ -493,6 +511,7 @@ def _build_runner(outbox: LocalOutbox):
         start_spec, outbox,
         mcp_catalog=mcp_catalog,
         permission_resolver=permission_resolver,
+        always_mcp=always_mcp,
     )
     return RoutedBridgeRunner(
         agent_runner, lambda: _build_codemap_runner(outbox), lambda: _build_app_runner(outbox),

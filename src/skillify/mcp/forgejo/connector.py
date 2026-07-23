@@ -42,6 +42,18 @@ class ForgejoDevelopmentConnector:
             raise ValueError("issue comment must contain 1 to 4000 characters")
         return self.backend.comment_issue(owner, repository, number, body)
 
+    def ask_question(self, owner: str, repository: str, number: int, question: str) -> dict[str, Any]:
+        """Post a blocking user question; Skillify stops this task after the tool completes."""
+        # This is a specialized Issue comment and intentionally reuses the existing
+        # forgejo.comment_issue grant instead of introducing a broader write permission.
+        self.policy.authorize(COMMENT_ISSUE)
+        question = question.strip()
+        if not question or len(question) > 3900:
+            raise ValueError("issue question must contain 1 to 3900 characters")
+        return self.backend.comment_issue(
+            owner, repository, number, f"[Skillify question]\n\n{question}",
+        )
+
     def get_ci_status(self, owner: str, repository: str, reference: str) -> dict[str, Any]:
         self.policy.authorize(GET_CI_STATUS)
         return self.backend.get_ci_status(owner, repository, reference)
@@ -57,6 +69,7 @@ def create_mcp_server(connector: ForgejoDevelopmentConnector) -> FastMCP:
 
     server.tool(name="forgejo.get_issue")(connector.get_issue)
     server.tool(name="forgejo.comment_issue")(connector.comment_issue)
+    server.tool(name="forgejo.ask_question")(connector.ask_question)
     server.tool(name="ci.get_status")(connector.get_ci_status)
     server.tool(name="ci.rerun")(connector.rerun_ci)
     return server
