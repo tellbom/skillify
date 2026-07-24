@@ -42,7 +42,11 @@ def validate_bearer_token(token: str, cfg: SkillifyConfig) -> dict:
         raise KeycloakNotConfiguredError("keycloak_realm_url not configured")
 
     realm_url = cfg.keycloak_realm_url.rstrip("/")
-    jwks_url = f"{realm_url}/protocol/openid-connect/certs"
+    jwks_url = (
+        cfg.keycloak_jwks_url.rstrip("/")
+        if cfg.keycloak_jwks_url
+        else f"{realm_url}/protocol/openid-connect/certs"
+    )
     signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(token)
 
     claims = jwt.decode(

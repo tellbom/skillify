@@ -11,7 +11,7 @@ from sqlalchemy import false, select, update
 from sqlalchemy.orm import Session
 
 from skillify.index.models import (
-    EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
+    AgentWorkerRunRecord, EndpointBinding, EndpointTaskEventRecord, EndpointTaskNonce, EndpointTaskRecord,
     EndpointTaskScopeGrant, EndpointTeamRecord, EndpointTeamWorkerEventRecord,
     WorkPackageRecord,
 )
@@ -356,8 +356,11 @@ def record_task_event(
         "task.failed": "failed", "task.rejected": "rejected",
         "task.blocked": "blocked",
         "task.cancelled": "cancelled",
-        "team.started": "running", "team.completed": "succeeded",
+        # Provider/team completion is evidence, never the acceptance decision.
+        "team.started": "running", "team.completed": "running",
         "team.failed": "failed", "team.cancelled": "cancelled",
+        "gate.started": "running", "gate.passed": "succeeded",
+        "gate.failed": "failed",
         "codemap.visualization.requested": "running",
         "codemap.visualization.scan_started": "running",
         "codemap.visualization.scan_completed": "running",
@@ -393,6 +396,20 @@ def record_task_event(
         if team is not None:
             team.state = event_type
             team.updated_at = occurred_at
+    if event_type in {"gate.passed", "gate.failed"}:
+        gate_status = "passed" if event_type == "gate.passed" else "failed"
+        workers = list(session.scalars(select(AgentWorkerRunRecord).where(
+            AgentWorkerRunRecord.task_id == task_id,
+        )))
+        for worker in workers:
+            if worker_id is None or worker.worker_id == worker_id:
+                worker.gate_status = gate_status
+                worker.gate_result = {
+                    "summary": summary,
+                    "failureReason": failure_reason,
+                }
+                worker.status = "succeeded" if gate_status == "passed" else "failed"
+                worker.updated_at = occurred_at
     session.flush()
     return record, True
 

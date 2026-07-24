@@ -580,6 +580,48 @@ SKILLIFY_MCP_FORGEJO_WRITE_TOOLS=forgejo.comment_issue
 skillctl agent bridge start
 ```
 
+### 官方 Agent SDK 托管与 Web 决策
+
+Bridge 默认使用 `skillify-agent-host`，不再通过 PTY 向 OpenCode/Claude Code 的 TUI
+模拟按键。端侧部署代码后先构建 Host：
+
+```bash
+cd /path/to/skillify/agent-host
+npm ci
+npm run build
+```
+
+`~/.skillctl/settings.json` 可显式记录入口；模型 Key、模型端点仍由 OpenCode 或
+Claude Code 自身配置管理：
+
+```json
+{
+  "agent_host_mode": "official",
+  "agent_host_entrypoint": "/path/to/skillify/agent-host/dist/index.js",
+  "node_executable": "node",
+  "allow_legacy_tui": false
+}
+```
+
+每个 Worker 拥有独立 Provider Session。OpenCode 使用官方 Server/SDK 的 Session、
+Event、Permission、Abort 和 Diff API；Claude Code 使用 Agent SDK。任务批准的 MCP
+集合会按 Worker 注入，Claude 原生子 Agent 也显式引用同一集合。Agent 请求权限或回答
+时，Web 会把决定送回原 Worker、原 Provider Session 和原 request：
+
+```text
+GET  /api/endpoint-tasks/{taskId}/agent-runtime
+GET  /api/endpoint-tasks/{taskId}/agent-runtime/stream
+POST /api/endpoint-tasks/{taskId}/agent-interactions/{interactionId}/respond
+```
+
+Provider 返回 `completed` 或 `idle` 只表示执行阶段结束。只有工作区修改已提交、Team
+变更已集成、固定验证命令通过并产生 `gate.passed` 后，任务才进入 `succeeded`。
+Web 取消请求仍只负责发出意图；实际中断由端侧 Bridge 调用对应 Session 的 Abort，
+收到 Provider 中断确认后才上报 `task.cancelled`。
+
+旧 TUI Provider 仅用于短期兼容，默认关闭；同时设置
+`"agent_host_mode":"legacy"` 和 `"allow_legacy_tui":true` 才会启用。
+
 Web 端停止任务只发送 `POST /api/endpoint-tasks/{taskId}/cancel`。运行中的任务先返回：
 
 ```json

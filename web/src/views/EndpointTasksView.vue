@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   cancelEndpointTask, confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
-  updateTaskWorkPackages,
+  getEndpointTaskAgentRuntime, respondEndpointTaskInteraction, updateTaskWorkPackages,
 } from '../lib/api.js'
 
 const WORKFLOWS = [
@@ -22,7 +22,10 @@ const submitting = ref(false)
 const codemapSubmitting = ref(null)
 const cancellingTask = ref(null)
 let cancellationPollTimer = null
+let runtimePollTimer = null
 const error = ref('')
+const runtimeByTask = reactive({})
+const respondingInteraction = ref(null)
 const TEAM_ENABLED = import.meta.env.VITE_SHOGUN_TEAM_ENABLED === 'true'
 const form = reactive({
   endpointId: '', workspaceAlias: '', runtime: 'opencode', executionMode: 'single',
@@ -70,6 +73,7 @@ async function load() {
     endpoints.value = endpointRows
     tasks.value = taskRows.map(editableTask)
     form.endpointId = endpointRows.find((item) => item.online)?.endpointId || endpointRows[0]?.endpointId || ''
+    await refreshActiveRuntimes()
   } catch (err) {
     error.value = err.message
   } finally {
@@ -166,6 +170,49 @@ async function confirmPackages(task) {
   }
 }
 
+async function loadRuntime(taskId) {
+  runtimeByTask[taskId] = await getEndpointTaskAgentRuntime(taskId)
+}
+
+async function refreshActiveRuntimes() {
+  const visible = tasks.value.filter((task) => (
+    ['running', 'cancelling'].includes(task.state) || runtimeByTask[task.taskId]
+  ))
+  await Promise.all(visible.map((task) => loadRuntime(task.taskId)))
+}
+
+function scheduleRuntimeRefresh() {
+  clearTimeout(runtimePollTimer)
+  runtimePollTimer = setTimeout(async () => {
+    try {
+      await refreshActiveRuntimes()
+    } catch (err) {
+      error.value = err.message
+    } finally {
+      scheduleRuntimeRefresh()
+    }
+  }, 1500)
+}
+
+async function respondInteraction(task, interaction, choice) {
+  if (respondingInteraction.value) return
+  respondingInteraction.value = interaction.interactionId
+  error.value = ''
+  try {
+    await respondEndpointTaskInteraction(task.taskId, interaction.interactionId, {
+      responseVersion: interaction.response.version,
+      choice,
+      answer: interaction.answer?.trim() || null,
+      comment: null,
+    })
+    await loadRuntime(task.taskId)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    respondingInteraction.value = null
+  }
+}
+
 async function cancelTask(task) {
   if (cancellingTask.value) return
   cancellingTask.value = task.taskId
@@ -196,8 +243,11 @@ function scheduleCancellationRefresh(taskId) {
   }, 1000)
 }
 
-onMounted(load)
-onBeforeUnmount(() => clearTimeout(cancellationPollTimer))
+onMounted(async () => { await load(); scheduleRuntimeRefresh() })
+onBeforeUnmount(() => {
+  clearTimeout(cancellationPollTimer)
+  clearTimeout(runtimePollTimer)
+})
 </script>
 
 <template>
@@ -313,6 +363,70 @@ onBeforeUnmount(() => clearTimeout(cancellationPollTimer))
               <span v-else>已确认</span>
             </div>
           </section>
+          <section v-if="runtimeByTask[task.taskId]?.workers?.length" class="agent-runtime">
+            <header>
+              <strong>Agent 运行树</strong>
+              <span>Provider 完成不代表任务成功；最终状态由 Gate 决定</span>
+            </header>
+            <div class="worker-tree">
+              <article
+                v-for="worker in runtimeByTask[task.taskId].workers"
+                :key="worker.workerRunId"
+                class="worker-card"
+              >
+                <div>
+                  <strong>{{ workerLabel(worker.workerId) }}</strong>
+                  <small>{{ worker.provider }} · {{ worker.workPackageId }}</small>
+                </div>
+                <span :class="['worker-state', worker.status]">{{ worker.status }}</span>
+                <span :class="['gate-state', worker.gateStatus]">Gate {{ worker.gateStatus }}</span>
+              </article>
+            </div>
+            <article
+              v-for="interaction in runtimeByTask[task.taskId].interactions.filter((item) => item.status === 'requested')"
+              :key="interaction.interactionId"
+              class="decision-card"
+              data-testid="agent-decision"
+            >
+              <div>
+                <strong>{{ interaction.title }}</strong>
+                <small>{{ workerLabel(interaction.workerId) }} · {{ interaction.kind }}</small>
+                <p v-if="interaction.description">{{ interaction.description }}</p>
+              </div>
+              <textarea
+                v-if="interaction.allowFreeText"
+                v-model="interaction.answer"
+                rows="2"
+                maxlength="4000"
+                placeholder="补充给原 Agent Session 的回答"
+              />
+              <div class="decision-actions">
+                <button
+                  v-for="choice in interaction.choices"
+                  :key="choice.id || choice.value"
+                  type="button"
+                  :disabled="respondingInteraction === interaction.interactionId"
+                  @click="respondInteraction(task, interaction, choice.id || choice.value)"
+                >{{ choice.label || choice.id || choice.value }}</button>
+                <button
+                  v-if="interaction.allowFreeText"
+                  type="button"
+                  :disabled="!interaction.answer?.trim() || respondingInteraction === interaction.interactionId"
+                  @click="respondInteraction(task, interaction, null)"
+                >提交回答</button>
+              </div>
+            </article>
+            <ol class="runtime-timeline">
+              <li
+                v-for="event in runtimeByTask[task.taskId].events"
+                :key="event.eventId"
+              >
+                <strong>{{ event.eventType }}</strong>
+                <span>{{ workerLabel(event.workerId) }} · #{{ event.sequence }}</span>
+                <time>{{ event.occurredAt }}</time>
+              </li>
+            </ol>
+          </section>
           <ol v-if="task.events?.length" class="timeline">
             <li v-for="event in task.events" :key="`${event.eventType}-${event.occurredAt}`">
               <div><strong>{{ event.eventType }} <em v-if="event.workerId">· {{ workerLabel(event.workerId) }}</em></strong><time>{{ event.occurredAt }}</time></div>
@@ -384,6 +498,23 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .package-actions { display: flex; justify-content: end; margin-top: 9px; gap: 8px; }
 .package-actions button { padding: 6px 10px; border: 1px solid #3a4d4a; border-radius: 5px; color: #b9d9d6; background: #1b2927; cursor: pointer; }
 .package-actions span { color: #80cbc4; font-size: 10px; }
+.agent-runtime { margin: 14px 0 0 17px; padding: 12px; border: 1px solid #33413f; border-radius: 8px; background: #141918; }
+.agent-runtime > header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.agent-runtime > header strong { color: #9ed8d1; font-size: 11px; }
+.agent-runtime > header span { color: #737f7d; font-size: 10px; }
+.worker-tree { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.worker-card { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 9px; border: 1px solid #2c3534; border-radius: 6px; background: #181d1c; gap: 5px 8px; }
+.worker-card > div { display: grid; gap: 3px; }.worker-card strong { font-size: 11px; }.worker-card small { color: #6f7d7b; font-size: 9px; }
+.worker-state, .gate-state { padding: 3px 6px; border-radius: 999px; color: #a5b2b0; background: #252d2c; font: 600 8px ui-monospace, monospace; text-transform: uppercase; }
+.gate-state { grid-column: 2; color: #c4a979; background: #30291f; }
+.gate-state.passed { color: #9dd5ce; background: #20312e; }
+.decision-card { display: grid; margin-top: 10px; padding: 12px; border: 1px solid #8b6b32; border-radius: 7px; background: #242016; gap: 9px; }
+.decision-card > div:first-child { display: grid; gap: 3px; }.decision-card strong { color: #e2c98f; font-size: 12px; }.decision-card small, .decision-card p { margin: 0; color: #998d72; font-size: 10px; }
+.decision-card textarea { width: 100%; padding: 8px; border: 1px solid #574a2f; border-radius: 5px; box-sizing: border-box; color: #ddd; background: #17150f; resize: vertical; }
+.decision-actions { display: flex; flex-wrap: wrap; gap: 7px; }.decision-actions button { padding: 6px 9px; border: 1px solid #70603e; border-radius: 5px; color: #e4cea0; background: #332a1b; cursor: pointer; }.decision-actions button:disabled { opacity: .5; cursor: wait; }
+.runtime-timeline { display: grid; margin: 10px 0 0; padding: 0; list-style: none; gap: 4px; }
+.runtime-timeline li { display: grid; grid-template-columns: minmax(140px, 1fr) auto auto; padding: 6px 8px; border-left: 2px solid #39504d; background: #171b1a; gap: 10px; }
+.runtime-timeline strong { font-size: 10px; }.runtime-timeline span, .runtime-timeline time { color: #687572; font: 9px ui-monospace, monospace; }
 .timeline { margin: 14px 0 0 3px; padding-left: 19px; border-left: 1px solid #333; list-style: none; }
 .timeline li { position: relative; padding: 0 0 13px 4px; }
 .timeline li::before { position: absolute; top: 4px; left: -24px; width: 7px; height: 7px; border: 2px solid #181818; border-radius: 50%; background: #666; content: ''; }

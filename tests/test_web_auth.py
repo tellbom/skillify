@@ -20,6 +20,19 @@ def test_valid_token_is_accepted(fake_keycloak) -> None:
     assert claims["preferred_username"] == "jane"
 
 
+def test_internal_jwks_url_does_not_change_expected_issuer(fake_keycloak) -> None:
+    cfg = SkillifyConfig(
+        keycloak_realm_url=fake_keycloak.realm_url,
+        keycloak_jwks_url=f"{fake_keycloak.realm_url}/protocol/openid-connect/certs",
+        keycloak_audience="skillify-web",
+    )
+    token = fake_keycloak.mint_token(audience="skillify-web", subject="jane")
+
+    claims = validate_bearer_token(token, cfg)
+
+    assert claims["iss"] == fake_keycloak.realm_url
+
+
 def test_small_issuer_clock_skew_is_accepted(fake_keycloak) -> None:
     cfg = SkillifyConfig(keycloak_realm_url=fake_keycloak.realm_url, keycloak_audience="skillify-web")
     token = fake_keycloak.mint_token(

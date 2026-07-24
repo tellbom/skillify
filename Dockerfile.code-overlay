@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=skillify-skillify-web:local
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY src ./src
+COPY spec ./spec
+COPY apps ./apps
+COPY workflows ./workflows
+
+# The base image installs Skillify in editable form (`/app/src`); deploy-code
+# verifies the identical uv.lock before this source overlay is built.

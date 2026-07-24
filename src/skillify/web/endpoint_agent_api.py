@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import json
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from skillify.common.config import load_config
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointBinding, EndpointTaskRecord
+from skillify.index.models import (
+    AgentInteractionRecord, EndpointBinding, EndpointTaskRecord, ProviderSessionRecord,
+)
+from skillify.tasks.agent_runtime_store import (
+    acknowledge_interaction, list_task_runtime, pending_responses,
+    record_runtime_event, register_provider_session, request_interaction,
+    respond_interaction,
+)
 from skillify.tasks.lease import LeaseError, claim_next_task, heartbeat_task
 from skillify.tasks.protocol import TaskConflictError, TaskProtocolError
 from skillify.tasks.web_store import (
@@ -21,7 +31,9 @@ from skillify.web.auth import require_keycloak_user
 from skillify.web.schemas import WorkPackageListIn
 from skillify.web.endpoint_auth import require_endpoint_machine
 from skillify.web.schemas import (
-    EndpointEventIn, EndpointTaskLifecycleIn, EndpointTaskScopeConfirmationIn,
+    AgentInteractionAckIn, AgentInteractionRequestIn, AgentInteractionResponseIn,
+    AgentRuntimeEventIn, EndpointEventIn, EndpointTaskLifecycleIn,
+    EndpointTaskScopeConfirmationIn, ProviderSessionIn,
 )
 from skillify.web import service
 
@@ -169,6 +181,46 @@ def _owned_binding(session: Session, endpoint_id: str, owner: str) -> EndpointBi
     if binding is None or binding.owner_username != owner:
         raise HTTPException(status_code=403, detail="endpoint is not bound to this identity")
     return binding
+
+
+def _interaction_dict(item: AgentInteractionRecord) -> dict:
+    return {
+        "interactionId": item.interaction_id,
+        "taskId": item.task_id,
+        "teamRunId": item.team_run_id,
+        "workerId": item.worker_id,
+        "provider": item.provider,
+        "providerSessionId": item.provider_session_id,
+        "providerRequestId": item.provider_request_id,
+        "kind": item.kind,
+        "title": item.title,
+        "description": item.description,
+        "choices": item.choices,
+        "allowFreeText": item.allow_free_text,
+        "status": item.status,
+        "response": {
+            "choice": item.response_choice,
+            "answer": item.response_answer,
+            "comment": item.response_comment,
+            "version": item.response_version,
+        },
+        "createdAt": item.created_at,
+        "expiresAt": item.expires_at,
+        "respondedAt": item.responded_at,
+        "deliveredAt": item.delivered_at,
+        "appliedAt": item.applied_at,
+    }
+
+
+def _provider_session_for_endpoint(
+    session: Session, provider_session_id: str, endpoint_id: str,
+) -> ProviderSessionRecord:
+    record = session.query(ProviderSessionRecord).filter_by(
+        provider_session_id=provider_session_id, endpoint_id=endpoint_id,
+    ).one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider session not found")
+    return record
 
 
 @router.get("/api/endpoint/tasks/pull")
@@ -350,6 +402,267 @@ def cancel_endpoint_task(
     return _transition(task_id, payload, claims, "cancelled")
 
 
+@router.post("/api/endpoint/agent-sessions")
+def register_endpoint_agent_session(
+    payload: ProviderSessionIn,
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        task = session.get(EndpointTaskRecord, payload.taskId)
+        if task is None or task.endpoint_id != endpoint_id:
+            raise HTTPException(status_code=404, detail="task not found")
+        record = register_provider_session(
+            session,
+            task_id=payload.taskId,
+            team_run_id=payload.teamRunId,
+            worker_id=payload.workerId,
+            work_package_id=payload.workPackageId,
+            provider=payload.provider,
+            provider_session_id=payload.providerSessionId,
+            runtime_instance_id=payload.runtimeInstanceId,
+            endpoint_id=endpoint_id,
+            workspace=payload.workspace,
+            required=payload.required,
+            depends_on=payload.dependsOn,
+            resume_metadata=payload.resumeMetadata,
+        )
+        session.commit()
+        return {
+            "sessionRecordId": record.session_record_id,
+            "providerSessionId": record.provider_session_id,
+            "status": record.status,
+            "lastEventSequence": record.last_event_sequence,
+        }
+    except (TaskConflictError, TaskProtocolError) as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.post("/api/endpoint/agent-events")
+def post_endpoint_agent_event(
+    payload: AgentRuntimeEventIn,
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        _provider_session_for_endpoint(session, payload.providerSessionId, endpoint_id)
+        record, created = record_runtime_event(
+            session,
+            event_id=payload.eventId,
+            provider_session_id=payload.providerSessionId,
+            sequence=payload.sequence,
+            event_type=payload.eventType,
+            payload=payload.payload,
+            occurred_at=payload.occurredAt,
+        )
+        session.commit()
+        return {"accepted": created, "sequence": record.sequence}
+    except (TaskConflictError, TaskProtocolError) as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.post("/api/endpoint/agent-interactions")
+def post_endpoint_agent_interaction(
+    payload: AgentInteractionRequestIn,
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        _provider_session_for_endpoint(session, payload.providerSessionId, endpoint_id)
+        interaction, created = request_interaction(
+            session,
+            provider_session_id=payload.providerSessionId,
+            provider_request_id=payload.providerRequestId,
+            kind=payload.kind,
+            title=payload.title,
+            description=payload.description,
+            choices=payload.choices,
+            allow_free_text=payload.allowFreeText,
+            expires_at=payload.expiresAt,
+        )
+        session.commit()
+        return {"accepted": created, "interaction": _interaction_dict(interaction)}
+    except (TaskConflictError, TaskProtocolError) as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.get("/api/endpoint/agent-interactions/responses")
+def pull_endpoint_agent_interactions(
+    task_id: str | None = Query(default=None, alias="taskId"),
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        return {
+            "interactions": [
+                _interaction_dict(item)
+                for item in pending_responses(
+                    session, endpoint_id=endpoint_id, task_id=task_id,
+                )
+            ],
+        }
+    finally:
+        session.close()
+
+
+@router.post("/api/endpoint/agent-interactions/{interaction_id}/ack")
+def acknowledge_endpoint_agent_interaction(
+    interaction_id: str,
+    payload: AgentInteractionAckIn,
+    claims: dict = Depends(require_endpoint_machine),
+) -> dict:
+    endpoint_id, owner = _identity(claims); session = _session()
+    try:
+        _owned_binding(session, endpoint_id, owner)
+        interaction = session.get(AgentInteractionRecord, interaction_id)
+        if interaction is None:
+            raise HTTPException(status_code=404, detail="interaction not found")
+        acknowledge_interaction(
+            session, interaction, endpoint_id=endpoint_id, target=payload.status,
+        )
+        session.commit()
+        return {"interaction": _interaction_dict(interaction)}
+    except (TaskConflictError, TaskProtocolError) as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.get("/api/endpoint-tasks/{task_id}/agent-runtime")
+def get_task_agent_runtime(
+    task_id: str,
+    claims: dict = Depends(require_keycloak_user),
+) -> dict:
+    session = _session()
+    try:
+        _owned_task(session, task_id, _web_owner(claims))
+        workers, events, interactions = list_task_runtime(session, task_id)
+        return {
+            "workers": [{
+                "workerRunId": item.worker_run_id,
+                "workerId": item.worker_id,
+                "teamRunId": item.team_run_id,
+                "workPackageId": item.work_package_id,
+                "provider": item.provider,
+                "workspace": item.workspace,
+                "status": item.status,
+                "required": item.required,
+                "dependsOn": item.depends_on,
+                "gateStatus": item.gate_status,
+                "gateResult": item.gate_result,
+                "startedAt": item.started_at,
+                "endedAt": item.ended_at,
+            } for item in workers],
+            "events": [{
+                "eventId": item.event_id,
+                "sequence": item.sequence,
+                "workerId": item.worker_id,
+                "provider": item.provider,
+                "providerSessionId": item.provider_session_id,
+                "eventType": item.event_type,
+                "payload": item.payload,
+                "occurredAt": item.occurred_at,
+            } for item in events],
+            "interactions": [_interaction_dict(item) for item in interactions],
+        }
+    finally:
+        session.close()
+
+
+@router.get("/api/endpoint-tasks/{task_id}/agent-runtime/stream")
+def stream_task_agent_runtime(
+    task_id: str,
+    claims: dict = Depends(require_keycloak_user),
+) -> StreamingResponse:
+    owner = _web_owner(claims)
+    session = _session()
+    try:
+        _owned_task(session, task_id, owner)
+    finally:
+        session.close()
+
+    def events():
+        previous = ""
+        while True:
+            current = _session()
+            try:
+                task = _owned_task(current, task_id, owner)
+                workers, runtime_events, interactions = list_task_runtime(current, task_id)
+                snapshot = {
+                    "taskId": task_id,
+                    "state": task.state,
+                    "workers": [{
+                        "workerId": item.worker_id,
+                        "status": item.status,
+                        "gateStatus": item.gate_status,
+                    } for item in workers],
+                    "lastEventId": runtime_events[-1].event_id if runtime_events else None,
+                    "interactions": [{
+                        "interactionId": item.interaction_id,
+                        "status": item.status,
+                        "responseVersion": item.response_version,
+                    } for item in interactions],
+                }
+            finally:
+                current.close()
+            encoded = json.dumps(snapshot, ensure_ascii=False, default=str)
+            if encoded != previous:
+                yield f"event: runtime.snapshot\ndata: {encoded}\n\n"
+                previous = encoded
+            else:
+                yield ": heartbeat\n\n"
+            if snapshot["state"] in {"succeeded", "failed", "cancelled", "rejected"}:
+                return
+            time.sleep(1)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/api/endpoint-tasks/{task_id}/agent-interactions/{interaction_id}/respond")
+def respond_task_agent_interaction(
+    task_id: str,
+    interaction_id: str,
+    payload: AgentInteractionResponseIn,
+    claims: dict = Depends(require_keycloak_user),
+) -> dict:
+    session = _session()
+    try:
+        _owned_task(session, task_id, _web_owner(claims))
+        interaction = session.get(AgentInteractionRecord, interaction_id)
+        if interaction is None or interaction.task_id != task_id:
+            raise HTTPException(status_code=404, detail="interaction not found")
+        respond_interaction(
+            session,
+            interaction,
+            expected_version=payload.responseVersion,
+            choice=payload.choice,
+            answer=payload.answer,
+            comment=payload.comment,
+        )
+        session.commit()
+        return {"interaction": _interaction_dict(interaction)}
+    except TaskProtocolError as exc:
+        session.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskConflictError as exc:
+        session.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
 @router.post("/api/endpoint/events")
 def endpoint_event(
     payload: EndpointEventIn,
@@ -379,7 +692,7 @@ def endpoint_event(
             event_type=payload.eventType, occurred_at=payload.occurredAt,
             summary=payload.summary, test_summary=payload.testSummary,
             diff_stats=payload.diffStats, artifacts=payload.artifacts,
-            failure_reason=payload.failureReason,
+            failure_reason=payload.failureReason or payload.reasonCode,
             worker_id=payload.workerId, work_package_id=payload.workPackageId,
             stage=payload.stage,
         )

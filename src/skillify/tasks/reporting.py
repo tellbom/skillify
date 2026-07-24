@@ -24,6 +24,7 @@ EVENT_TYPES = frozenset({
     "work_package.completed", "review.started", "review.completed",
     "team.waiting_approval", "team.cancelling", "team.cancelled",
     "team.completed", "team.failed",
+    "gate.started", "gate.passed", "gate.failed",
     "codemap.visualization.requested", "codemap.visualization.scan_started",
     "codemap.visualization.scan_completed", "codemap.visualization.started",
     "codemap.visualization.ready", "codemap.visualization.opened",

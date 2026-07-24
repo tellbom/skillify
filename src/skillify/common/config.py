@@ -64,6 +64,10 @@ class AgentLocalConfig:
     shogun_artifact_path: str | None = None
     shogun_install_root: str | None = None
     shogun_team_enabled: bool = False
+    agent_host_mode: str = "official"
+    agent_host_entrypoint: str | None = None
+    node_executable: str = "node"
+    allow_legacy_tui: bool = False
 
 
 def load_agent_paths(
@@ -119,6 +123,8 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         "SKILLIFY_SHOGUN_MANIFEST_PATH": "shogun_manifest_path",
         "SKILLIFY_SHOGUN_ARTIFACT_PATH": "shogun_artifact_path",
         "SKILLIFY_SHOGUN_INSTALL_ROOT": "shogun_install_root",
+        "SKILLIFY_AGENT_HOST_ENTRYPOINT": "agent_host_entrypoint",
+        "SKILLIFY_AGENT_NODE_EXECUTABLE": "node_executable",
     }
     for env_name, key in scalar_overrides.items():
         if env_name in os.environ:
@@ -131,6 +137,12 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
             data[key] = [value.strip() for value in os.environ[env_name].split(",") if value.strip()]
     if "SKILLIFY_AGENT_SHOGUN_TEAM_ENABLED" in os.environ:
         data["shogun_team_enabled"] = os.environ["SKILLIFY_AGENT_SHOGUN_TEAM_ENABLED"].strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    if "SKILLIFY_AGENT_HOST_MODE" in os.environ:
+        data["agent_host_mode"] = os.environ["SKILLIFY_AGENT_HOST_MODE"]
+    if "SKILLIFY_AGENT_ALLOW_LEGACY_TUI" in os.environ:
+        data["allow_legacy_tui"] = os.environ["SKILLIFY_AGENT_ALLOW_LEGACY_TUI"].strip().lower() in {
             "1", "true", "yes", "on",
         }
     config = AgentLocalConfig(
@@ -153,9 +165,17 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
         shogun_artifact_path=data.get("shogun_artifact_path"),
         shogun_install_root=data.get("shogun_install_root"),
         shogun_team_enabled=bool(data.get("shogun_team_enabled", False)),
+        agent_host_mode=str(data.get("agent_host_mode", "official")),
+        agent_host_entrypoint=data.get("agent_host_entrypoint"),
+        node_executable=str(data.get("node_executable", "node")),
+        allow_legacy_tui=bool(data.get("allow_legacy_tui", False)),
     )
     if config.provider not in {"opencode", "claude-code"}:
         raise ValueError("provider must be opencode or claude-code")
+    if config.agent_host_mode not in {"official", "legacy"}:
+        raise ValueError("agent_host_mode must be official or legacy")
+    if config.agent_host_mode == "legacy" and not config.allow_legacy_tui:
+        raise ValueError("legacy Agent TUI requires explicit allow_legacy_tui=true")
     if any(not Path(value).is_absolute() for value in config.allowed_workspaces):
         raise ValueError("allowed workspaces must be absolute")
     if len(set(config.allowed_workspaces)) != len(config.allowed_workspaces):
@@ -175,6 +195,9 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
     if (config.opencode_executable is not None and
             not Path(config.opencode_executable).is_absolute()):
         raise ValueError("OpenCode executable path must be absolute")
+    if (config.agent_host_entrypoint is not None and
+            not Path(config.agent_host_entrypoint).is_absolute()):
+        raise ValueError("Agent Host entrypoint must be absolute")
     shogun_paths = (
         config.shogun_manifest_path, config.shogun_artifact_path, config.shogun_install_root,
     )
@@ -214,6 +237,7 @@ class SkillifyConfig:
     # RBAC menu bridge to the separate Rbac.Api) is a Vue3-side concern (web/) and doesn't read
     # this config — this is only what the FastAPI backend needs to *validate* a bearer token.
     keycloak_realm_url: str | None = None  # e.g. https://sso.example.com/realms/internal
+    keycloak_jwks_url: str | None = None  # optional container-internal cert endpoint
     keycloak_audience: str | None = None  # expected `aud` claim (this backend's client id)
     # T6.2: opt-in client->server event reporting (skillify/common/telemetry.py). Off unless
     # explicitly configured — no network call, no data collected, by default.
@@ -272,6 +296,7 @@ _ENV_OVERRIDES = {
     "SKILLIFY_ENDPOINT_DEVICE_SECRET": "endpoint_device_secret",
     "SKILLIFY_INDEX_DB_URL": "index_db_url",
     "SKILLIFY_KEYCLOAK_REALM_URL": "keycloak_realm_url",
+    "SKILLIFY_KEYCLOAK_JWKS_URL": "keycloak_jwks_url",
     "SKILLIFY_KEYCLOAK_AUDIENCE": "keycloak_audience",
     "SKILLIFY_WEB_BASE_URL": "web_base_url",
 }
@@ -302,6 +327,7 @@ def load_config(home: Path | None = None) -> SkillifyConfig:
         shogun_team_enabled=bool(data.get("shogun_team_enabled", False)),
         index_db_url=data.get("index_db_url"),
         keycloak_realm_url=data.get("keycloak_realm_url"),
+        keycloak_jwks_url=data.get("keycloak_jwks_url"),
         keycloak_audience=data.get("keycloak_audience"),
         web_base_url=data.get("web_base_url"),
         reporting_enabled=bool(data.get("reporting_enabled", False)),

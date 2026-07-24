@@ -1,0 +1,4 @@
+ARG BASE_IMAGE=skillify-frontend:local
+FROM ${BASE_IMAGE}
+
+COPY dist/ /usr/share/nginx/html/

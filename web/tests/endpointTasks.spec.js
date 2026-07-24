@@ -3,8 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import EndpointTasksView from '../src/views/EndpointTasksView.vue'
 import {
-  confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTasks, getMyEndpoints,
-  updateTaskWorkPackages,
+  confirmTaskWorkPackages, dispatchEndpointTask, getEndpointTaskAgentRuntime,
+  getEndpointTasks, getMyEndpoints, respondEndpointTaskInteraction, updateTaskWorkPackages,
 } from '../src/lib/api.js'
 
 vi.mock('../src/lib/api.js', () => ({
@@ -13,6 +13,9 @@ vi.mock('../src/lib/api.js', () => ({
   dispatchEndpointTask: vi.fn(),
   updateTaskWorkPackages: vi.fn(),
   confirmTaskWorkPackages: vi.fn(),
+  cancelEndpointTask: vi.fn(),
+  getEndpointTaskAgentRuntime: vi.fn(),
+  respondEndpointTaskInteraction: vi.fn(),
 }))
 
 const endpoint = {
@@ -128,5 +131,43 @@ describe('EndpointTasksView', () => {
     })
     expect(wrapper.text()).toContain('仅限个人非商业使用')
     expect(wrapper.text()).toContain('codemap-1')
+  })
+
+  it('renders worker state and returns a decision to the original interaction', async () => {
+    getEndpointTasks.mockResolvedValue([{
+      taskId: 'task-running', endpointId: 'endpoint-1', workflowId: 'evidence-bugfix',
+      runtime: 'claude-code', executionMode: 'team', preferredCli: 'claude-code',
+      state: 'running', events: [], workPackages: [],
+    }])
+    getEndpointTaskAgentRuntime.mockResolvedValue({
+      workers: [{
+        workerRunId: 'run-1', workerId: 'worker-1', provider: 'claude-code',
+        workPackageId: 'wp-1', status: 'waiting_user', gateStatus: 'pending',
+      }],
+      events: [{
+        eventId: 'event-1', eventType: 'interaction.requested', workerId: 'worker-1',
+        sequence: 2, occurredAt: '2026-07-24T12:00:00Z',
+      }],
+      interactions: [{
+        interactionId: 'interaction-1', workerId: 'worker-1', kind: 'permission',
+        title: 'Allow write?', description: 'Write one file',
+        choices: [{ id: 'allow', label: 'Allow' }, { id: 'deny', label: 'Deny' }],
+        allowFreeText: false, status: 'requested', response: { version: 0 },
+      }],
+    })
+    respondEndpointTaskInteraction.mockResolvedValue({})
+    const wrapper = mount(EndpointTasksView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Agent 运行树')
+    expect(wrapper.text()).toContain('Provider 完成不代表任务成功')
+    expect(wrapper.get('[data-testid="agent-decision"]').text()).toContain('Allow write?')
+    await wrapper.get('[data-testid="agent-decision"] button').trigger('click')
+    await flushPromises()
+    expect(respondEndpointTaskInteraction).toHaveBeenCalledWith(
+      'task-running',
+      'interaction-1',
+      { responseVersion: 0, choice: 'allow', answer: null, comment: null },
+    )
   })
 })

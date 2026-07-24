@@ -357,3 +357,115 @@ class EndpointTeamWorkerEventRecord(Base):
     stage: Mapped[str | None] = mapped_column(String(64), default=None)
     summary: Mapped[str | None] = mapped_column(String(500), default=None)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AgentWorkerRunRecord(Base):
+    """One independently scheduled worker whose result is still subject to a gate."""
+
+    __tablename__ = "agent_worker_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "worker_id", name="uq_agent_worker_task"),
+    )
+
+    worker_run_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    team_run_id: Mapped[str | None] = mapped_column(String(128), index=True, default=None)
+    worker_id: Mapped[str] = mapped_column(String(128))
+    work_package_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    provider: Mapped[str] = mapped_column(String(32))
+    workspace: Mapped[str] = mapped_column(String(1000))
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    depends_on: Mapped[list] = mapped_column(JSONText(), default=list)
+    gate_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    gate_result: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class ProviderSessionRecord(Base):
+    """Stable binding between a Skillify worker and one provider-native session."""
+
+    __tablename__ = "provider_sessions"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_session_id", name="uq_provider_session"),
+        UniqueConstraint("task_id", "worker_id", name="uq_provider_session_worker"),
+    )
+
+    session_record_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    team_run_id: Mapped[str | None] = mapped_column(String(128), index=True, default=None)
+    worker_id: Mapped[str] = mapped_column(String(128))
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_session_id: Mapped[str] = mapped_column(String(255))
+    runtime_instance_id: Mapped[str] = mapped_column(String(128))
+    endpoint_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace: Mapped[str] = mapped_column(String(1000))
+    status: Mapped[str] = mapped_column(String(32), default="starting", nullable=False)
+    last_event_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    resume_metadata: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    pending_interaction_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class AgentRuntimeEventRecord(Base):
+    """Idempotent structured provider event with a per-session monotonic sequence."""
+
+    __tablename__ = "agent_runtime_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_agent_runtime_event_id"),
+        UniqueConstraint(
+            "provider_session_id", "sequence", name="uq_agent_runtime_session_sequence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(128))
+    sequence: Mapped[int] = mapped_column(Integer)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    team_run_id: Mapped[str | None] = mapped_column(String(128), index=True, default=None)
+    worker_id: Mapped[str] = mapped_column(String(128))
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_session_id: Mapped[str] = mapped_column(String(255), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONText(), default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AgentInteractionRecord(Base):
+    """A durable Web decision routed back to the exact provider request."""
+
+    __tablename__ = "agent_interactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_session_id", "provider_request_id",
+            name="uq_agent_interaction_provider_request",
+        ),
+    )
+
+    interaction_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), index=True)
+    team_run_id: Mapped[str | None] = mapped_column(String(128), index=True, default=None)
+    worker_id: Mapped[str] = mapped_column(String(128))
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_session_id: Mapped[str] = mapped_column(String(255))
+    provider_request_id: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(String(2000), default=None)
+    choices: Mapped[list] = mapped_column(JSONText(), default=list)
+    allow_free_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="requested", nullable=False)
+    response_choice: Mapped[str | None] = mapped_column(String(255), default=None)
+    response_answer: Mapped[str | None] = mapped_column(String(4000), default=None)
+    response_comment: Mapped[str | None] = mapped_column(String(2000), default=None)
+    response_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

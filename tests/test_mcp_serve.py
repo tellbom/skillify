@@ -25,4 +25,11 @@ def test_skillctl_mcp_list_shows_registered_adapters() -> None:
     result = CliRunner().invoke(app, ["mcp", "list"])
 
     assert result.exit_code == 0
-    assert result.stdout.splitlines() == ["db-readonly", "documents", "echo", "forgejo", "rest"]
+    assert result.stdout.splitlines() == [
+        "catalog",
+        "db-readonly",
+        "documents",
+        "echo",
+        "forgejo",
+        "rest",
+    ]

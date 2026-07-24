@@ -177,6 +177,7 @@ build_images() {
   log "building devpi image ${DEVPI_IMAGE}"
   docker build -t "$DEVPI_IMAGE" -f "$APP_ROOT/infra/devpi/Dockerfile" "$APP_ROOT/infra/devpi"
   log "building frontend image ${FRONTEND_IMAGE}"
+  DOCKER_BUILDKIT="${SKILLIFY_DOCKER_BUILDKIT:-0}" \
   docker build -t "$FRONTEND_IMAGE" -f "$APP_ROOT/web/Dockerfile" \
     --build-arg VITE_API_BASE=/api \
     --build-arg "VITE_KEYCLOAK_REALM_URL=${keycloak_url}" \
@@ -185,6 +186,33 @@ build_images() {
     --build-arg "VITE_RBAC_BASE_URL=${rbac_url}" \
     --build-arg "VITE_RBAC_PROJECT=${rbac_project}" \
     "$APP_ROOT/web"
+}
+
+build_code_images() {
+  require_env_file
+  local image_lock local_lock keycloak_url keycloak_realm keycloak_client rbac_url rbac_project
+  WEB_IMAGE="$(env_value SKILLIFY_WEB_IMAGE "$WEB_IMAGE")"
+  FRONTEND_IMAGE="$(env_value SKILLIFY_FRONTEND_IMAGE "$FRONTEND_IMAGE")"
+  docker image inspect "$WEB_IMAGE" >/dev/null 2>&1 || fail \
+    "backend base image does not exist: ${WEB_IMAGE}; run '$0 deploy' first"
+  image_lock="$(
+    docker run --rm --entrypoint sha256sum "$WEB_IMAGE" /app/uv.lock | awk '{print $1}'
+  )"
+  local_lock="$(sha256sum "$APP_ROOT/uv.lock" | awk '{print $1}')"
+  [[ -n "$image_lock" && "$image_lock" == "$local_lock" ]] || fail \
+    "backend dependency lock changed; deploy-code cannot reuse the existing image"
+
+  log "building dependency-locked backend overlay ${WEB_IMAGE}"
+  docker build -t "$WEB_IMAGE" -f "$APP_ROOT/Dockerfile.code-overlay" \
+    --build-arg "BASE_IMAGE=${WEB_IMAGE}" "$APP_ROOT"
+
+  [[ -f "$APP_ROOT/web/dist/index.html" ]] || fail \
+    "prebuilt frontend is missing; run 'npm ci && npm run build' in web first"
+  docker image inspect "$FRONTEND_IMAGE" >/dev/null 2>&1 || fail \
+    "frontend base image does not exist: ${FRONTEND_IMAGE}; run '$0 deploy' first"
+  log "building prevalidated frontend overlay ${FRONTEND_IMAGE}"
+  docker build -t "$FRONTEND_IMAGE" -f "$APP_ROOT/web/Dockerfile.code-overlay" \
+    --build-arg "BASE_IMAGE=${FRONTEND_IMAGE}" "$APP_ROOT/web"
 }
 
 create_stateless() {
@@ -203,6 +231,9 @@ create_stateless() {
     --health-cmd "uv run python -c \"import requests; requests.get('http://127.0.0.1:8089/healthz', timeout=2).raise_for_status()\"" \
     --health-interval 10s --health-timeout 5s --health-retries 10 \
     "$WEB_IMAGE" skillify-web >/dev/null
+  if docker network inspect keycloak_net >/dev/null 2>&1; then
+    docker network connect keycloak_net "$WEB_CONTAINER"
+  fi
   start_one "$WEB_CONTAINER"
 
   docker run -d --name "$FRONTEND_CONTAINER" --restart unless-stopped \
@@ -270,9 +301,18 @@ case "$ACTION" in
     create_stateless
     status_stack
     ;;
+  deploy-code)
+    build_code_images
+    ensure_docker_objects
+    start_external_dependencies
+    create_stateful_if_missing
+    remove_stateless
+    create_stateless
+    status_stack
+    ;;
   start) start_stack; status_stack ;;
   restart) stop_stack; start_stack; status_stack ;;
   stop) stop_stack; status_stack ;;
   status) status_stack ;;
-  *) fail "usage: $0 {deploy|start|restart|stop|status}" ;;
+  *) fail "usage: $0 {deploy|deploy-code|start|restart|stop|status}" ;;
 esac

@@ -34,6 +34,11 @@ class BridgeTransport(Protocol):
         self, task_id: str, nonce: str, state_version: int, purpose: str, aliases: list[str],
     ) -> None: ...
     def cancellation(self, task_id: str, nonce: str) -> bool: ...
+    def register_agent_session(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def send_agent_event(self, payload: dict[str, Any]) -> None: ...
+    def request_agent_interaction(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def interaction_responses(self, task_id: str) -> list[dict[str, Any]]: ...
+    def acknowledge_interaction(self, interaction_id: str, status: str) -> None: ...
 
 
 class BridgeRunner(Protocol):
@@ -138,6 +143,52 @@ class HttpBridgeTransport:
             return response.json().get("cancelRequested") is True
         except (requests.RequestException, ValueError, TypeError) as exc:
             raise BridgeTransportError("endpoint task cancellation check failed") from exc
+
+    def _agent_request(
+        self, method: str, path: str, *, payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            response = self.session.request(
+                method,
+                f"{self.server_url}{path}",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json=payload,
+                params=params,
+                timeout=30,
+            )
+            response.raise_for_status()
+            value = response.json()
+            if not isinstance(value, dict):
+                raise ValueError("Agent control response must be an object")
+            return value
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            raise BridgeTransportError(f"Agent control request failed: {path}") from exc
+
+    def register_agent_session(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._agent_request("POST", "/api/endpoint/agent-sessions", payload=payload)
+
+    def send_agent_event(self, payload: dict[str, Any]) -> None:
+        self._agent_request("POST", "/api/endpoint/agent-events", payload=payload)
+
+    def request_agent_interaction(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._agent_request("POST", "/api/endpoint/agent-interactions", payload=payload)
+
+    def interaction_responses(self, task_id: str) -> list[dict[str, Any]]:
+        value = self._agent_request(
+            "GET", "/api/endpoint/agent-interactions/responses",
+            params={"taskId": task_id},
+        )
+        interactions = value.get("interactions", [])
+        if not isinstance(interactions, list):
+            raise BridgeTransportError("Agent interaction response list is invalid")
+        return interactions
+
+    def acknowledge_interaction(self, interaction_id: str, status: str) -> None:
+        self._agent_request(
+            "POST", f"/api/endpoint/agent-interactions/{interaction_id}/ack",
+            payload={"status": status},
+        )
 
 
 class LocalOutbox:
@@ -340,7 +391,8 @@ def connect(
         transport = HttpBridgeTransport(server_url, token)
         outbox = LocalOutbox(outbox_path)
         BridgeLoop(
-            transport, outbox, _build_runner(outbox, server_url), _build_reporter(server_url, token, outbox),
+            transport, outbox, _build_runner(outbox, server_url, transport),
+            _build_reporter(server_url, token, outbox),
         ).run(
             max_polls=1 if once else None,
         )
@@ -350,7 +402,11 @@ def connect(
         state_path.unlink(missing_ok=True)
 
 
-def _build_runner(outbox: LocalOutbox, server_url: str | None = None):
+def _build_runner(
+    outbox: LocalOutbox,
+    server_url: str | None = None,
+    control_plane: HttpBridgeTransport | None = None,
+):
     from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
     from skillify.agent.providers.opencode import OpenCodeProvider
     from skillify.agent.providers.claudecode import ClaudeCodeProvider
@@ -422,7 +478,7 @@ def _build_runner(outbox: LocalOutbox, server_url: str | None = None):
         "opencode": OpenCodeProvider(executable=config.opencode_executable or "opencode"),
         "claude-code": ClaudeCodeProvider(),
     }
-    if config.shogun_team_enabled:
+    if config.agent_host_mode == "legacy" and config.shogun_team_enabled:
         from skillify.agent.providers.shogun import ShogunProvider
         from skillify.agent.shogun.credentials import EnvironmentCredentialBroker
         required = (
@@ -506,13 +562,37 @@ def _build_runner(outbox: LocalOutbox, server_url: str | None = None):
             packages=packages,
         )
 
-    agent_runner = TaskRunner(
-        providers,
-        start_spec, outbox,
-        mcp_catalog=mcp_catalog,
-        permission_resolver=permission_resolver,
-        always_mcp=always_mcp,
-    )
+    if config.agent_host_mode == "official":
+        if control_plane is None:
+            raise ValueError("official Agent Host requires the endpoint control-plane transport")
+        from skillify.agent.host_client import AgentHostClient
+        from skillify.agent.managed_runner import ManagedTaskRunner
+        from skillify.agent.session_registry import SessionRegistry
+
+        default_entrypoint = (
+            Path(__file__).resolve().parents[3] / "agent-host" / "dist" / "index.js"
+        )
+        entrypoint = Path(config.agent_host_entrypoint or default_entrypoint).resolve(strict=True)
+        agent_runner = ManagedTaskRunner(
+            host_factory=lambda: AgentHostClient(
+                entrypoint, node=config.node_executable,
+            ),
+            start_spec=start_spec,
+            control_plane=control_plane,
+            outbox=outbox,
+            mcp_catalog=mcp_catalog,
+            permission_resolver=permission_resolver,
+            always_mcp=always_mcp,
+            session_registry=SessionRegistry(paths.state_dir / "provider-sessions.json"),
+        )
+    else:
+        agent_runner = TaskRunner(
+            providers,
+            start_spec, outbox,
+            mcp_catalog=mcp_catalog,
+            permission_resolver=permission_resolver,
+            always_mcp=always_mcp,
+        )
     return RoutedBridgeRunner(
         agent_runner, lambda: _build_codemap_runner(outbox), lambda: _build_app_runner(outbox),
     )

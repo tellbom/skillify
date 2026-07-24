@@ -26,6 +26,7 @@ Run from the repository root on the Linux Docker host:
 
 ```sh
 sudo scripts/deployment/skillify-docker.sh deploy
+sudo scripts/deployment/skillify-docker.sh deploy-code
 sudo scripts/deployment/skillify-docker.sh start
 sudo scripts/deployment/skillify-docker.sh restart
 sudo scripts/deployment/skillify-docker.sh stop
@@ -37,6 +38,14 @@ network, stateful containers, and named volumes; and recreates only the Web,
 webhook, and frontend containers. It never deletes named volumes. Existing
 PostgreSQL, Forgejo, and devpi containers are started as-is, so stateful image
 or data-format changes remain an explicit maintenance operation.
+
+`deploy-code` is the network-independent application-only path. It compares
+the SHA256 of `/app/uv.lock` in the current backend image with the repository
+lock and refuses on any mismatch; only then does it overlay the local Skillify
+package without resolving dependencies. It also requires a tested
+`web/dist/index.html` built on the build client and overlays those static files
+onto the existing Nginx image, so the Docker server needs neither Node nor
+public-network package access.
 
 The legacy test-server entry point delegates to the same Docker CLI script:
 

@@ -341,6 +341,52 @@ class EndpointEventIn(EndpointTaskLifecycleIn):
     diffStats: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     failureReason: str | None = None
+    reasonCode: str | None = None
     workerId: str | None = None
     workPackageId: str | None = None
     stage: str | None = None
+
+
+class ProviderSessionIn(BaseModel):
+    taskId: str
+    teamRunId: str | None = None
+    workerId: str
+    workPackageId: str | None = None
+    provider: str
+    providerSessionId: str
+    runtimeInstanceId: str
+    workspace: str
+    required: bool = True
+    dependsOn: list[str] = Field(default_factory=list)
+    resumeMetadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRuntimeEventIn(BaseModel):
+    eventId: str
+    providerSessionId: str
+    sequence: int = Field(ge=1)
+    eventType: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    occurredAt: datetime
+
+
+class AgentInteractionRequestIn(BaseModel):
+    providerSessionId: str
+    providerRequestId: str
+    kind: str
+    title: str
+    description: str | None = None
+    choices: list[dict[str, Any]] = Field(default_factory=list)
+    allowFreeText: bool = False
+    expiresAt: datetime | None = None
+
+
+class AgentInteractionResponseIn(BaseModel):
+    responseVersion: int = Field(ge=0)
+    choice: str | None = None
+    answer: str | None = None
+    comment: str | None = None
+
+
+class AgentInteractionAckIn(BaseModel):
+    status: str

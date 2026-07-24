@@ -231,6 +231,16 @@ export function cancelEndpointTask(taskId) {
   return request(`/endpoint-tasks/${taskId}/cancel`, { method: 'POST', auth: true })
 }
 
+export function getEndpointTaskAgentRuntime(taskId) {
+  return request(`/endpoint-tasks/${taskId}/agent-runtime`, { auth: true })
+}
+
+export function respondEndpointTaskInteraction(taskId, interactionId, payload) {
+  return request(`/endpoint-tasks/${taskId}/agent-interactions/${interactionId}/respond`, {
+    method: 'POST', json: payload, auth: true,
+  })
+}
+
 export function updateTaskWorkPackages(taskId, packages) {
   return request(`/endpoint-tasks/${taskId}/work-packages`, {
     method: 'PUT', json: { packages }, auth: true,
