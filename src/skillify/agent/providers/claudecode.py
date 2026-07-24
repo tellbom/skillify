@@ -117,12 +117,16 @@ class ClaudeCodeProvider:
         assert path is not None
         from skillify.agent.claudecode_config import write_task_mcp_config
         argv = [path, "-p", "--output-format", "stream-json", "--verbose"]
+        if any(policy.write_paths for policy in runtime.spec.permissions.policies):
+            argv.extend(["--permission-mode", "acceptEdits"])
         if not runtime.spec.runtime.is_provider_managed:
             assert runtime.spec.runtime.model is not None
             argv.extend(["--model", runtime.spec.runtime.model])
         mcp_path = write_task_mcp_config(runtime.spec.config_dir, runtime.spec.mcp_servers)
         if mcp_path is not None:
             argv.extend(["--mcp-config", str(mcp_path)])
+        if runtime.spec.mcp_allowed_tools:
+            argv.extend(["--allowedTools", *runtime.spec.mcp_allowed_tools])
         process = self.popen(
             argv,
             cwd=str(runtime.spec.workspace), env=self._environment(runtime.spec),
@@ -160,6 +164,7 @@ class ClaudeCodeProvider:
     def stream_events(self, handle: ProviderHandle, session: ProviderSession) -> Iterator[TaskEvent]:
         runtime = self._sessions[session.session_id]; process = runtime.process; sequence = 1
         yield self._event(handle, session, EventType.TASK_ACCEPTED, TaskState.QUEUED, sequence)
+        permission_denied = False
         try:
             for line in process.stdout or ():
                 if self.monotonic() - runtime.started_at >= runtime.timeout_seconds:
@@ -173,16 +178,22 @@ class ClaudeCodeProvider:
                 except json.JSONDecodeError:
                     continue
                 kind = value.get("type"); sequence += 1
+                if kind == "user" and "haven't granted it yet" in line:
+                    permission_denied = True
                 if kind == "assistant":
                     yield self._event(handle, session, EventType.TOOL_REQUESTED, TaskState.RUNNING, sequence, {"tool_name": "claude-code"})
                 elif kind == "user":
                     yield self._event(handle, session, EventType.TOOL_COMPLETED, TaskState.RUNNING, sequence, {"tool_name": "claude-code"})
                 elif kind == "result":
-                    failed = value.get("is_error") is True
+                    failed = value.get("is_error") is True or permission_denied
                     yield self._event(
                         handle, session, EventType.TASK_FINISHED,
                         TaskState.FAILED if failed else TaskState.SUCCEEDED, sequence,
-                        {"reason_code": "CLAUDE_CODE_ERROR"} if failed else {"result_state": "succeeded"},
+                        (
+                            {"reason_code": "CLAUDE_CODE_PERMISSION_DENIED"}
+                            if permission_denied
+                            else {"reason_code": "CLAUDE_CODE_ERROR"}
+                        ) if failed else {"result_state": "succeeded"},
                     )
                     return
             returncode = process.wait(timeout=1)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import signal
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from skillify.agent.events import EventType, TaskState
+from skillify.agent.permissions import PermissionManifest, merge_permissions
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec, TaskSpec
 from skillify.agent.providers.claudecode import ClaudeCodeProvider
 
@@ -86,6 +88,37 @@ def test_provider_owned_runtime_uses_claude_settings_without_model_override(tmp_
     assert "ANTHROPIC_BASE_URL" not in captured["kwargs"]["env"]
     assert "ANTHROPIC_MODEL" not in captured["kwargs"]["env"]
     assert "CLAUDE_TOKEN" not in captured["kwargs"]["env"]
+
+
+def test_task_mcp_tools_are_allowed_and_permission_denial_fails(tmp_path, monkeypatch) -> None:
+    process = Process([
+        json.dumps({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "is_error": True}]},
+            "toolUseResult": "Claude requested permissions, but you haven't granted it yet.",
+        }) + "\n",
+        json.dumps({"type": "result", "is_error": False}) + "\n",
+    ])
+    provider, captured, _ = _provider(monkeypatch, process)
+    spec = _spec(tmp_path)
+    spec = replace(
+        spec,
+        mcp_servers={"catalog": {"type": "stdio", "command": "catalog"}},
+        mcp_allowed_tools=("mcp__catalog__skills_search",),
+        permissions=merge_permissions((PermissionManifest.from_value("task", {
+            "writePaths": ["**/*"],
+        }),)),
+    )
+
+    handle = provider.start(spec)
+    session = provider.create_session(handle, TaskSpec("task-mcp", "work"))
+    events = list(provider.stream_events(handle, session))
+
+    assert "--permission-mode" in captured["argv"]
+    assert "acceptEdits" in captured["argv"]
+    assert captured["argv"][-2:] == ["--allowedTools", "mcp__catalog__skills_search"]
+    assert events[-1].state is TaskState.FAILED
+    assert events[-1].details["reason_code"] == "CLAUDE_CODE_PERMISSION_DENIED"
 
 
 def test_cancel_terminates_process_group(tmp_path, monkeypatch) -> None:

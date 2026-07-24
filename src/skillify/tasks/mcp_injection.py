@@ -23,6 +23,7 @@ class McpPackageConfig:
 @dataclass(frozen=True)
 class McpInjectionPlan:
     servers: dict[str, dict[str, object]]
+    allowed_tools: tuple[str, ...]
     downgraded: bool
     log: str | None
 
@@ -39,6 +40,7 @@ def select_task_mcp(
     if unknown:
         raise ValueError(f"task requests unknown MCP packages: {sorted(unknown)}")
     selected: dict[str, dict[str, object]] = {}
+    allowed_tools: list[str] = []
     for name in requested:
         package = catalog[name]
         if not package.tools or package.context_budget < 1:
@@ -57,11 +59,14 @@ def select_task_mcp(
                 "type": "stdio", "command": package.command,
                 "args": list(package.args), "env": environment,
             }
+            allowed_tools.extend(
+                f"mcp__{name}__{tool.replace('.', '_')}" for tool in package.tools
+            )
         else:
             raise ValueError("unsupported MCP injection runtime")
     if per_task_supported:
-        return McpInjectionPlan(selected, False, None)
+        return McpInjectionPlan(selected, tuple(allowed_tools), False, None)
     return McpInjectionPlan(
-        selected, True,
+        selected, tuple(allowed_tools), True,
         "executor lacks per-task MCP configuration; global installation remains permission-allowlisted",
     )

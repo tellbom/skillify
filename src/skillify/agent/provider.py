@@ -84,6 +84,7 @@ class ProviderStartSpec:
     shutdown_timeout_seconds: float = 5.0
     source_config_path: Path | None = None
     mcp_servers: dict[str, dict[str, object]] = field(default_factory=dict)
+    mcp_allowed_tools: tuple[str, ...] = ()
     execution_mode: str = "single"
     preferred_cli: str | None = None
     team_policy: dict[str, object] = field(default_factory=dict)

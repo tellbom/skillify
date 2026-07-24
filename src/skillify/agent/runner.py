@@ -139,7 +139,11 @@ class TaskRunner:
             )
             if plan.log:
                 self.log(plan.log)
-            start_spec = replace(start_spec, mcp_servers=plan.servers)
+            start_spec = replace(
+                start_spec,
+                mcp_servers=plan.servers,
+                mcp_allowed_tools=plan.allowed_tools,
+            )
             handle = provider.start(start_spec)
             try:
                 session = provider.create_session(handle, TaskSpec(envelope.task_id, prompt))
