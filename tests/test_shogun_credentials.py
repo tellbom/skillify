@@ -163,3 +163,27 @@ def test_launcher_source_and_channel_never_contain_the_secret_value(
                 assert "unit-test-secret-value" not in artifact.read_text(encoding="utf-8")
     finally:
         injector.destroy(channel)
+
+
+def test_launchers_project_worker_mcp_without_embedding_credentials(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    broker = Broker()
+    injector = PaneCredentialInjector(executables={
+        "opencode": "/usr/bin/opencode",
+        "claude-code": "/usr/bin/claude",
+    })
+    channel = injector.prepare(
+        {"ANTHROPIC_API_KEY": "vault://model/current"}, broker=broker, run_dir=tmp_path,
+    )
+    try:
+        opencode = (channel.launcher_dir / "opencode").read_text(encoding="utf-8")
+        claude = (channel.launcher_dir / "claude").read_text(encoding="utf-8")
+        assert 'opencode_config["mcp"] = mcp_config["mcp"]' in opencode
+        assert '"--mcp-config"' in claude
+        assert '"--allowedTools"' in claude
+        assert '"acceptEdits"' in claude
+        assert "unit-test-secret-value" not in opencode + claude
+    finally:
+        injector.destroy(channel)

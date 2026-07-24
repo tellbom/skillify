@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from pathlib import Path
 
@@ -171,3 +172,50 @@ def test_worker_worktrees_omitted_is_byte_identical_to_before(tmp_path: Path) ->
     settings = yaml.safe_load(text_without)
     for agent in settings["cli"]["agents"].values():
         assert "env" not in agent
+
+
+def test_worker_mcp_is_projected_to_native_cli_config(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    server = {
+        "type": "local",
+        "command": ["/usr/bin/python3", "-m", "forgejo"],
+        "environment": {"TOKEN_FILE": "/run/credentials/forgejo"},
+        "enabled": True,
+    }
+    catalog = {
+        "type": "local",
+        "command": ["/usr/bin/python3", "-m", "catalog"],
+        "environment": {"TOKEN_FILE": "/run/credentials/endpoint"},
+        "enabled": True,
+    }
+    generate_config(
+        install_root=bundle,
+        run_dir=tmp_path / "run",
+        preferred_cli="opencode",
+        worker_count=2,
+        model="test-model",
+        work_packages=({
+            "allowedPaths": ["**/*"],
+            "access": "write",
+            "recommendedMcp": ["forgejo"],
+        },),
+        mcp_servers={"forgejo": server, "catalog": catalog},
+        mcp_allowed_tools=(
+            "mcp__forgejo__forgejo_get_issue",
+            "mcp__catalog__skills_search",
+        ),
+    )
+
+    native = json.loads(
+        (tmp_path / "run" / "config" / "ashigaru1-mcp.json").read_text()
+    )
+    runtime = json.loads(
+        (tmp_path / "run" / "config" / "worker-mcp-runtime.json").read_text()
+    )
+    assert native == {"mcp": {"catalog": catalog, "forgejo": server}}
+    assert runtime["ashigaru1"]["allowed_tools"] == [
+        "mcp__catalog__skills_search",
+        "mcp__forgejo__forgejo_get_issue",
+    ]
+    assert runtime["ashigaru1"]["write_enabled"] is True
+    assert "ashigaru2" not in runtime

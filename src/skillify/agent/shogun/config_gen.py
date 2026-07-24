@@ -121,6 +121,7 @@ def generate_config(
     endpoint_environment: Mapping[str, str] | None = None,
     work_packages: tuple[dict[str, object], ...] = (),
     mcp_servers: Mapping[str, dict[str, object]] | None = None,
+    mcp_allowed_tools: tuple[str, ...] = (),
     network_allowlist: tuple[str, ...] = (),
     mcp_network_allowlist: Mapping[str, tuple[str, ...]] | None = None,
     worker_worktrees: Mapping[str, Path] | None = None,
@@ -197,6 +198,12 @@ def generate_config(
             "edit": [] if read_only else list(allowed_paths),
         }
         worker_mcp[worker] = sorted(set(requested_mcp) & available_mcp)
+    package_scoped_mcp = {
+        name for names in worker_mcp.values() for name in names
+    }
+    task_global_mcp = available_mcp - package_scoped_mcp
+    for worker, names in worker_mcp.items():
+        worker_mcp[worker] = sorted(set(names) | task_global_mcp)
     package_network = {
         target for name, targets in (mcp_network_allowlist or {}).items()
         if name in available_mcp for target in targets
@@ -229,6 +236,35 @@ def generate_config(
     })
     settings_path.write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
     settings_path.chmod(0o600)
+    worker_mcp_runtime: dict[str, dict[str, object]] = {}
+    for worker, names in worker_mcp.items():
+        if not names:
+            continue
+        servers = {
+            name: dict((mcp_servers or {})[name])
+            for name in names
+        }
+        mcp_path = config_dir / f"{worker}-mcp.json"
+        mcp_path.write_text(json.dumps(
+            {"mcp": servers} if preferred_cli == "opencode" else {"mcpServers": servers},
+            ensure_ascii=False,
+            sort_keys=True,
+        ) + "\n", encoding="utf-8")
+        mcp_path.chmod(0o600)
+        prefixes = tuple(f"mcp__{name}__" for name in names)
+        worker_mcp_runtime[worker] = {
+            "config_path": str(mcp_path),
+            "allowed_tools": sorted(
+                tool for tool in mcp_allowed_tools if tool.startswith(prefixes)
+            ),
+            "write_enabled": bool(package_permissions[worker]["edit"]),
+        }
+    mcp_runtime_path = config_dir / "worker-mcp-runtime.json"
+    mcp_runtime_path.write_text(
+        json.dumps(worker_mcp_runtime, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    mcp_runtime_path.chmod(0o600)
 
     home_dir = root / "home"
     home_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

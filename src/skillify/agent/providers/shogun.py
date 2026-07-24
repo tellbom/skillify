@@ -198,6 +198,7 @@ class ShogunProvider(AgentProvider):
                 endpoint_environment=spec.network_environment,
                 work_packages=spec.work_packages,
                 mcp_servers=spec.mcp_servers,
+                mcp_allowed_tools=spec.mcp_allowed_tools,
                 network_allowlist=spec.network_allowlist,
                 mcp_network_allowlist=spec.mcp_network_allowlist,
                 worker_worktrees=worker_worktrees,

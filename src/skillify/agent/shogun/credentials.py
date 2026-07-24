@@ -187,6 +187,19 @@ if tmux_pane:
     )
     if result.returncode == 0:
         candidate_agent_id = result.stdout.strip()
+worker_mcp_runtime = {{}}
+worker_mcp_runtime_path = (
+    Path(__file__).resolve().parent.parent / "config" / "worker-mcp-runtime.json"
+)
+if candidate_agent_id and worker_mcp_runtime_path.exists():
+    try:
+        all_worker_mcp = json.loads(worker_mcp_runtime_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        all_worker_mcp = {{}}
+    if isinstance(all_worker_mcp, dict):
+        candidate_runtime = all_worker_mcp.get(candidate_agent_id, {{}})
+        if isinstance(candidate_runtime, dict):
+            worker_mcp_runtime = candidate_runtime
 # OpenCode's /new command starts a session with default_agent, not necessarily
 # the --agent used to launch the TUI. The approved watcher uses /new before every
 # worker task, so pin the pane identity as the per-process default as well.
@@ -210,6 +223,14 @@ if Path({executable!r}).name == "opencode" and candidate_agent_id:
         permission = opencode_config.setdefault("permission", {{}})
         if isinstance(permission, dict):
             permission["external_directory"] = {{str(run_root / "queue" / "**"): "allow"}}
+        mcp_config_path = worker_mcp_runtime.get("config_path")
+        if isinstance(mcp_config_path, str):
+            try:
+                mcp_config = json.loads(Path(mcp_config_path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                mcp_config = {{}}
+            if isinstance(mcp_config, dict) and isinstance(mcp_config.get("mcp"), dict):
+                opencode_config["mcp"] = mcp_config["mcp"]
         environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(
             opencode_config, separators=(",", ":"),
         )
@@ -245,7 +266,24 @@ if worktree:
         ["git", "config", "--worktree", "user.email", f"{{worker_id}}@skillify.local.invalid"],
         check=True,
     )
-os.execve({executable!r}, [{executable!r}, *sys.argv[1:]], environment)
+arguments = list(sys.argv[1:])
+if Path({executable!r}).name == "claude" and worker_mcp_runtime:
+    mcp_config_path = worker_mcp_runtime.get("config_path")
+    if isinstance(mcp_config_path, str):
+        arguments.extend(["--mcp-config", mcp_config_path])
+    allowed_tools = worker_mcp_runtime.get("allowed_tools", [])
+    if isinstance(allowed_tools, list) and all(isinstance(item, str) for item in allowed_tools):
+        if allowed_tools:
+            arguments.extend(["--allowedTools", *allowed_tools])
+    if worker_mcp_runtime.get("write_enabled") is True:
+        try:
+            permission_index = arguments.index("--permission-mode")
+        except ValueError:
+            arguments.extend(["--permission-mode", "acceptEdits"])
+        else:
+            if permission_index + 1 < len(arguments):
+                arguments[permission_index + 1] = "acceptEdits"
+os.execve({executable!r}, [{executable!r}, *arguments], environment)
 '''
         path.write_text(source, encoding="utf-8")
         path.chmod(0o700)
