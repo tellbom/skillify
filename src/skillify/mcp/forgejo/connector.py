@@ -79,19 +79,28 @@ class ForgejoHttpBackend:
     def __init__(self, base_url: str, token: str) -> None:
         self.base_url = base_url.rstrip("/"); self.token = token
 
-    def _request(self, method: str, path: str, json: dict | None = None) -> dict[str, Any]:
+    def _request_json(self, method: str, path: str, json: dict | None = None) -> Any:
         response = requests.request(
             method, self.base_url + path, json=json,
             headers={"Authorization": f"token {self.token}"}, timeout=10,
         )
         response.raise_for_status()
-        value = response.json()
+        return response.json()
+
+    def _request(self, method: str, path: str, json: dict | None = None) -> dict[str, Any]:
+        value = self._request_json(method, path, json)
         if not isinstance(value, dict):
             raise ValueError("Forgejo response must be an object")
         return value
 
     def get_issue(self, owner, repository, number):
-        return self._request("GET", f"/api/v1/repos/{owner}/{repository}/issues/{number}")
+        path = f"/api/v1/repos/{owner}/{repository}/issues/{number}"
+        issue = self._request("GET", path)
+        comments = self._request_json("GET", path + "/comments")
+        if not isinstance(comments, list) or any(not isinstance(item, dict) for item in comments):
+            raise ValueError("Forgejo Issue comments response must be a list of objects")
+        issue["comments"] = comments
+        return issue
 
     def comment_issue(self, owner, repository, number, body):
         return self._request("POST", f"/api/v1/repos/{owner}/{repository}/issues/{number}/comments", {"body": body})

@@ -7,6 +7,7 @@ import pytest
 
 from skillify.mcp.docs import DocumentSearchConnector
 from skillify.mcp.forgejo import ForgejoDevelopmentConnector
+from skillify.mcp.forgejo.connector import ForgejoHttpBackend
 from skillify.mcp.scope import ConnectorPolicy
 from skillify.mcp.sdk_client import call_stdio_tool
 
@@ -50,6 +51,35 @@ def test_forgejo_and_ci_reads_use_minimum_scopes() -> None:
     assert connector.get_ci_status("acme", "service", "main")["status"] == "success"
     with pytest.raises(PermissionError, match="minimum scope"):
         connector.comment_issue("acme", "service", 42, "done")
+
+
+def test_forgejo_http_issue_read_includes_comment_bodies(monkeypatch) -> None:
+    class Response:
+        def __init__(self, value):
+            self.value = value
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.value
+
+    responses = iter((
+        Response({"number": 42, "title": "Fix parser"}),
+        Response([{"id": 7, "body": "Decision: catalog-verified"}]),
+    ))
+    paths: list[str] = []
+
+    def request(method, url, **kwargs):
+        paths.append(url)
+        return next(responses)
+
+    monkeypatch.setattr("skillify.mcp.forgejo.connector.requests.request", request)
+
+    issue = ForgejoHttpBackend("http://forgejo", "token").get_issue("acme", "service", 42)
+
+    assert issue["comments"][0]["body"] == "Decision: catalog-verified"
+    assert paths[-1].endswith("/issues/42/comments")
 
 
 def test_write_tools_require_individual_authorization() -> None:
