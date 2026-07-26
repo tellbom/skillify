@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/dist
+**/.ua
+**/.understand-anything
+homepage
+assets
+docs
+tests

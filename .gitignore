@@ -23,6 +23,7 @@ build/
 coverage/
 
 .worktrees/
+.runtime/
 
 .DS_Store
 Thumbs.db
