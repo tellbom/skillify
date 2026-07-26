@@ -1,0 +1,7 @@
+ARG GITNEXUS_BASE_IMAGE=ghcr.io/abhigyanpatwari/gitnexus:1.6.9
+FROM ${GITNEXUS_BASE_IMAGE}
+
+USER root
+COPY patch-upload-limits.mjs /tmp/patch-upload-limits.mjs
+RUN node /tmp/patch-upload-limits.mjs && rm /tmp/patch-upload-limits.mjs
+USER node
