@@ -52,7 +52,7 @@ Expected: `iss`, `preferred_username`, `sub`, `azp`, and usable audience claims 
 ### Task 2: Bootstrap the Skillify RBAC Project
 
 **Files:**
-- Create: `E:/router/router/sql/rbac-bootstrap-skillify-dm.sql`
+- Create: `E:/skillify/scripts/rbac/rbac-bootstrap-skillify-dm.sql`
 - Test: `E:/skillify/web/tests/dynamicRoutes.spec.js`
 
 **Interfaces:**
@@ -71,7 +71,7 @@ Create rows for routes `skills`, `skill-detail`, `upload`, and `leaderboard`; us
 
 - [ ] **Step 3: Execute the bootstrap script and read back counts**
 
-Run: `E:\DM\bin\DIsql.exe -L -S <runtime-logon> \`E:\router\router\sql\rbac-bootstrap-skillify-dm.sql`
+Run: `E:\DM\bin\DIsql.exe -L -S <runtime-logon> \`E:\skillify\scripts\rbac\rbac-bootstrap-skillify-dm.sql`
 
 Expected: One project grant and four active route rules exist for project `skillify`.
 

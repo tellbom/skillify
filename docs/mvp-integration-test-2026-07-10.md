@@ -33,8 +33,8 @@ No credentials or access tokens are stored in this report or in tracked Skillify
 - Verified real-token `POST /api/auth/login` and `GET /api/admin/index` responses are HTTP
   200 and return `skills`, `skill-detail`, `upload`, and `leaderboard` routes.
 
-The idempotent DM bootstrap is stored in the RBAC repository as
-`sql/rbac-bootstrap-skillify-dm.sql`.
+The idempotent DM bootstrap is stored in the Skillify repository as
+`scripts/rbac/rbac-bootstrap-skillify-dm.sql`.
 
 ## API Results
 
