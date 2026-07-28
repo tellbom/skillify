@@ -41,12 +41,15 @@ def select_task_mcp(
         raise ValueError(f"task requests unknown MCP packages: {sorted(unknown)}")
     selected: dict[str, dict[str, object]] = {}
     allowed_tools: list[str] = []
+    runtime_target = "claude" if runtime == "claude-code" else "opencode"
     for name in requested:
         package = catalog[name]
         if not package.tools or package.context_budget < 1:
             raise ValueError("MCP package requires tool summary and context budget")
         environment = {
-            key: value.replace("{workspace}", str(workspace))
+            key: value.replace("{workspace}", str(workspace)).replace(
+                "{runtime_target}", runtime_target,
+            )
             for key, value in package.environment.items()
         }
         if runtime == "opencode":

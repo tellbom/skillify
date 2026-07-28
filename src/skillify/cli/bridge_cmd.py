@@ -9,6 +9,7 @@ import stat
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,6 +262,36 @@ class BridgeLoop:
         self._next_backoff = initial_backoff
         self._executed: set[str] = set()
 
+    def _record_runner_failure(self, envelope, state_version: int, error: Exception) -> None:
+        from skillify.tasks.reporting import build_task_event
+
+        provider = (
+            envelope.preferred_cli
+            if envelope.runtime == "shogun" and envelope.preferred_cli
+            else envelope.runtime
+        )
+        event_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"skillify:{envelope.task_id}:provider-runtime-error:{state_version}",
+        ).hex
+        self.outbox.enqueue(event_id, build_task_event(
+            event_id=event_id,
+            task_id=envelope.task_id,
+            event_type="task.failed",
+            occurred_at=datetime.now(timezone.utc),
+            workflow_id=envelope.workflow_id,
+            workflow_version=envelope.workflow_version,
+            provider=str(provider),
+            provider_version="official-sdk",
+            reason_code="provider-runtime-error",
+            nonce=envelope.nonce,
+            state_version=state_version,
+            summary=json.dumps({
+                "reason": "provider-runtime-error",
+                "errorType": type(error).__name__,
+            }, sort_keys=True),
+        ))
+
     def poll(self) -> bool:
         try:
             tasks, cursor = self.transport.pull(self.cursor)
@@ -288,12 +319,12 @@ class BridgeLoop:
             state_version = self.transport.confirm(
                 envelope.task_id, envelope.nonce, envelope.state_version,
             )
-            error: list[BaseException] = []
+            error: list[Exception] = []
 
             def execute() -> None:
                 try:
                     self.runner.run(envelope, state_version=state_version)
-                except BaseException as exc:
+                except Exception as exc:
                     error.append(exc)
 
             worker = threading.Thread(target=execute, name=f"skillify-task-{envelope.task_id}")
@@ -314,7 +345,7 @@ class BridgeLoop:
                 if cancel_requested and not cancel_delivered:
                     cancel_delivered = self.runner.cancel(envelope.task_id)
             if error:
-                raise error[0]
+                self._record_runner_failure(envelope, state_version, error[0])
             self._executed.add(envelope.task_id)
             self.reporter.flush()
         return True
@@ -520,14 +551,13 @@ def _build_runner(
         )
     always_mcp: tuple[str, ...] = ()
     if config.endpoint_token_file and server_url:
-        target = "claude" if config.provider == "claude-code" else "opencode"
         mcp_catalog["catalog"] = McpPackageConfig(
             "catalog", sys.executable,
             ("-m", "skillify.cli.main", "mcp", "serve", "catalog"),
             {
                 "SKILLIFY_MCP_CATALOG_URL": server_url,
                 "SKILLIFY_MCP_CATALOG_TOKEN_FILE": config.endpoint_token_file,
-                "SKILLIFY_MCP_CATALOG_TARGET": target,
+                "SKILLIFY_MCP_CATALOG_TARGET": "{runtime_target}",
             },
             ("skills.search", "skills.load"), 3200,
             PermissionManifest.from_value("mcp:catalog", {
@@ -575,7 +605,12 @@ def _build_runner(
         entrypoint = Path(config.agent_host_entrypoint or default_entrypoint).resolve(strict=True)
         agent_runner = ManagedTaskRunner(
             host_factory=lambda: AgentHostClient(
-                entrypoint, node=config.node_executable,
+                entrypoint,
+                node=config.node_executable,
+                path_entries=(
+                    (Path(config.opencode_executable).parent,)
+                    if config.opencode_executable else ()
+                ),
             ),
             start_spec=start_spec,
             control_plane=control_plane,

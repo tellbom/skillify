@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -15,8 +16,26 @@ class AgentHostError(RuntimeError):
     pass
 
 
+def host_environment(path_entries: tuple[Path, ...]) -> dict[str, str]:
+    environment = dict(os.environ)
+    prefixes = []
+    for entry in path_entries:
+        if not entry.is_absolute():
+            raise ValueError("Agent Host PATH entries must be absolute")
+        prefixes.append(str(entry))
+    if prefixes:
+        environment["PATH"] = os.pathsep.join((*prefixes, environment.get("PATH", "")))
+    return environment
+
+
 class AgentHostClient:
-    def __init__(self, entrypoint: Path, *, node: str = "node") -> None:
+    def __init__(
+        self,
+        entrypoint: Path,
+        *,
+        node: str = "node",
+        path_entries: tuple[Path, ...] = (),
+    ) -> None:
         if not entrypoint.is_absolute():
             raise ValueError("Agent Host entrypoint must be absolute")
         self.process = subprocess.Popen(
@@ -27,6 +46,7 @@ class AgentHostClient:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=host_environment(path_entries),
         )
         self._events: queue.Queue[dict[str, Any]] = queue.Queue()
         self._responses: dict[str, dict[str, Any]] = {}

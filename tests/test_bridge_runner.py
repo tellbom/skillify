@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
 import threading
 
 from skillify.agent.fake_provider import FakeProvider
@@ -43,8 +44,9 @@ class Transport:
 
 class EventEndpoint:
     def __init__(self):
-        self.online = False; self.ids = []
+        self.online = False; self.ids = []; self.payloads = []
     def send(self, payload):
+        self.payloads.append(payload)
         self.ids.append(payload["eventId"])
         return self.online
 
@@ -74,6 +76,37 @@ def test_bridge_confirms_runs_provider_and_retries_outbox_without_reexecution(tm
     assert transport.confirmations == 1
     assert outbox.pending() == ()
     assert provider.live_handle_count == provider.live_session_count == 0
+
+
+def test_bridge_reports_runner_exception_as_terminal_failure(tmp_path: Path) -> None:
+    class BrokenRunner:
+        def run(self, envelope, *, state_version):
+            raise RuntimeError("provider startup failed with private details")
+
+        def cancel(self, task_id):
+            return False
+
+    envelope = _envelope()
+    transport = Transport(envelope)
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    endpoint = EventEndpoint()
+    endpoint.online = True
+    loop = BridgeLoop(
+        transport,
+        outbox,
+        BrokenRunner(),
+        TaskEventReporter(outbox, endpoint),
+        sleeper=lambda _: None,
+    )
+
+    assert loop.poll() is True
+
+    assert len(endpoint.ids) == 1
+    assert outbox.pending() == ()
+    payload = endpoint.payloads[0]
+    assert payload["eventType"] == "task.failed"
+    assert payload["reasonCode"] == "provider-runtime-error"
+    assert "private details" not in json.dumps(payload)
 
 
 def test_bridge_routes_codemap_without_starting_an_agent_provider() -> None:

@@ -35,6 +35,18 @@ class EventOutbox(Protocol):
     def enqueue(self, event_id: str, payload: dict[str, Any]) -> bool: ...
 
 
+_PROVIDER_TERMINAL_EVENTS = frozenset({
+    "provider.completed", "provider.failed", "provider.aborted",
+})
+
+
+def first_terminal_outcome(current: str | None, event_type: str) -> str | None:
+    """Keep the first provider terminal event authoritative for one Worker."""
+    if current is not None:
+        return current
+    return event_type if event_type in _PROVIDER_TERMINAL_EVENTS else None
+
+
 class ManagedTaskRunner:
     """Run one or more independent SDK sessions; only `_gate` reports success."""
 
@@ -233,10 +245,12 @@ class ManagedTaskRunner:
                         self._handle_event(
                             envelope, event, interactions=interactions,
                         )
-                        if event["type"] in {
-                            "provider.completed", "provider.failed", "provider.aborted",
-                        }:
-                            terminal[session_to_worker[session_id]] = str(event["type"])
+                        worker_id = session_to_worker[session_id]
+                        outcome = first_terminal_outcome(
+                            terminal.get(worker_id), str(event["type"]),
+                        )
+                        if outcome is not None and worker_id not in terminal:
+                            terminal[worker_id] = outcome
                             changed = schedule_ready()
                             active_workers = set(session_to_worker.values()) - set(terminal)
                             if pending and not active_workers and not changed:
@@ -419,12 +433,35 @@ class ManagedTaskRunner:
         path = spec.config_dir / "worktrees" / safe_worker
         path.parent.mkdir(parents=True, exist_ok=True)
         branch = f"skillify/{envelope.task_id}/{safe_worker}"
-        completed = subprocess.run(
-            ["git", "-C", str(spec.workspace), "worktree", "add", "-b", branch,
-             str(path), base_commit],
+        if path.exists():
+            current = subprocess.run(
+                ["git", "-C", str(path), "branch", "--show-current"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if current.returncode or current.stdout.strip() != branch:
+                raise RuntimeError(
+                    f"existing worker worktree does not belong to task: {path}"
+                )
+            return path
+        branch_exists = subprocess.run(
+            ["git", "-C", str(spec.workspace), "show-ref", "--verify", "--quiet",
+             f"refs/heads/{branch}"],
             capture_output=True,
             text=True,
             timeout=30,
+        ).returncode == 0
+        args = ["git", "-C", str(spec.workspace), "worktree", "add"]
+        if not branch_exists:
+            args.extend(("-b", branch))
+        args.append(str(path))
+        if branch_exists:
+            args.append(branch)
+        else:
+            args.append(base_commit)
+        completed = subprocess.run(
+            args, capture_output=True, text=True, timeout=30,
         )
         if completed.returncode:
             raise RuntimeError(f"failed to create worker worktree: {completed.stderr.strip()}")

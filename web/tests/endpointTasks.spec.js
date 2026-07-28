@@ -59,6 +59,7 @@ describe('EndpointTasksView', () => {
     expect(wrapper.text()).toContain('3 files · +24 / -7')
     expect(wrapper.text()).toContain('test-report:artifact-1')
     expect(wrapper.get('[data-testid="package-objective"]').element.value).toBe('Review parser')
+    expect(getEndpointTaskAgentRuntime).toHaveBeenCalledWith('task-old')
     expect(wrapper.find('[name="prompt"]').exists()).toBe(false)
     expect(wrapper.find('[name="shell"]').exists()).toBe(false)
   })
@@ -147,6 +148,17 @@ describe('EndpointTasksView', () => {
       events: [{
         eventId: 'event-1', eventType: 'interaction.requested', workerId: 'worker-1',
         sequence: 2, occurredAt: '2026-07-24T12:00:00Z',
+        payload: {
+          kind: 'tool', tool: 'mcp__forgejo__get_issue',
+          status: 'completed', rawInput: 'secret-value',
+        },
+      }, {
+        eventId: 'event-2', eventType: 'message.completed', workerId: 'worker-1',
+        sequence: 3, occurredAt: '2026-07-24T12:00:01Z',
+        payload: {
+          text: 'Issue 已读取，正在修改目标文件。',
+          tools: ['Read'], rawMessage: 'secret-value',
+        },
       }],
       interactions: [{
         interactionId: 'interaction-1', workerId: 'worker-1', kind: 'permission',
@@ -162,6 +174,10 @@ describe('EndpointTasksView', () => {
     expect(wrapper.text()).toContain('Agent 运行树')
     expect(wrapper.text()).toContain('Provider 完成不代表任务成功')
     expect(wrapper.get('[data-testid="agent-decision"]').text()).toContain('Allow write?')
+    expect(wrapper.text()).toContain('Tool mcp__forgejo__get_issue · completed')
+    expect(wrapper.text()).toContain('Issue 已读取，正在修改目标文件。')
+    expect(wrapper.text()).toContain('Tools: Read')
+    expect(wrapper.text()).not.toContain('secret-value')
     await wrapper.get('[data-testid="agent-decision"] button').trigger('click')
     await flushPromises()
     expect(respondEndpointTaskInteraction).toHaveBeenCalledWith(

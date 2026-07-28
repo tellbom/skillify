@@ -42,6 +42,134 @@ function claudeMcp(servers: Record<string, McpServerSpec>): Record<string, McpSe
   })) as Record<string, McpServerConfig>;
 }
 
+function normalizedAssistant(message: Record<string, unknown>): Record<string, unknown> {
+  const body = message.message && typeof message.message === "object"
+    ? message.message as Record<string, unknown>
+    : {};
+  const content = Array.isArray(body.content) ? body.content : [];
+  const items = content.filter(
+    (item): item is Record<string, unknown> => Boolean(item && typeof item === "object"),
+  );
+  const text = items
+    .filter((item) => item.type === "text" && typeof item.text === "string")
+    .map((item) => String(item.text))
+    .join("\n")
+    .slice(0, 8000);
+  const tools = items
+    .filter((item) => item.type === "tool_use" && typeof item.name === "string")
+    .map((item) => String(item.name));
+  return {
+    text: text || undefined,
+    tools,
+    isError: message.error != null,
+  };
+}
+
+function claudeResultFailed(message: Record<string, unknown>): boolean {
+  return (
+    message.subtype !== "success"
+    || message.is_error === true
+    || typeof message.api_error_status === "number"
+    || message.terminal_reason === "api_error"
+  );
+}
+
+function normalizedResult(message: Record<string, unknown>): Record<string, unknown> {
+  return {
+    isError: claudeResultFailed(message),
+    subtype: message.subtype,
+    terminalReason: message.terminal_reason,
+    apiErrorStatus: message.api_error_status,
+    summary: typeof message.result === "string"
+      ? message.result.slice(0, 1000)
+      : undefined,
+  };
+}
+
+function safeDecisionDetail(
+  toolName: string,
+  input: Record<string, unknown>,
+  options: Record<string, unknown>,
+): string | undefined {
+  const provided = options.description ?? options.decisionReason;
+  if (typeof provided === "string" && provided) return provided.slice(0, 1000);
+  const raw = toolName === "Bash"
+    ? input.command
+    : (input.file_path ?? input.path ?? options.blockedPath);
+  if (typeof raw !== "string" || !raw) return undefined;
+  const value = raw
+    .replace(/(sk-)[A-Za-z0-9_-]{8,}/gi, "$1[redacted]")
+    .replace(/(Bearer\s+)[^\s"']+/gi, "$1[redacted]")
+    .slice(0, 1000);
+  return `${toolName === "Bash" ? "Command" : "Path"}: ${value}`;
+}
+
+type ClaudeQuestion = {
+  key: string;
+  header: string;
+  question: string;
+  options: Array<{ id: string; label: string; description?: unknown }>;
+};
+
+function claudeQuestions(input: Record<string, unknown>): ClaudeQuestion[] {
+  return (Array.isArray(input.questions) ? input.questions : [])
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item, index) => {
+      const question = String(item.question ?? item.header ?? index);
+      const options = (Array.isArray(item.options) ? item.options : [])
+        .filter((option): option is Record<string, unknown> => Boolean(option && typeof option === "object"))
+        .map((option) => {
+          const label = String(option.label ?? option.value ?? "");
+          return { id: label, label, description: option.description };
+        })
+        .filter((option) => option.label);
+      return {
+        key: question,
+        header: String(item.header ?? "Agent question").slice(0, 200),
+        question: question.slice(0, 2000),
+        options,
+      };
+    });
+}
+
+function claudeQuestionPresentation(input: Record<string, unknown>): {
+  title: string;
+  description: string;
+  choices: ClaudeQuestion["options"];
+} {
+  const questions = claudeQuestions(input);
+  if (questions.length === 1) {
+    return {
+      title: questions[0].header,
+      description: questions[0].question,
+      choices: questions[0].options,
+    };
+  }
+  return {
+    title: "Agent questions",
+    description: questions.map((item, index) => {
+      const options = item.options.map((option) => option.label).join(", ");
+      return `${index + 1}. ${item.question}${options ? ` [${options}]` : ""}`;
+    }).join("\n"),
+    choices: [],
+  };
+}
+
+export function answersForClaudeQuestions(
+  input: Record<string, unknown>,
+  response: { choice?: string; answer?: string },
+): Record<string, string> {
+  const questions = claudeQuestions(input);
+  const raw = response.answer?.trim() || response.choice?.trim();
+  if (!questions.length || !raw) throw new Error("Claude question response is empty");
+  if (questions.length === 1) return { [questions[0].key]: raw };
+  const lines = raw.split(/\r?\n/).map((item) => item.trim());
+  if (lines.length !== questions.length || lines.some((item) => !item)) {
+    throw new Error("Claude multi-question response requires one non-empty line per question");
+  }
+  return Object.fromEntries(questions.map((item, index) => [item.key, lines[index]]));
+}
+
 export class ClaudeAdapter implements ProviderAdapter {
   constructor(private readonly sink: EventSink) {}
 
@@ -50,6 +178,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const pending = new Map<string, PendingDecision>();
     const mcpServers = claudeMcp(command.mcpServers);
     let providerSessionId = command.resumeSessionId ?? "";
+    let terminal = false;
     let sdkQuery: Query;
     const context = () => ({
       commandId: command.id,
@@ -79,28 +208,23 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
         canUseTool: async (toolName, input, options) => {
           providerSessionId ||= `pending-${command.taskId}-${command.workerId}`;
-          const firstQuestion = Array.isArray(input.questions)
-            ? input.questions[0] as Record<string, unknown> | undefined
-            : undefined;
-          const questionOptions = firstQuestion && Array.isArray(firstQuestion.options)
-            ? firstQuestion.options
-                .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-                .map((item) => ({
-                  id: String(item.label ?? item.value ?? ""),
-                  label: String(item.label ?? item.value ?? ""),
-                  description: item.description,
-                }))
-            : [];
+          const question = toolName === "AskUserQuestion"
+            ? claudeQuestionPresentation(input)
+            : null;
           this.sink.emit("interaction.requested", {
             providerRequestId: options.requestId,
             toolUseId: options.toolUseID,
             agentId: options.agentID,
             kind: toolName === "AskUserQuestion" ? "question" : "permission",
-            title: options.title ?? options.displayName ?? toolName,
-            description: options.description ?? options.decisionReason,
-            input,
-            choices: toolName === "AskUserQuestion" && questionOptions.length
-              ? questionOptions
+            title: question?.title ?? options.title ?? options.displayName ?? toolName,
+            description: question?.description ?? safeDecisionDetail(
+                toolName,
+                input,
+                options as unknown as Record<string, unknown>,
+              ),
+            toolName,
+            choices: question
+              ? question.choices
               : [
               { id: "allow", label: "Allow" },
               { id: "deny", label: "Deny" },
@@ -141,21 +265,36 @@ export class ClaudeAdapter implements ProviderAdapter {
             }, context());
             startedResolve();
           } else if (message.type === "assistant") {
-            this.sink.emit("message.completed", { message }, context());
-          } else if (message.type === "result") {
             this.sink.emit(
-              message.subtype === "success" ? "provider.completed" : "provider.failed",
-              { result: message },
+              "message.completed",
+              normalizedAssistant(message as unknown as Record<string, unknown>),
+              context(),
+            );
+          } else if (message.type === "result") {
+            const result = message as unknown as Record<string, unknown>;
+            if (terminal) continue;
+            terminal = true;
+            this.sink.emit(
+              claudeResultFailed(result) ? "provider.failed" : "provider.completed",
+              { result: normalizedResult(result) },
               context(),
             );
           } else {
-            this.sink.emit("provider.event", { message }, context());
+            this.sink.emit("provider.event", {
+              kind: message.type,
+              subtype: "subtype" in message ? message.subtype : undefined,
+            }, context());
           }
         }
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));
         startedReject(normalized);
-        this.sink.emit("provider.failed", { error: normalized.message }, context());
+        if (!terminal) {
+          terminal = true;
+          this.sink.emit("provider.failed", {
+            error: normalized.message.slice(0, 1000),
+          }, context());
+        }
       }
     })();
     await started;
@@ -186,19 +325,12 @@ export class ClaudeAdapter implements ProviderAdapter {
         if (response.choice === "deny") {
           waiter.resolve({ behavior: "deny", message: response.comment ?? "Denied by user" });
         } else if (waiter.toolName === "AskUserQuestion") {
-          const answer = response.answer ?? response.choice ?? "";
-          const questions = Array.isArray(waiter.input.questions)
-            ? waiter.input.questions as Array<Record<string, unknown>>
-            : [];
-          const answers = Object.fromEntries(
-            questions.map((question, index) => [
-              String(question.question ?? question.header ?? index),
-              answer,
-            ]),
-          );
           waiter.resolve({
             behavior: "allow",
-            updatedInput: { ...waiter.input, answers },
+            updatedInput: {
+              ...waiter.input,
+              answers: answersForClaudeQuestions(waiter.input, response),
+            },
           });
         } else {
           waiter.resolve({ behavior: "allow" });

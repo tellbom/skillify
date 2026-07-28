@@ -41,6 +41,34 @@ function workerLabel(workerId) {
   return match ? `Worker ${match[1]}` : workerId
 }
 
+function runtimeEventSummary(event) {
+  const payload = event?.payload || {}
+  const text = typeof payload.text === 'string' ? payload.text.trim() : ''
+  const tools = Array.isArray(payload.tools) && payload.tools.length
+    ? `Tools: ${payload.tools.join(', ')}`
+    : ''
+  if (text || tools) return [text, tools].filter(Boolean).join('\n')
+  if (payload.kind === 'tool' || payload.tool) {
+    return `Tool ${payload.tool || 'unknown'}${payload.status ? ` · ${payload.status}` : ''}`
+  }
+  if (payload.error) {
+    const detail = typeof payload.error === 'string' ? payload.error : payload.error.message
+    const status = typeof payload.error === 'object' ? payload.error.statusCode : null
+    return [status ? `HTTP ${status}` : '', detail || 'Provider failed'].filter(Boolean).join(' · ')
+  }
+  if (payload.result) {
+    const result = payload.result
+    return [
+      result.apiErrorStatus ? `HTTP ${result.apiErrorStatus}` : '',
+      result.summary || result.terminalReason || result.subtype || '',
+    ].filter(Boolean).join(' · ')
+  }
+  if (event?.eventType === 'session.started' && Array.isArray(payload.mcpServers)) {
+    return `MCP: ${payload.mcpServers.join(', ') || 'none'}`
+  }
+  return ''
+}
+
 function editableTask(task) {
   return {
     ...task,
@@ -73,7 +101,7 @@ async function load() {
     endpoints.value = endpointRows
     tasks.value = taskRows.map(editableTask)
     form.endpointId = endpointRows.find((item) => item.online)?.endpointId || endpointRows[0]?.endpointId || ''
-    await refreshActiveRuntimes()
+    await refreshActiveRuntimes(true)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -174,11 +202,18 @@ async function loadRuntime(taskId) {
   runtimeByTask[taskId] = await getEndpointTaskAgentRuntime(taskId)
 }
 
-async function refreshActiveRuntimes() {
+async function refreshActiveRuntimes(includeTerminal = false) {
+  const terminalAgentTask = (task) => (
+    includeTerminal
+    && ['opencode', 'claude-code', 'shogun'].includes(task.runtime)
+    && !['awaiting_confirmation', 'awaiting_endpoint'].includes(task.state)
+  )
   const visible = tasks.value.filter((task) => (
-    ['running', 'cancelling'].includes(task.state) || runtimeByTask[task.taskId]
+    ['running', 'cancelling'].includes(task.state)
+    || runtimeByTask[task.taskId]
+    || terminalAgentTask(task)
   ))
-  await Promise.all(visible.map((task) => loadRuntime(task.taskId)))
+  await Promise.allSettled(visible.map((task) => loadRuntime(task.taskId)))
 }
 
 function scheduleRuntimeRefresh() {
@@ -424,6 +459,9 @@ onBeforeUnmount(() => {
                 <strong>{{ event.eventType }}</strong>
                 <span>{{ workerLabel(event.workerId) }} · #{{ event.sequence }}</span>
                 <time>{{ event.occurredAt }}</time>
+                <p v-if="runtimeEventSummary(event)" class="runtime-event-summary">
+                  {{ runtimeEventSummary(event) }}
+                </p>
               </li>
             </ol>
           </section>
@@ -515,6 +553,7 @@ form button:disabled { color: #777; background: #292929; cursor: not-allowed; }
 .runtime-timeline { display: grid; margin: 10px 0 0; padding: 0; list-style: none; gap: 4px; }
 .runtime-timeline li { display: grid; grid-template-columns: minmax(140px, 1fr) auto auto; padding: 6px 8px; border-left: 2px solid #39504d; background: #171b1a; gap: 10px; }
 .runtime-timeline strong { font-size: 10px; }.runtime-timeline span, .runtime-timeline time { color: #687572; font: 9px ui-monospace, monospace; }
+.runtime-timeline .runtime-event-summary { grid-column: 1 / -1; margin: 0; color: #aebbb9; font: 10px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline { margin: 14px 0 0 3px; padding-left: 19px; border-left: 1px solid #333; list-style: none; }
 .timeline li { position: relative; padding: 0 0 13px 4px; }
 .timeline li::before { position: absolute; top: 4px; left: -24px; width: 7px; height: 7px; border: 2px solid #181818; border-radius: 50%; background: #666; content: ''; }
