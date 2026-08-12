@@ -1,8 +1,8 @@
-# Agent SDK 托管与 Web 决策闭环阶段报告（2026-07-28）
+# Agent SDK 托管与 Web 决策闭环阶段报告（更新至 2026-08-12）
 
 ## 当前结论
 
-本轮代码已补齐 OpenCode 与 Claude Agent SDK 的结构化事件、用户问题回传、原会话回答、子 Agent MCP 继承、运行失败归一化和 Web 时间线展示。当前不能给出真机完成结论：客户端和服务器的 NAT 端口可建立 TCP 连接，但 SSH 在 banner exchange 阶段超时，Skillify、Forgejo、Keycloak 也未返回 HTTP 响应，因此最新代码尚未重新部署，OpenCode/Claude Team 两条真实 Issue 链路也尚未重跑。
+代码、Linux 聚焦测试、Docker CLI 部署、Keycloak 登录及真实 OpenCode/Claude Team Session 启动均已通过。两种 Provider 的 Session 启动事件都证明 Catalog、Forgejo MCP 已注入 Worker，并投影到原生子 Agent；Claude 还实证两个 MCP Server 均为 `connected`。当前仍不能给出完整闭环结论：两个模型入口都返回 HTTP 402 `Insufficient Balance`，因此模型没有机会实际调用 MCP、提出 Web Question、恢复原 Session、形成 Worker commit 或进入成功 Gate。
 
 ## 本轮修复
 
@@ -33,14 +33,35 @@ MCP 不参与修改模型推理，也不负责替代 Team 调度；它向当前 
 
 ## 已完成的聚焦验证
 
-- Windows 仅用于不依赖 POSIX 的 Agent Host/Web 聚焦验证：
-  - `agent-host npm run build`：通过。
-  - `agent-host npm test`：4/4 通过，覆盖 OpenCode 与 Claude 单问题和多问题回答映射。
-  - Web 聚焦测试：5/5 通过（在本轮前次改动后执行）。
-  - Web production build：通过（在本轮前次改动后执行）。
-- 最新问题映射改动之前，客户端 Linux 已执行 Agent Host build 和 Python 聚焦测试，结果为 15 passed。由于虚拟机随后冻结，最新差异尚未在 Linux 重跑。
+- 客户端 Kylin Linux（2026-08-12）：
+  - Agent Host `npm run build`：通过。
+  - Agent Host `npm test`：4/4 通过，覆盖 OpenCode 与 Claude 单问题和多问题回答映射。
+  - Python 桥接、MCP 注入、Agent Host PATH 与 worktree 聚焦测试：15/15 通过。
+  - Web `endpointTasks.spec.js`：5/5 通过。
+  - Web production build：通过。
+- 验收过程中修正 Agent Host 测试命令：将 Linux 默认 shell 不支持的 `dist/**/*.test.js` 改为实际输出目录 `dist/*.test.js`，Windows 与 Linux 均通过。
+- 服务器使用 `scripts/deployment/skillify-docker.sh deploy-code` 部署，不使用 Compose、不创建备份、不修改状态卷。部署后：
+  - `skillify-skillify-web-1`、`skillify-frontend-1`：healthy。
+  - 容器内确认 `first_terminal_outcome`、`host_environment`、`provider-runtime-error` 均来自新源码。
+  - Skillify `/healthz`、Forgejo API、Keycloak OIDC discovery：HTTP 200。
+  - Keycloak 用户令牌可访问受保护的 Endpoint/Task API：HTTP 200。
 
-## 既有真实链路证据
+## 2026-08-12 真实链路证据
+
+- OpenCode Team / Forgejo Issue 6：
+  - Task Run：`a51bf046ed5c45979f18030c0924f6df`
+  - Worker `opencode-a` Session：`ses_00af2d793ffeJcn2OCFK5w3IEQ`
+  - Worker `opencode-b` Session：`ses_00af2cfa8ffeDjI4HNUhM9rC0c`
+  - 两个 `session.started` 均记录 `mcpServers=[catalog, forgejo]` 和 `nativeSubagentMcpServers=[catalog, forgejo]`。
+  - 两个 Session 均收到 HTTP 402，Task Gate 为 `provider-failed`；无 Interaction、commit 或实际 MCP 调用证据。
+- Claude Team / Forgejo Issue 7：
+  - Task Run：`52c612d708644e98820b0dfcaeb0098a`
+  - Worker `claude-a` Session：`f07f3401-de5a-465e-83b0-851a8253815f`
+  - Worker `claude-b` Session：`1f3ca680-7576-44f2-bbce-c6fe1e847516`
+  - 两个 `session.started` 均记录 Catalog、Forgejo 为 `connected`，具有对应 MCP 工具名单，且 `nativeSubagentMcpServers=[catalog, forgejo]`。
+  - Claude SDK 返回 `subtype=success` 但同时 `isError=true`、`apiErrorStatus=402`；当前 Adapter 正确生成 `provider.failed`，Task Gate 为 `provider-failed`，没有假成功。
+
+## 历史真实链路证据
 
 - OpenCode Task Run：
   - `16ad8a9564f34025abea6ccd55302267`
@@ -55,18 +76,12 @@ MCP 不参与修改模型推理，也不负责替代 Team 调度；它向当前 
 
 ## 当前阻断与恢复后最小步骤
 
-2026-07-28 当前观测：
+当前唯一业务阻断是模型供应商余额。VM、SSH、客户端 bridge、DM8、Keycloak、Forgejo、Skillify 及部署版本已经恢复。余额或可用模型凭据恢复后只需：
 
-- `192.168.124.2:2222` 与 `:2223`：TCP 可连接，SSH 在 banner exchange 超时。
-- `:18090`、`:3000`、`:18085`：TCP 可连接，但 8 秒内无 HTTP 响应。
-- 尚未把本轮最新代码部署到服务器，也未提交或推送本轮未验证差异。
+1. 复用 Issue 6、Issue 7，重新创建两条最小 Team 任务。
+2. 观察子 Agent 实际调用 Catalog/Forgejo MCP，而不只检查配置名单。
+3. 分别触发 OpenCode Question 与 Claude `AskUserQuestion`，在 Web 回答后确认原 Session 继续。
+4. 验证一个 Worker `waiting_user` 时另一个继续运行。
+5. 保存 Interaction ID、回答、恢复事件、Worker commit、integration commit 和最终 Gate 结果。
 
-虚拟机恢复后只执行以下必要步骤：
-
-1. 同步差异到客户端，运行 Agent Host build/4 个测试及 Python 桥接、MCP 注入、worktree 聚焦测试。
-2. 使用 Docker CLI 部署脚本更新服务器代码，不使用 Compose、不做备份。
-3. 验证 RBAC、Keycloak、Forgejo 和 Skillify API。
-4. 分别以 Issue 6、Issue 7 创建 OpenCode Team、Claude Team 最小任务，验证子 Agent MCP、Web 决策、原 Session 恢复、commit/integration/Gate。
-5. 若模型仍返回 402，记录为供应商阻断，不伪造完成结论；余额恢复后再完成两条闭环。
-6. 真机证据完成后提交并推送当前 Git 工作区。
-
+模型继续返回 402 时必须保持 `provider.failed/gate.failed`，不得将 Session 启动、MCP connected、Provider idle 或 Agent 文本当作完成。
