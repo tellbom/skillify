@@ -4,7 +4,9 @@
 
 - DeepSeek 的 OpenAI-compatible 与 Anthropic-compatible 入口在充值后均已真实返回 HTTP 200，余额不再是阻断项。
 - OpenCode Team 已完成真实闭环：原生子 Agent 实际调用 Catalog 与 Forgejo MCP，Web 问题回答回到原 Session，两名 Worker 均形成提交，集成 Gate 通过。
-- Claude Code 已验证官方 Agent SDK 启动、MCP 注入、Web 权限请求与回答；但完整 Team Gate 被 CentOS/VMware 的宿主机 I/O 与 UI 异常中断，不能宣称 Claude 真机闭环完成。
+- Claude Code Team 已完成真实闭环：原生子 Agent 实际调用 Catalog 与 Forgejo MCP，`AskUserQuestion` 从 Web 回到原 Session，两名 Worker 均形成提交与 Issue 评论，集成 Gate 通过。
+- Web 强制取消已完成真实复核：Claude SDK Session 启动后由 Web 请求取消，端侧发出 `provider.aborted`，Task 与 Worker 均收敛为 `cancelled`，且无残留 Agent Host/Claude 进程。
+- 功能验收已经闭环；宿主机 VMware 仍会同时对两台 VM 报 VMDK `errCode=1450`，这是独立的测试环境稳定性问题。
 
 ## OpenCode 成功证据
 
@@ -31,20 +33,33 @@
 - 麒麟 Bridge：`pytest tests/test_bridge.py -q`，5/5 通过。
 - Windows Python 测试仍受项目既有 POSIX `fcntl` 依赖限制；同一用例已在目标 Linux 通过。
 
-## Claude 实机证据与剩余阻断
+## Claude Code Team 成功证据
 
 - Forgejo Issue：`196045/python-hello#8`
-- 当前最小 Team Task：`ad7e81abfbbe41a0ad86acc92d732e61`
-- `claude-a` 的 `session.started` 记录了 Catalog、Forgejo MCP 及同名 `nativeSubagentMcpServers`。
-- 修正后真实运行的时间线不再出现 `thinking_tokens`；启动后的首轮仅产生 12 条结构化事件。
-- Claude 发出 Bash 权限 Interaction，Web 回答 `allow` 返回 HTTP 200，证明决策请求已进入 Web API。
-- 尚未取得 Claude 原生子 Agent 实际调用 MCP、`AskUserQuestion` 回答恢复、两个 Worker 提交及最终 Gate 证据。
+- 成功 Task：`abc9112cf4f544cf9fb3558baca8a02f`
+- `claude-a`、`claude-b` 的 `session.started` 均记录 Catalog、Forgejo MCP 为 `connected`，并记录同名 `nativeSubagentMcpServers`。
+- `claude-a` 调用原生 `Agent` 后，子 Agent `a1e8ccaa1c73edf0c` 实际完成 Catalog `skills.search` 与 Forgejo `get-issue`；证据已写入 `skillify-claude-team-a.md`，不是只检查注入配置。
+- `AskUserQuestion` Interaction `ai-63ee6e1e46cf4bb3a4dee5f51a1c1c03` 选择 `gamma`，状态到 `applied`，原 Session 随后继续写文件、评论 Issue 和提交。
+- Worker A 分支提交 `3f3336e`，Worker B 分支提交 `561a12b`；集成工作区提交为 `3443003`、`2a0bf08`，工作区最终干净。
+- Forgejo Issue 评论 ID 为 `44`、`45`，分别记录两名 Worker 的 MCP、文件、测试和提交证据。
+- 两名 Worker 最终均为 `succeeded / gate passed`，Task 为 `succeeded`；Gate 的集成 head 为 `2a0bf089d161cc19518f5a2565300c67fe38057c`。
+- 时间线共 142 条结构化事件，没有恢复被过滤的 `thinking_tokens` 噪声。
 
-阻断来自宿主机/VMware，而非模型或 Skillify 代码：CentOS 控制台出现 `drm_atomic_helper` soft lockup；VMware 日志随后记录 VMDK 写入失败 `errCode=1450 / Insufficient system resources`，并弹出 UI thread / desktop composition 异常。多次继续后仍复现。为避免继续异常断电 DM8，停止重复强制复位。试验性的 VM 3D 配置已恢复为原值 `mks.enable3d=TRUE`，没有把未验证的虚拟机调整留给用户。
+## Web 强制取消成功证据
+
+- 取消 Task：`319c7d8b2c634946aaa780290de50c35`
+- `interrupt-a` 已真实启动 Claude SDK Session `8859fa60-da77-4a87-ad31-3fec289e0f61` 后，Web 调用取消接口返回 HTTP 200。
+- Task 状态由 `cancelling` 收敛为 `cancelled`，Worker 状态为 `cancelled`；未启动依赖 Worker `interrupt-b`。
+- 运行时事件依次包含 `session.started` 与 `provider.aborted`，没有产生 `task.failed/provider-runtime-error`。
+- 端侧 Bridge 保持运行，检查不到该 Task、Agent Host 或 Claude 子进程残留。
+
+## 测试环境稳定性
+
+宿主机/VMware 的问题仍然存在，但不再阻断上述功能证据：CentOS 控制台出现 `drm_atomic_helper` 与 NMI watchdog soft lockup；两台 VM 的 VMware 日志会在同一时间记录 VMDK 读写失败 `errCode=1450 / Insufficient system resources`。本轮仅通过宿主机命令控制 VM、隔离异常退出遗留的 `.lck` 目录并重新启动，没有修改 VMDK、快照、数据库或 VM 配置。试验性的 VM 3D 配置仍为原值 `mks.enable3d=TRUE`。
 
 ## 当前交接
 
-- 客户端麒麟 VM 和 `skillctl agent bridge` 在最后一次检查时仍运行。
-- CentOS VM 当前需要用户在 VMware Workstation 图形界面中点击启动，并在 I/O 异常框选择用户此前确认可用的“继续”。
-- CentOS 恢复后使用项目脚本 `scripts/deployment/skillify-docker.sh start` 启动，不使用 Docker Compose、不创建备份。
-- 服务恢复后只需继续 Issue 8 / Claude Task 的最小路径；OpenCode 不需要重跑。
+- 最新提交 `c847038` 已同步到服务器和端侧；服务器已通过 `scripts/deployment/skillify-docker.sh deploy-code` 重建并运行，未使用 Docker Compose、未创建备份。
+- 客户端麒麟 VM 与 `skillctl agent bridge` 最后检查为运行状态；当前 Bridge PID 为 `10102`。
+- OpenCode 与 Claude Code 的 Team 功能闭环均已通过，Web 取消闭环也已通过；本任务没有剩余功能测试节点。
+- 后续应把 VMware `errCode=1450` 作为宿主机运维问题单独处理，不应把 TCP 端口可连接视为 VM/应用健康。
