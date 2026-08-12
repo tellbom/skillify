@@ -76,6 +76,56 @@ def test_bridge_delivers_web_cancellation_to_active_runner(tmp_path: Path) -> No
     assert runner.cancelled == ["task-1"]
 
 
+def test_bridge_reports_cancelled_when_runner_exits_with_error_after_stop(
+    tmp_path: Path,
+) -> None:
+    envelope = {
+        "taskProtocolVersion": 1,
+        "taskId": "task-1", "endpointId": "endpoint-1",
+        "workflowId": "evidence-bugfix", "workflowVersion": "1.0.0",
+        "workspaceAlias": "repo", "parameters": {"issueReference": "BUG-42"},
+        "issuedAt": "2026-07-22T00:00:00+00:00", "expiresAt": "2026-07-22T01:00:00+00:00",
+        "nonce": "nonce-1", "runtime": "opencode", "mcpPackages": [], "stateVersion": 1,
+        "signature": "signature",
+    }
+
+    class CancellingTransport(FakeTransport):
+        def cancellation(self, task_id: str, nonce: str) -> bool:
+            return True
+
+    class InterruptedRunner:
+        def __init__(self):
+            self.done = threading.Event()
+
+        def run(self, value, *, state_version: int) -> int:
+            assert self.done.wait(2)
+            raise BridgeTransportError("control plane became unavailable during abort")
+
+        def cancel(self, task_id: str) -> bool:
+            self.done.set()
+            return True
+
+    class RecordingReporter:
+        def __init__(self, outbox):
+            self.outbox = outbox
+            self.payloads = []
+
+        def flush(self) -> int:
+            self.payloads.extend(item["payload"] for item in self.outbox.pending())
+            return 0
+
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    reporter = RecordingReporter(outbox)
+    loop = BridgeLoop(
+        CancellingTransport([([envelope], "cursor-1")]), outbox,
+        InterruptedRunner(), reporter, sleeper=lambda _: None,
+    )
+
+    assert loop.poll() is True
+    assert reporter.payloads[-1]["eventType"] == "task.cancelled"
+    assert reporter.payloads[-1]["reasonCode"] == "user-cancelled"
+
+
 class NoopReporter:
     def flush(self) -> int:
         return 0

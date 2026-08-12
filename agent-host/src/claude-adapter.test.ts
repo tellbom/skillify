@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answersForClaudeQuestions } from "./claude-adapter.js";
+import {
+  answersForClaudeQuestions,
+  shouldEmitClaudeProviderEvent,
+} from "./claude-adapter.js";
+
+test("does not forward Claude thinking token progress as timeline events", () => {
+  assert.equal(shouldEmitClaudeProviderEvent({
+    type: "system",
+    subtype: "thinking_tokens",
+  }), false);
+  assert.equal(shouldEmitClaudeProviderEvent({
+    type: "provider_event",
+    subtype: "tool_progress",
+  }), true);
+});
 
 test("maps a Claude question answer to its original question key", () => {
   const input = {

@@ -292,6 +292,33 @@ class BridgeLoop:
             }, sort_keys=True),
         ))
 
+    def _record_runner_cancelled(self, envelope, state_version: int) -> None:
+        from skillify.tasks.reporting import build_task_event
+
+        provider = (
+            envelope.preferred_cli
+            if envelope.runtime == "shogun" and envelope.preferred_cli
+            else envelope.runtime
+        )
+        event_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"skillify:{envelope.task_id}:task.cancelled:{state_version}",
+        ).hex
+        self.outbox.enqueue(event_id, build_task_event(
+            event_id=event_id,
+            task_id=envelope.task_id,
+            event_type="task.cancelled",
+            occurred_at=datetime.now(timezone.utc),
+            workflow_id=envelope.workflow_id,
+            workflow_version=envelope.workflow_version,
+            provider=str(provider),
+            provider_version="official-sdk",
+            reason_code="user-cancelled",
+            nonce=envelope.nonce,
+            state_version=state_version,
+            summary=json.dumps({"reason": "user-cancelled"}, sort_keys=True),
+        ))
+
     def poll(self) -> bool:
         try:
             tasks, cursor = self.transport.pull(self.cursor)
@@ -345,7 +372,10 @@ class BridgeLoop:
                 if cancel_requested and not cancel_delivered:
                     cancel_delivered = self.runner.cancel(envelope.task_id)
             if error:
-                self._record_runner_failure(envelope, state_version, error[0])
+                if cancel_requested and cancel_delivered:
+                    self._record_runner_cancelled(envelope, state_version)
+                else:
+                    self._record_runner_failure(envelope, state_version, error[0])
             self._executed.add(envelope.task_id)
             self.reporter.flush()
         return True

@@ -86,6 +86,12 @@ function normalizedResult(message: Record<string, unknown>): Record<string, unkn
   };
 }
 
+export function shouldEmitClaudeProviderEvent(
+  message: Record<string, unknown>,
+): boolean {
+  return message.subtype !== "thinking_tokens";
+}
+
 function safeDecisionDetail(
   toolName: string,
   input: Record<string, unknown>,
@@ -279,7 +285,9 @@ export class ClaudeAdapter implements ProviderAdapter {
               { result: normalizedResult(result) },
               context(),
             );
-          } else {
+          } else if (shouldEmitClaudeProviderEvent(
+            message as unknown as Record<string, unknown>,
+          )) {
             this.sink.emit("provider.event", {
               kind: message.type,
               subtype: "subtype" in message ? message.subtype : undefined,
@@ -305,11 +313,18 @@ export class ClaudeAdapter implements ProviderAdapter {
       workerId: command.workerId,
       providerSessionId,
       abort: async () => {
-        try {
-          await sdkQuery.interrupt();
-        } finally {
-          abortController.abort();
+        if (!terminal) {
+          terminal = true;
           this.sink.emit("provider.aborted", {}, context());
+        }
+        abortController.abort();
+        try {
+          await Promise.race([
+            sdkQuery.interrupt(),
+            new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        } catch {
+          // The AbortController already terminated the local provider process.
         }
       },
       state: async () => ({
