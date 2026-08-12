@@ -48,6 +48,8 @@ class AgentLocalConfig:
     provider: str = "opencode"
     allowed_workspaces: tuple[str, ...] = ()
     workspace_aliases: dict[str, str] = field(default_factory=dict)
+    # Legacy Shogun-only fields. Native OpenCode/Claude Code startup ignores
+    # these and delegates model/provider credentials to the provider itself.
     model_endpoint: str | None = None
     model_provider: str | None = None
     model_name: str | None = None
@@ -212,8 +214,15 @@ def load_agent_local_config(paths: AgentPaths) -> AgentLocalConfig:
 def save_agent_local_config(paths: AgentPaths, config: AgentLocalConfig) -> None:
     paths.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = paths.config_path.with_suffix(".json.tmp")
+    data = asdict(config)
+    for legacy_key in (
+        "model_endpoint", "model_provider", "model_name",
+        "allowed_model_hosts", "credential_env_names",
+    ):
+        if not data[legacy_key]:
+            data.pop(legacy_key)
     temporary.write_text(
-        json.dumps(asdict(config), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     temporary.chmod(0o600)

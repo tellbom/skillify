@@ -169,8 +169,8 @@ def test_agent_init_records_connection_files_without_model_configuration(tmp_pat
     assert settings["control_plane_url"] == "http://skillify.internal:8089"
     assert settings["endpoint_token_file"] == str(token.resolve())
     assert settings["forgejo_mcp_credentials_file"] == str(forgejo.resolve())
-    assert settings["model_endpoint"] is None
-    assert settings["credential_env_names"] == []
+    assert "model_endpoint" not in settings
+    assert "credential_env_names" not in settings
 
 
 def test_agent_init_rejects_invalid_workspace_alias(tmp_path: Path) -> None:
@@ -550,47 +550,19 @@ def test_stop_maps_runtime_unlink_oserror_to_config_invalid(tmp_path: Path) -> N
     _assert_error_envelope(result, exit_code=10, code="AGENT_CONFIG_INVALID")
 
 
-def test_invalid_runtime_endpoint_maps_to_config_invalid(tmp_path: Path) -> None:
-    workspace = tmp_path / "repo"; workspace.mkdir(); env = _env(tmp_path)
-    initialized = runner.invoke(agent_app, [
-        "init", "--workspace", str(workspace),
-        "--model-endpoint", "https://unapproved.example/v1",
-        "--model-provider", "internal", "--model", "code-1",
-        "--allowed-model-host", "model.intranet.example",
-        "--credential-env", "MODEL_KEY", "--format", "json",
-    ], env=env)
-    assert initialized.exit_code == 0
-    result = runner.invoke(
-        agent_app, ["run", "--workspace", str(workspace), "--prompt-file", "-", "--format", "json"],
-        input="inspect\n", env=env,
-    )
-    assert result.exit_code == 10
-    assert _json(result) == {
-        "ok": False, "code": "AGENT_CONFIG_INVALID",
-        "message": "model runtime config is invalid", "data": {},
-    }
-
-
-@pytest.mark.parametrize("changes", [
-    {"model_endpoint": None},
-    {"model_endpoint": "ftp://model.intranet.example/v1"},
-    {"allowed_model_hosts": ()},
-    {"allowed_model_hosts": ("other.intranet.example",)},
-    {"credential_env_names": ()},
-    {"credential_env_names": ("bad-name",)},
-])
-def test_all_invalid_or_missing_runtime_fields_map_to_config_invalid(changes) -> None:
-    from dataclasses import replace
-    from skillify.cli.agent_cmd import AgentCommandFailure, _runtime_config
+def test_native_provider_runtime_ignores_legacy_skillify_model_fields() -> None:
+    from skillify.cli.agent_cmd import _runtime_config
     from skillify.common.config import AgentLocalConfig
-    base = AgentLocalConfig(
-        model_endpoint="https://model.intranet.example/v1", model_provider="internal",
+    config = AgentLocalConfig(
+        model_endpoint="ftp://unapproved.example/v1", model_provider="internal",
         model_name="code-1", allowed_model_hosts=("model.intranet.example",),
-        credential_env_names=("MODEL_KEY",),
+        credential_env_names=("bad-name",),
     )
-    with pytest.raises(AgentCommandFailure) as captured:
-        _runtime_config(replace(base, **changes))
-    assert captured.value.code is AgentErrorCode.CONFIG_INVALID
+
+    runtime = _runtime_config(config)
+
+    assert runtime.is_provider_managed
+    assert runtime.redacted() == {"source": "provider"}
 
 
 def test_malformed_missing_and_wrong_type_runtime_json_have_stable_envelopes(tmp_path: Path) -> None:

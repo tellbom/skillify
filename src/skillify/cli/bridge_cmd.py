@@ -485,11 +485,13 @@ def _build_runner(
     aliases = dict(config.workspace_aliases)
     for raw in config.allowed_workspaces:
         aliases.setdefault(Path(raw).name, raw)
-    managed_values = (config.model_provider, config.model_endpoint, config.model_name)
-    managed_runtime = ModelRuntimeConfig(
-        config.model_provider, config.model_endpoint, config.model_name,
-        config.allowed_model_hosts, config.credential_env_names,
-    ) if any(managed_values) else ModelRuntimeConfig()
+    managed_runtime = ModelRuntimeConfig()
+    if config.agent_host_mode == "legacy" and config.shogun_team_enabled:
+        managed_values = (config.model_provider, config.model_endpoint, config.model_name)
+        managed_runtime = ModelRuntimeConfig(
+            config.model_provider, config.model_endpoint, config.model_name,
+            config.allowed_model_hosts, config.credential_env_names,
+        ) if any(managed_values) else ModelRuntimeConfig()
     provider_runtime = ModelRuntimeConfig()
 
     def start_spec(envelope: TaskEnvelope) -> ProviderStartSpec:

@@ -548,13 +548,13 @@ skillctl agent init \
   "control_plane_url": "http://skillify-web:8089",
   "endpoint_token_file": "/home/user/.skillctl/credentials/endpoint-token",
   "forgejo_mcp_credentials_file": "/home/user/.skillctl/credentials/forgejo-mcp.env",
-  "opencode_executable": "/opt/skillify/opencode/1.15.11/opencode",
-  "model_endpoint": null,
-  "model_provider": null,
-  "model_name": null,
-  "credential_env_names": []
+  "opencode_executable": "/opt/skillify/opencode/1.15.11/opencode"
 }
 ```
+
+旧配置中的 `model_endpoint`、`model_provider`、`model_name`、
+`allowed_model_hosts` 和 `credential_env_names` 仅保留给显式启用的 legacy Shogun
+兼容路径。默认的官方 Agent Host、OpenCode 和 Claude Code 启动链路会忽略这些字段。
 
 Endpoint Device Token 和 Forgejo MCP 服务 Token 不属于模型凭据，由安装程序放入独立的
 `0600` 文件。它们不会写入仓库或任务参数：
@@ -602,6 +602,12 @@ Claude Code 自身配置管理：
   "allow_legacy_tui": false
 }
 ```
+
+使用 CC Switch 时，用户应先在与 Bridge 相同的系统账户中启动 CC Switch、启用 Claude
+接管或本地代理，并用原生 `claude -p "ping"` 验证配置。随后只需启动
+`skillctl agent bridge start`。Skillify 不安装、启动或修改 CC Switch，也不传递模型名、
+API Base URL 或 Key；Claude Agent SDK 会读取 Claude Code 的 user/project/local 原生配置。
+CC Switch 未启动或上游模型不可用时，Skillify 只把 Provider 错误投影为任务失败。
 
 每个 Worker 拥有独立 Provider Session。OpenCode 使用官方 Server/SDK 的 Session、
 Event、Permission、Abort 和 Diff API；Claude Code 使用 Agent SDK。任务批准的 MCP

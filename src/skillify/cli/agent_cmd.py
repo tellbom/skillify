@@ -351,24 +351,12 @@ def _build_provider() -> OpenCodeProvider:
 
 
 def _runtime_config(config: AgentLocalConfig) -> ModelRuntimeConfig:
-    runtime_fields = (
-        config.model_endpoint, config.model_provider, config.model_name,
-        config.allowed_model_hosts, config.credential_env_names,
-    )
-    if not any(runtime_fields):
-        return ModelRuntimeConfig()
-    if not all(runtime_fields):
-        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is incomplete")
-    try:
-        return ModelRuntimeConfig(
-            provider=config.model_provider,
-            endpoint=config.model_endpoint,
-            model=config.model_name,
-            allowed_endpoint_hosts=config.allowed_model_hosts,
-            credential_env_names=config.credential_env_names,
-        )
-    except ValueError as exc:
-        raise AgentCommandFailure(AgentErrorCode.CONFIG_INVALID, "model runtime config is invalid") from exc
+    """Use the selected provider's native model and credential configuration.
+
+    Legacy model fields remain readable for isolated Shogun compatibility, but
+    OpenCode and Claude Code startup must not consume them.
+    """
+    return ModelRuntimeConfig()
 
 
 class _TerminationRequested(Exception):
@@ -385,20 +373,11 @@ def _run_local_task(workspace: Path, prompt: str, paths: AgentPaths,
     terminal = "failed"; task_id = uuid.uuid4().hex
     previous_sigterm = None; sigterm_installed = False; stop_error = None
     cleanup_handed_off = False
-    try:
-        runtime = _runtime_config(config)
-        if runtime.is_provider_managed and not provider.probe().available:
-            raise AgentCommandFailure(
-                AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed",
-            )
-    except AgentCommandFailure:
-        runtime_fields = (
-            config.model_endpoint, config.model_provider, config.model_name,
-            config.allowed_model_hosts, config.credential_env_names,
+    runtime = _runtime_config(config)
+    if not provider.probe().available:
+        raise AgentCommandFailure(
+            AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed",
         )
-        if not all(runtime_fields) and not provider.probe().available:
-            raise AgentCommandFailure(AgentErrorCode.PROVIDER_UNAVAILABLE, "opencode is not installed")
-        raise
     config_dir = paths.cache_dir / "opencode" / hashlib.sha256(str(workspace).encode()).hexdigest()
     start_spec = ProviderStartSpec(
         workspace=workspace, allowed_paths=(workspace,), config_dir=config_dir,
@@ -538,19 +517,11 @@ def doctor(output: str = typer.Option("text", "--format")) -> None:
         git_path = shutil.which("git")
         checks.append({"name": "git", "ok": git_path is not None,
                        "detail": git_path or "not installed", "classification": "required"})
-        try:
-            runtime = _runtime_config(config)
-        except AgentCommandFailure:
-            model_ok = False
-            model_detail = "managed override is invalid"
-        else:
-            model_ok = True
-            model_detail = (
-                "managed override configured; reachability requires test-env"
-                if not runtime.is_provider_managed else "owned by the selected provider CLI"
-            )
-        checks.append({"name": "model-endpoint", "ok": model_ok, "detail": model_detail,
-                       "classification": "required"})
+        _runtime_config(config)
+        model_ok = True
+        model_detail = "owned by the selected provider CLI"
+        checks.append({"name": "provider-model-config", "ok": model_ok, "detail": model_detail,
+                       "classification": "advisory"})
         cache_ok = paths.cache_dir.is_dir() and os.access(paths.cache_dir, os.R_OK | os.W_OK)
         checks.append({"name": "skill-cache", "ok": cache_ok,
                        "detail": str(paths.cache_dir) if cache_ok else "not initialized or inaccessible",
@@ -602,11 +573,21 @@ def init(
     workspace: Path = typer.Option(..., "--workspace"),
     alias: str | None = typer.Option(None, "--alias"),
     provider: str = typer.Option("opencode", "--provider"),
-    model_endpoint: str | None = typer.Option(None, "--model-endpoint"),
-    model_provider: str | None = typer.Option(None, "--model-provider"),
-    model_name: str | None = typer.Option(None, "--model"),
-    allowed_model_host: list[str] = typer.Option([], "--allowed-model-host"),
-    credential_env: list[str] = typer.Option([], "--credential-env"),
+    model_endpoint: str | None = typer.Option(
+        None, "--model-endpoint", help="Legacy Shogun only; native providers ignore this.",
+    ),
+    model_provider: str | None = typer.Option(
+        None, "--model-provider", help="Legacy Shogun only; native providers ignore this.",
+    ),
+    model_name: str | None = typer.Option(
+        None, "--model", help="Legacy Shogun only; native providers ignore this.",
+    ),
+    allowed_model_host: list[str] = typer.Option(
+        [], "--allowed-model-host", help="Legacy Shogun only; native providers ignore this.",
+    ),
+    credential_env: list[str] = typer.Option(
+        [], "--credential-env", help="Legacy Shogun only; native providers ignore this.",
+    ),
     server: str | None = typer.Option(None, "--server"),
     endpoint_token_file: Path | None = typer.Option(None, "--endpoint-token-file"),
     forgejo_credentials_file: Path | None = typer.Option(None, "--forgejo-credentials-file"),

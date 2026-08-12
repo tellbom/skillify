@@ -19,11 +19,9 @@ export interface StartSessionCommand {
   workerId: string;
   workspace: string;
   prompt: string;
-  model?: string;
   mcpServers: Record<string, McpServerSpec>;
   mcpAllowedTools: string[];
   allowedTools?: string[];
-  environment?: Record<string, string>;
   resumeSessionId?: string;
   initialSequence?: number;
 }

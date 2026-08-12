@@ -4,7 +4,11 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from skillify.agent.managed_runner import ManagedTaskRunner, first_terminal_outcome
+from skillify.agent.managed_runner import (
+    ManagedTaskRunner,
+    first_terminal_outcome,
+    session_start_payload,
+)
 from skillify.agent.provider import ModelRuntimeConfig, ProviderStartSpec
 from skillify.tasks.protocol import TaskEnvelope
 
@@ -68,3 +72,22 @@ def test_first_terminal_provider_event_cannot_be_overwritten_by_idle() -> None:
         first_terminal_outcome("provider.failed", "provider.completed")
         == "provider.failed"
     )
+
+
+def test_official_session_start_does_not_override_provider_model_configuration(
+    tmp_path: Path,
+) -> None:
+    payload = session_start_payload(
+        provider="claude-code",
+        task_id="task-1",
+        worker_id="worker-1",
+        workspace=tmp_path.resolve(),
+        prompt="fix issue",
+        mcp_servers={"forgejo": {"command": "skillctl"}},
+        mcp_allowed_tools=("mcp__forgejo__forgejo_get_issue",),
+    )
+
+    assert payload["provider"] == "claude-code"
+    assert "model" not in payload
+    assert "environment" not in payload
+    assert payload["mcpServers"] == {"forgejo": {"command": "skillctl"}}

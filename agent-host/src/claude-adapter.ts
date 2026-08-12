@@ -19,6 +19,8 @@ type PendingDecision = {
   input: Record<string, unknown>;
 };
 
+export const CLAUDE_NATIVE_SETTING_SOURCES = ["user", "project", "local"] as const;
+
 function claudeMcp(servers: Record<string, McpServerSpec>): Record<string, McpServerConfig> {
   return Object.fromEntries(Object.entries(servers).map(([name, item]) => {
     if (item.url) {
@@ -198,7 +200,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       options: {
         abortController,
         cwd: command.workspace,
-        model: command.model,
+        // Provider routing, credentials and model selection belong to Claude Code
+        // (and tools such as CC Switch), not to Skillify.
+        settingSources: [...CLAUDE_NATIVE_SETTING_SOURCES],
         resume: command.resumeSessionId,
         mcpServers,
         strictMcpConfig: true,

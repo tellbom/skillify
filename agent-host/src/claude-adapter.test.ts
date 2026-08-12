@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CLAUDE_NATIVE_SETTING_SOURCES,
   answersForClaudeQuestions,
   shouldEmitClaudeProviderEvent,
 } from "./claude-adapter.js";
+
+test("loads Claude Code native settings without a Skillify model override", () => {
+  assert.deepEqual(
+    CLAUDE_NATIVE_SETTING_SOURCES,
+    ["user", "project", "local"],
+  );
+});
 
 test("does not forward Claude thinking token progress as timeline events", () => {
   assert.equal(shouldEmitClaudeProviderEvent({

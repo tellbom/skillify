@@ -70,16 +70,17 @@ export SKILLIFY_OPENCODE_ARTIFACT_ROOT=/opt/skillify/offline/opencode/v1.15.11
 
 ## Endpoint configuration
 
-In the endpoint agent YAML, set `model_endpoint` to the approved internal HTTPS
-endpoint, `model_provider` and `model_name` to approved identifiers,
-`allowed_model_hosts` to that endpoint's exact host, and
-`credential_env_names` to the approved secret variable name. Store the secret
-value in the endpoint secret manager/environment, never in YAML or logs.
-If existing OpenCode preferences are needed, set the explicit absolute
-`opencode_user_config_path` (or `SKILLIFY_OPENCODE_USER_CONFIG_PATH`). Skillify
-accepts only safe `theme` and string-to-string `keybinds` values, rejects every
-runtime/security/provider/plugin field, and writes a separate mode-0600 config;
-it never reads an ambient HOME configuration implicitly.
+Configure the model provider, endpoint, model name and credentials with OpenCode
+itself. The default official Agent Host starts OpenCode with its native provider
+configuration and injects only the task-scoped MCP/session options; Skillify does
+not copy those model fields into `~/.skillctl/settings.json`.
+
+The legacy TUI/Shogun compatibility path may still read the historical
+`model_endpoint`, `model_provider`, `model_name`, `allowed_model_hosts` and
+`credential_env_names` fields. They are not used by the default official Host.
+If existing non-provider OpenCode preferences are needed by that legacy path,
+set the explicit absolute `opencode_user_config_path` (or
+`SKILLIFY_OPENCODE_USER_CONFIG_PATH`).
 
 The launcher must set:
 

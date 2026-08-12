@@ -40,6 +40,30 @@ _PROVIDER_TERMINAL_EVENTS = frozenset({
 })
 
 
+def session_start_payload(
+    *,
+    provider: str,
+    task_id: str,
+    worker_id: str,
+    workspace: Path,
+    prompt: str,
+    mcp_servers: Mapping[str, dict[str, object]],
+    mcp_allowed_tools: tuple[str, ...],
+    resume_options: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the SDK start command without taking ownership of provider model config."""
+    return {
+        "provider": provider,
+        "taskId": task_id,
+        "workerId": worker_id,
+        "workspace": str(workspace),
+        "prompt": prompt,
+        "mcpServers": dict(mcp_servers),
+        "mcpAllowedTools": list(mcp_allowed_tools),
+        **dict(resume_options or {}),
+    }
+
+
 def first_terminal_outcome(current: str | None, event_type: str) -> str | None:
     """Keep the first provider terminal event authoritative for one Worker."""
     if current is not None:
@@ -166,15 +190,16 @@ class ManagedTaskRunner:
                 response = host.command(
                     "session.start",
                     timeout=60,
-                    provider=provider,
-                    taskId=envelope.task_id,
-                    workerId=worker_id,
-                    workspace=str(worker_workspace),
-                    prompt=prompt,
-                    model=spec.runtime.model,
-                    mcpServers=plan.servers,
-                    mcpAllowedTools=list(plan.allowed_tools),
-                    **resume_options,
+                    **session_start_payload(
+                        provider=str(provider),
+                        task_id=envelope.task_id,
+                        worker_id=worker_id,
+                        workspace=worker_workspace,
+                        prompt=prompt,
+                        mcp_servers=plan.servers,
+                        mcp_allowed_tools=plan.allowed_tools,
+                        resume_options=resume_options,
+                    ),
                 )
                 session_id = str(response["providerSessionId"])
                 runtime_instance_id = str(response["runtimeInstanceId"])

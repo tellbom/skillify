@@ -252,10 +252,7 @@ def test_doctor_reports_complete_truthful_check_set(tmp_path, monkeypatch):
     env = _env(tmp_path)
     initialized = runner.invoke(agent_app, [
         "init", "--workspace", str(workspace),
-        "--model-endpoint", "https://model.intranet.example/v1",
-        "--model-provider", "internal", "--model", "code-1",
-        "--allowed-model-host", "model.intranet.example",
-        "--credential-env", "MODEL_KEY", "--format", "json",
+        "--format", "json",
     ], env=env)
     assert initialized.exit_code == 0
     cache = tmp_path / "cache"
@@ -270,10 +267,10 @@ def test_doctor_reports_complete_truthful_check_set(tmp_path, monkeypatch):
         "ok": True, "code": "OK", "message": "local prerequisites available",
     }
     assert [item["name"] for item in payload["data"]["checks"]] == [
-        "platform", "opencode", "git", "model-endpoint", "skill-cache", "mcp", "workspace",
+        "platform", "opencode", "git", "provider-model-config", "skill-cache", "mcp", "workspace",
     ]
     assert [item["classification"] for item in payload["data"]["checks"]] == [
-        "required", "required", "required", "required", "required", "advisory", "required",
+        "required", "required", "required", "advisory", "required", "advisory", "required",
     ]
     assert all(item["ok"] for item in payload["data"]["checks"] if item["classification"] == "required")
     mcp = next(item for item in payload["data"]["checks"] if item["name"] == "mcp")
@@ -282,7 +279,7 @@ def test_doctor_reports_complete_truthful_check_set(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("failed_name", [
-    "platform", "opencode", "git", "model-endpoint", "skill-cache", "workspace",
+    "platform", "opencode", "git", "skill-cache", "workspace",
 ])
 def test_doctor_required_failure_controls_top_level_envelope(
     tmp_path, monkeypatch, failed_name,
@@ -294,15 +291,7 @@ def test_doctor_required_failure_controls_top_level_envelope(
     env = _env(tmp_path)
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    config = {
-        "allowed_workspaces": [str(workspace)],
-        "model_endpoint": "https://model.intranet.example/v1",
-        "model_provider": "internal", "model_name": "code-1",
-        "allowed_model_hosts": ["model.intranet.example"],
-        "credential_env_names": ["MODEL_KEY"],
-    }
-    if failed_name == "model-endpoint":
-        config["model_endpoint"] = None
+    config = {"allowed_workspaces": [str(workspace)]}
     if failed_name == "workspace":
         config["allowed_workspaces"] = [str(tmp_path / "missing-workspace")]
     (config_dir / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -416,10 +405,7 @@ def test_direct_cli_run_cannot_launch_unsupported_binary(tmp_path, monkeypatch, 
     env = _env(tmp_path)
     initialized = runner.invoke(agent_app, [
         "init", "--workspace", str(workspace),
-        "--model-endpoint", "https://model.intranet.example/v1",
-        "--model-provider", "internal", "--model", "code-1",
-        "--allowed-model-host", "model.intranet.example",
-        "--credential-env", "MODEL_KEY", "--format", "json",
+        "--format", "json",
     ], env=env)
     assert initialized.exit_code == 0
     launched = []
