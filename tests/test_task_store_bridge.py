@@ -4,7 +4,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from skillify.index.db import init_db, make_engine
-from skillify.index.models import EndpointBinding
+from skillify.index.models import AgentWorkerRunRecord, EndpointBinding
+from skillify.tasks.agent_runtime_store import register_provider_session
 from skillify.tasks.lease import claim_next_task
 from skillify.tasks.protocol import TaskConflictError, TaskReplayError
 from skillify.tasks.web_store import (
@@ -84,3 +85,39 @@ def test_revoked_task_rejects_response() -> None:
             session, task_id=task.task_id, endpoint_id="endpoint-1",
             nonce=envelope.nonce, state_version=task.state_version,
         )
+
+
+def test_task_failure_closes_running_worker_and_gate() -> None:
+    session = _session(); task = _claimed(session)
+    envelope = issue_task_envelope(session, task, secret=SECRET, now=NOW)
+    register_provider_session(
+        session,
+        task_id=task.task_id,
+        team_run_id=None,
+        worker_id="worker-1",
+        provider="claude-code",
+        provider_session_id="session-1",
+        runtime_instance_id="host-1",
+        endpoint_id="endpoint-1",
+        workspace="/workspace",
+        now=NOW,
+    )
+
+    record_task_event(
+        session,
+        event_id="failure-1",
+        task_id=task.task_id,
+        endpoint_id="endpoint-1",
+        nonce=envelope.nonce,
+        state_version=envelope.state_version,
+        event_type="task.failed",
+        occurred_at=NOW,
+        summary='{"reason":"control-plane-transport-error"}',
+        failure_reason="control-plane-transport-error",
+        stage="agent-interaction",
+    )
+
+    worker = session.query(AgentWorkerRunRecord).filter_by(worker_id="worker-1").one()
+    assert worker.status == "failed"
+    assert worker.gate_status == "failed"
+    assert worker.gate_result["stage"] == "agent-interaction"

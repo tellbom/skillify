@@ -10,7 +10,7 @@ from skillify.agent.provider import (
 )
 from skillify.agent.events import EventType, TaskEvent, TaskState
 from skillify.agent.runner import TaskRunner
-from skillify.cli.bridge_cmd import BridgeLoop, LocalOutbox, RoutedBridgeRunner
+from skillify.cli.bridge_cmd import BridgeLoop, BridgeTransportError, LocalOutbox, RoutedBridgeRunner
 from skillify.tasks.protocol import TaskEnvelope
 from skillify.tasks.reporting import TaskEventReporter
 from skillify.tasks.mcp_injection import McpPackageConfig
@@ -107,6 +107,29 @@ def test_bridge_reports_runner_exception_as_terminal_failure(tmp_path: Path) -> 
     assert payload["eventType"] == "task.failed"
     assert payload["reasonCode"] == "provider-runtime-error"
     assert "private details" not in json.dumps(payload)
+
+
+def test_bridge_classifies_interaction_transport_failure(tmp_path: Path) -> None:
+    class BrokenRunner:
+        def run(self, envelope, *, state_version):
+            raise BridgeTransportError(
+                "Agent control request failed: /api/endpoint/agent-interactions"
+            )
+
+        def cancel(self, task_id):
+            return False
+
+    outbox = LocalOutbox(tmp_path / "outbox.jsonl")
+    endpoint = EventEndpoint(); endpoint.online = True
+    loop = BridgeLoop(
+        Transport(_envelope()), outbox, BrokenRunner(),
+        TaskEventReporter(outbox, endpoint), sleeper=lambda _: None,
+    )
+
+    assert loop.poll() is True
+    payload = endpoint.payloads[0]
+    assert payload["reasonCode"] == "control-plane-transport-error"
+    assert payload["stage"] == "agent-interaction"
 
 
 def test_bridge_routes_codemap_without_starting_an_agent_provider() -> None:

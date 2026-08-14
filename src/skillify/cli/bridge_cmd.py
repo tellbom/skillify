@@ -173,7 +173,11 @@ class HttpBridgeTransport:
         self._agent_request("POST", "/api/endpoint/agent-events", payload=payload)
 
     def request_agent_interaction(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._agent_request("POST", "/api/endpoint/agent-interactions", payload=payload)
+        try:
+            return self._agent_request("POST", "/api/endpoint/agent-interactions", payload=payload)
+        except BridgeTransportError:
+            time.sleep(1)
+            return self._agent_request("POST", "/api/endpoint/agent-interactions", payload=payload)
 
     def interaction_responses(self, task_id: str) -> list[dict[str, Any]]:
         value = self._agent_request(
@@ -270,9 +274,14 @@ class BridgeLoop:
             if envelope.runtime == "shogun" and envelope.preferred_cli
             else envelope.runtime
         )
+        transport_failure = isinstance(error, BridgeTransportError)
+        reason = "control-plane-transport-error" if transport_failure else "provider-runtime-error"
+        stage = "agent-interaction" if (
+            transport_failure and "agent-interactions" in str(error)
+        ) else "provider-runtime"
         event_id = uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"skillify:{envelope.task_id}:provider-runtime-error:{state_version}",
+            f"skillify:{envelope.task_id}:{reason}:{state_version}",
         ).hex
         self.outbox.enqueue(event_id, build_task_event(
             event_id=event_id,
@@ -283,11 +292,13 @@ class BridgeLoop:
             workflow_version=envelope.workflow_version,
             provider=str(provider),
             provider_version="official-sdk",
-            reason_code="provider-runtime-error",
+            reason_code=reason,
             nonce=envelope.nonce,
             state_version=state_version,
+            stage=stage,
             summary=json.dumps({
-                "reason": "provider-runtime-error",
+                "reason": reason,
+                "stage": stage,
                 "errorType": type(error).__name__,
             }, sort_keys=True),
         ))
@@ -329,6 +340,8 @@ class BridgeLoop:
             return False
         self._next_backoff = self.initial_backoff
         self.cursor = cursor
+        if not tasks:
+            self.sleeper(1.0)
         from skillify.tasks.protocol import TaskEnvelope
         for task in tasks:
             envelope = TaskEnvelope.from_dict(task)

@@ -410,6 +410,21 @@ def record_task_event(
                 }
                 worker.status = "succeeded" if gate_status == "passed" else "failed"
                 worker.updated_at = occurred_at
+    elif event_type == "task.failed":
+        workers = list(session.scalars(select(AgentWorkerRunRecord).where(
+            AgentWorkerRunRecord.task_id == task_id,
+            AgentWorkerRunRecord.status.in_(("running", "waiting_user", "ready_for_gate")),
+        )))
+        for worker in workers:
+            worker.status = "failed"
+            worker.gate_status = "failed"
+            worker.gate_result = {
+                "summary": summary,
+                "failureReason": failure_reason,
+                "stage": stage,
+            }
+            worker.ended_at = occurred_at
+            worker.updated_at = occurred_at
     session.flush()
     return record, True
 

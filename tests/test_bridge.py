@@ -6,6 +6,7 @@ import threading
 from skillify.cli.bridge_cmd import (
     BridgeLoop,
     BridgeTransportError,
+    HttpBridgeTransport,
     LocalOutbox,
     _resolve_connection,
 )
@@ -146,9 +147,26 @@ def test_pull_loop_uses_exponential_backoff_then_resets(tmp_path: Path) -> None:
 
     loop.run(max_polls=4)
 
-    assert sleeps == [1, 2]
+    assert sleeps == [1, 2, 1, 1]
     assert transport.cursors == [None, None, None, "cursor-1"]
     assert loop.cursor == "cursor-2"
+
+
+def test_interaction_request_retries_once_after_transport_error(monkeypatch) -> None:
+    transport = HttpBridgeTransport("http://skillify.internal", "endpoint-token")
+    attempts = []
+
+    def request(method, path, *, payload=None, params=None):
+        attempts.append((method, path, payload))
+        if len(attempts) == 1:
+            raise BridgeTransportError("Agent control request failed: /api/endpoint/agent-interactions")
+        return {"accepted": True}
+
+    monkeypatch.setattr(transport, "_agent_request", request)
+    monkeypatch.setattr("skillify.cli.bridge_cmd.time.sleep", lambda _: None)
+
+    assert transport.request_agent_interaction({"kind": "permission"}) == {"accepted": True}
+    assert len(attempts) == 2
 
 
 def test_local_outbox_deduplicates_event_ids(tmp_path: Path) -> None:
